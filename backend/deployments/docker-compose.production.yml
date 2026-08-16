@@ -1,0 +1,96 @@
+name: ${COMPOSE_PROJECT_NAME:-twenty_four_calculate}
+
+x-backend-build: &backend-build
+  context: ..
+  dockerfile: deployments/Dockerfile.production
+
+x-backend-environment: &backend-environment
+  GO_SERVICE_APP_NAME: twenty-four-calculate
+  GO_SERVICE_APP_ENV: production
+  GO_SERVICE_SERVER_HOST: 0.0.0.0
+  GO_SERVICE_SERVER_PORT: 8080
+  GO_SERVICE_DATABASE_HOST: ${GO_SERVICE_DATABASE_HOST:?GO_SERVICE_DATABASE_HOST must be set}
+  GO_SERVICE_DATABASE_PORT: ${GO_SERVICE_DATABASE_PORT:-3306}
+  GO_SERVICE_DATABASE_USER: ${GO_SERVICE_DATABASE_USER:?GO_SERVICE_DATABASE_USER must be set}
+  GO_SERVICE_DATABASE_PASSWORD: ${GO_SERVICE_DATABASE_PASSWORD:?GO_SERVICE_DATABASE_PASSWORD must be set}
+  GO_SERVICE_DATABASE_NAME: ${GO_SERVICE_DATABASE_NAME:?GO_SERVICE_DATABASE_NAME must be set}
+  GO_SERVICE_REDIS_ADDR: ${GO_SERVICE_REDIS_ADDR:?GO_SERVICE_REDIS_ADDR must be set}
+  GO_SERVICE_REDIS_PASSWORD: ${GO_SERVICE_REDIS_PASSWORD:-}
+  GO_SERVICE_REDIS_DB: ${GO_SERVICE_REDIS_DB:?GO_SERVICE_REDIS_DB must be set}
+  GO_SERVICE_WECHAT_APP_ID: ${GO_SERVICE_WECHAT_APP_ID:?GO_SERVICE_WECHAT_APP_ID must be set}
+  GO_SERVICE_WECHAT_APP_SECRET: ${GO_SERVICE_WECHAT_APP_SECRET:?GO_SERVICE_WECHAT_APP_SECRET must be set}
+  GO_SERVICE_WECHAT_API_BASE_URL: ${GO_SERVICE_WECHAT_API_BASE_URL:-https://api.weixin.qq.com}
+  GO_SERVICE_JWT_SECRET: ${GO_SERVICE_JWT_SECRET:?GO_SERVICE_JWT_SECRET must be set}
+  GO_SERVICE_JWT_ISSUER: twenty-four-calculate
+  GO_SERVICE_GAME_DAILY_SEED_SECRET: ${GO_SERVICE_GAME_DAILY_SEED_SECRET:?GO_SERVICE_GAME_DAILY_SEED_SECRET must be set}
+  GO_SERVICE_QUEUE_NAME: ${GO_SERVICE_QUEUE_NAME:-twenty_four_calculate}
+  GO_SERVICE_LOG_LEVEL: ${GO_SERVICE_LOG_LEVEL:-info}
+  GO_SERVICE_LOG_FORMAT: json
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-extra-hosts: &extra-hosts
+  - host.docker.internal:host-gateway
+
+services:
+  api:
+    build: *backend-build
+    image: twenty-four-calculate-backend:${APP_IMAGE_TAG:-latest}
+    container_name: twenty_four_calculate_api
+    init: true
+    restart: unless-stopped
+    command: ["/app/api"]
+    environment: *backend-environment
+    extra_hosts: *extra-hosts
+    ports:
+      - "${API_BIND_HOST:-127.0.0.1}:${API_PORT:-18082}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    networks:
+      - shared_services
+    logging: *default-logging
+
+  worker:
+    build: *backend-build
+    image: twenty-four-calculate-backend:${APP_IMAGE_TAG:-latest}
+    container_name: twenty_four_calculate_worker
+    init: true
+    restart: unless-stopped
+    command: ["/app/worker"]
+    environment: *backend-environment
+    extra_hosts: *extra-hosts
+    networks:
+      - shared_services
+    logging: *default-logging
+
+  migrate:
+    profiles: [migrate]
+    build: *backend-build
+    image: twenty-four-calculate-backend:${APP_IMAGE_TAG:-latest}
+    container_name: twenty_four_calculate_migrate
+    init: true
+    restart: "no"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        exec /app/goose -dir /app/database/migrations mysql \
+          "$${GO_SERVICE_DATABASE_USER}:$${GO_SERVICE_DATABASE_PASSWORD}@tcp($${GO_SERVICE_DATABASE_HOST}:$${GO_SERVICE_DATABASE_PORT})/$${GO_SERVICE_DATABASE_NAME}?parseTime=true&charset=utf8mb4&loc=UTC" up
+    environment: *backend-environment
+    extra_hosts: *extra-hosts
+    networks:
+      - shared_services
+    logging: *default-logging
+
+networks:
+  shared_services:
+    external: true
+    name: ${SHARED_DOCKER_NETWORK:-docker-container_backend}
