@@ -1,0 +1,547 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="Script" path="res://scripts/MainMenu.gd" id="1_menu"]
+[ext_resource type="Script" path="res://ui/main_menu_backdrop.gd" id="2_backdrop"]
+[ext_resource type="Script" path="res://ui/glass_button.gd" id="3_glass"]
+[ext_resource type="PackedScene" path="res://mvp.tscn" id="4_game"]
+
+[sub_resource type="StyleBoxFlat" id="style_progress_panel"]
+bg_color = Color(0.12, 0.1, 0.3, 0.68)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(1, 1, 1, 0.15)
+corner_radius_top_left = 30
+corner_radius_top_right = 30
+corner_radius_bottom_left = 30
+corner_radius_bottom_right = 30
+shadow_color = Color(0.1, 0.04, 0.28, 0.38)
+shadow_size = 12
+
+[sub_resource type="StyleBoxFlat" id="style_progress_bg"]
+bg_color = Color(1, 1, 1, 0.1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(1, 1, 1, 0.12)
+corner_radius_top_left = 10
+corner_radius_top_right = 10
+corner_radius_bottom_left = 10
+corner_radius_bottom_right = 10
+
+[sub_resource type="StyleBoxFlat" id="style_progress_fill"]
+bg_color = Color(0.13, 0.82, 1, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.85, 1, 1, 0.9)
+corner_radius_top_left = 10
+corner_radius_top_right = 10
+corner_radius_bottom_left = 10
+corner_radius_bottom_right = 10
+shadow_color = Color(0.1, 0.85, 1, 0.72)
+shadow_size = 8
+
+[sub_resource type="StyleBoxFlat" id="style_coin_panel"]
+bg_color = Color(0.984, 0.749, 0.141, 0.18)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.984, 0.749, 0.141, 0.35)
+corner_radius_top_left = 30
+corner_radius_top_right = 30
+corner_radius_bottom_left = 30
+corner_radius_bottom_right = 30
+shadow_color = Color(0.3, 0.7, 1, 0.34)
+shadow_size = 12
+
+[sub_resource type="StyleBoxFlat" id="style_icon"]
+bg_color = Color(0.984, 0.749, 0.141, 0.24)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.984, 0.749, 0.141, 0.55)
+corner_radius_top_left = 28
+corner_radius_top_right = 28
+corner_radius_bottom_left = 28
+corner_radius_bottom_right = 28
+shadow_color = Color(1, 0.75, 0.2, 0.58)
+shadow_size = 8
+
+[node name="MainMenu" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_menu")
+
+[node name="Background" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("2_backdrop")
+
+[node name="StarsContainer" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="FloatNums" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Content" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 32.0
+offset_top = 42.0
+offset_right = -32.0
+offset_bottom = -24.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="TopBar" type="Control" parent="Content"]
+layout_mode = 0
+offset_right = 656.0
+offset_bottom = 90.0
+
+[node name="CoinPanel" type="Panel" parent="Content/TopBar"]
+layout_mode = 0
+offset_right = 252.0
+offset_bottom = 74.0
+theme_override_styles/panel = SubResource("style_coin_panel")
+
+[node name="CoinHBox" type="HBoxContainer" parent="Content/TopBar/CoinPanel"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = 5.0
+offset_right = -14.0
+offset_bottom = -5.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 12
+
+[node name="CoinIcon" type="Panel" parent="Content/TopBar/CoinPanel/CoinHBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(60, 60)
+theme_override_styles/panel = SubResource("style_icon")
+
+[node name="Icon" type="Label" parent="Content/TopBar/CoinPanel/CoinHBox/CoinIcon"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+text = "$"
+horizontal_alignment = 1
+vertical_alignment = 1
+theme_override_font_sizes/font_size = 34
+theme_override_colors/font_color = Color(1, 0.9, 0.38, 1)
+
+[node name="CoinNum" type="Label" parent="Content/TopBar/CoinPanel/CoinHBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "0"
+vertical_alignment = 1
+theme_override_font_sizes/font_size = 42
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_shadow_color = Color(0.05, 0.03, 0.18, 0.8)
+theme_override_constants/shadow_offset_y = 3
+theme_override_constants/shadow_size = 4
+
+[node name="SettingBtn" type="Button" parent="Content/TopBar"]
+layout_mode = 0
+offset_left = 566.0
+offset_right = 656.0
+offset_bottom = 90.0
+text = "设置"
+theme_override_font_sizes/font_size = 25
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_styles/normal = SubResource("style_coin_panel")
+theme_override_styles/hover = SubResource("style_coin_panel")
+theme_override_styles/pressed = SubResource("style_coin_panel")
+
+[node name="LogoArea" type="Control" parent="Content"]
+layout_mode = 0
+offset_left = 8.0
+offset_top = 146.0
+offset_right = 648.0
+offset_bottom = 520.0
+
+[node name="LogoGlow" type="Label" parent="Content/LogoArea"]
+layout_mode = 0
+offset_left = 48.0
+offset_top = 0.0
+offset_right = 486.0
+offset_bottom = 300.0
+text = "24"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 250
+theme_override_colors/font_color = Color(0.32, 0.9, 1, 0.14)
+theme_override_colors/font_shadow_color = Color(0.1, 0.8, 1, 0.95)
+theme_override_constants/shadow_size = 32
+
+[node name="Logo24" type="Label" parent="Content/LogoArea"]
+layout_mode = 0
+offset_left = 40.0
+offset_top = -6.0
+offset_right = 490.0
+offset_bottom = 300.0
+text = "24"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 230
+theme_override_colors/font_color = Color(0.85, 0.94, 1, 1)
+theme_override_colors/font_shadow_color = Color(1, 0.46, 0.9, 0.84)
+theme_override_constants/shadow_offset_x = 5
+theme_override_constants/shadow_offset_y = 6
+theme_override_constants/shadow_size = 20
+
+[node name="LogoTitle" type="Label" parent="Content/LogoArea"]
+layout_mode = 0
+offset_left = 432.0
+offset_top = 108.0
+offset_right = 648.0
+offset_bottom = 198.0
+text = "点"
+theme_override_font_sizes/font_size = 72
+theme_override_colors/font_color = Color(1, 0.88, 0.45, 1)
+theme_override_colors/font_shadow_color = Color(0.95, 0.36, 0.62, 0.86)
+theme_override_constants/shadow_offset_y = 4
+theme_override_constants/shadow_size = 8
+
+[node name="LogoChallenge" type="Label" parent="Content/LogoArea"]
+layout_mode = 0
+offset_left = 430.0
+offset_top = 198.0
+offset_right = 650.0
+offset_bottom = 282.0
+text = "挑战"
+theme_override_font_sizes/font_size = 56
+theme_override_colors/font_color = Color(1, 0.86, 0.42, 1)
+theme_override_colors/font_shadow_color = Color(0.86, 0.26, 0.7, 0.8)
+theme_override_constants/shadow_offset_y = 3
+theme_override_constants/shadow_size = 7
+
+[node name="LogoSub" type="Label" parent="Content/LogoArea"]
+layout_mode = 0
+offset_left = 438.0
+offset_top = 290.0
+offset_right = 650.0
+offset_bottom = 338.0
+text = "脑力挑战"
+theme_override_font_sizes/font_size = 25
+theme_override_colors/font_color = Color(1, 1, 1, 0.92)
+
+[node name="LevelBtn" type="Button" parent="Content"]
+layout_mode = 0
+offset_left = 0.0
+offset_top = 568.0
+offset_right = 204.0
+offset_bottom = 820.0
+text = ""
+theme_override_font_sizes/font_size = 29
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+script = ExtResource("3_glass")
+accent_color = Color(0.1, 0.85, 1, 1)
+
+[node name="LevelIcon" type="Label" parent="Content/LevelBtn"]
+layout_mode = 0
+offset_left = 58.0
+offset_top = 28.0
+offset_right = 146.0
+offset_bottom = 112.0
+text = "开始"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 26
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="LevelTitle" type="Label" parent="Content/LevelBtn"]
+layout_mode = 0
+offset_left = 18.0
+offset_top = 126.0
+offset_right = 186.0
+offset_bottom = 170.0
+text = "闯关模式"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 24
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="LevelProgress" type="Label" parent="Content"]
+layout_mode = 0
+offset_left = 26.0
+offset_top = 776.0
+offset_right = 178.0
+offset_bottom = 815.0
+text = "1-1"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 21
+theme_override_colors/font_color = Color(1, 1, 1, 0.94)
+
+[node name="FriendBtn" type="Button" parent="Content"]
+layout_mode = 0
+offset_left = 226.0
+offset_top = 568.0
+offset_right = 430.0
+offset_bottom = 820.0
+text = ""
+theme_override_font_sizes/font_size = 28
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+script = ExtResource("3_glass")
+accent_color = Color(1, 0.28, 0.72, 1)
+
+[node name="FriendIcon" type="Label" parent="Content/FriendBtn"]
+layout_mode = 0
+offset_left = 58.0
+offset_top = 28.0
+offset_right = 146.0
+offset_bottom = 112.0
+text = "★"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 48
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="FriendTitle" type="Label" parent="Content/FriendBtn"]
+layout_mode = 0
+offset_left = 18.0
+offset_top = 126.0
+offset_right = 186.0
+offset_bottom = 170.0
+text = "好友对战"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 24
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="EndlessBtn" type="Button" parent="Content"]
+layout_mode = 0
+offset_left = 452.0
+offset_top = 568.0
+offset_right = 656.0
+offset_bottom = 820.0
+text = ""
+theme_override_font_sizes/font_size = 29
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+script = ExtResource("3_glass")
+accent_color = Color(0.63, 0.37, 1, 1)
+
+[node name="EndlessIcon" type="Label" parent="Content/EndlessBtn"]
+layout_mode = 0
+offset_left = 58.0
+offset_top = 28.0
+offset_right = 146.0
+offset_bottom = 112.0
+text = "∞"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 52
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="EndlessTitle" type="Label" parent="Content/EndlessBtn"]
+layout_mode = 0
+offset_left = 18.0
+offset_top = 126.0
+offset_right = 186.0
+offset_bottom = 170.0
+text = "无尽模式"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 24
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="ModeRow" type="Control" parent="Content"]
+layout_mode = 0
+offset_top = 846.0
+offset_right = 656.0
+offset_bottom = 980.0
+
+[node name="DailyBtn" type="Button" parent="Content/ModeRow"]
+layout_mode = 0
+offset_right = 292.0
+offset_bottom = 134.0
+text = ""
+theme_override_font_sizes/font_size = 26
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+script = ExtResource("3_glass")
+accent_color = Color(1, 0.76, 0.22, 1)
+
+[node name="DailyIcon" type="Label" parent="Content/ModeRow/DailyBtn"]
+layout_mode = 0
+offset_left = 22.0
+offset_top = 30.0
+offset_right = 90.0
+offset_bottom = 102.0
+text = "★"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 42
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="DailyTitle" type="Label" parent="Content/ModeRow/DailyBtn"]
+layout_mode = 0
+offset_left = 98.0
+offset_top = 30.0
+offset_right = 274.0
+offset_bottom = 72.0
+text = "每日挑战"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 23
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="DailyStatus" type="Label" parent="Content/ModeRow/DailyBtn"]
+layout_mode = 0
+offset_left = 98.0
+offset_top = 74.0
+offset_right = 274.0
+offset_bottom = 116.0
+text = "每日更新"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(1, 1, 1, 0.92)
+
+[node name="TaskBtn" type="Button" parent="Content/ModeRow"]
+layout_mode = 0
+offset_left = 314.0
+offset_right = 474.0
+offset_bottom = 134.0
+text = ""
+theme_override_font_sizes/font_size = 23
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+script = ExtResource("3_glass")
+accent_color = Color(0.23, 1, 0.7, 1)
+
+[node name="TaskIcon" type="Label" parent="Content/ModeRow/TaskBtn"]
+layout_mode = 0
+offset_left = 42.0
+offset_top = 24.0
+offset_right = 118.0
+offset_bottom = 82.0
+text = "★"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 40
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="TaskTitle" type="Label" parent="Content/ModeRow/TaskBtn"]
+layout_mode = 0
+offset_left = 14.0
+offset_top = 78.0
+offset_right = 146.0
+offset_bottom = 118.0
+text = "每日任务"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 20
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="MoreBtn" type="Button" parent="Content/ModeRow"]
+layout_mode = 0
+offset_left = 496.0
+offset_right = 656.0
+offset_bottom = 134.0
+disabled = false
+text = ""
+theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(1, 1, 1, 0.52)
+script = ExtResource("3_glass")
+accent_color = Color(0.5, 0.5, 0.62, 1)
+disabled_glass = true
+
+[node name="MoreIcon" type="Label" parent="Content/ModeRow/MoreBtn"]
+layout_mode = 0
+offset_left = 42.0
+offset_top = 23.0
+offset_right = 118.0
+offset_bottom = 78.0
+text = "▦"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 38
+theme_override_colors/font_color = Color(1, 1, 1, 0.68)
+
+[node name="MoreTitle" type="Label" parent="Content/ModeRow/MoreBtn"]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 78.0
+offset_right = 150.0
+offset_bottom = 118.0
+text = "更多功能"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 19
+theme_override_colors/font_color = Color(1, 1, 1, 0.68)
+
+[node name="ProgressPanel" type="Panel" parent="Content"]
+layout_mode = 0
+offset_top = 1000.0
+offset_right = 656.0
+offset_bottom = 1110.0
+theme_override_styles/panel = SubResource("style_progress_panel")
+
+[node name="ProgressVBox" type="VBoxContainer" parent="Content/ProgressPanel"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 28.0
+offset_top = 17.0
+offset_right = -28.0
+offset_bottom = -15.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 10
+
+[node name="ProgressLabel" type="Label" parent="Content/ProgressPanel/ProgressVBox"]
+layout_mode = 2
+text = "闯关进度 · 已解锁 1-1 关"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 20
+theme_override_colors/font_color = Color(1, 1, 1, 0.96)
+
+[node name="ProgressBar" type="ProgressBar" parent="Content/ProgressPanel/ProgressVBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 18)
+max_value = 100.0
+value = 1.0
+show_percentage = false
+theme_override_styles/background = SubResource("style_progress_bg")
+theme_override_styles/fill = SubResource("style_progress_fill")
+
+[node name="FooterLabel" type="Label" parent="Content"]
+layout_mode = 0
+offset_left = 120.0
+offset_top = 1120.0
+offset_right = 536.0
+offset_bottom = 1152.0
+text = "Godot 引擎 · 24点数学运算"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 17
+theme_override_colors/font_color = Color(1, 1, 1, 0.55)
+
+[node name="GameController" parent="." instance=ExtResource("4_game")]
+visible = false
+
+[connection signal="pressed" from="Content/TopBar/SettingBtn" to="." method="_on_setting_pressed"]
+[connection signal="pressed" from="Content/LevelBtn" to="." method="_on_level_pressed"]
+[connection signal="pressed" from="Content/FriendBtn" to="." method="_on_friend_pressed"]
+[connection signal="pressed" from="Content/EndlessBtn" to="." method="_on_endless_pressed"]
+[connection signal="pressed" from="Content/ModeRow/DailyBtn" to="." method="_on_daily_pressed"]
+[connection signal="pressed" from="Content/ModeRow/TaskBtn" to="." method="_on_task_pressed"]
+[connection signal="pressed" from="Content/ModeRow/MoreBtn" to="." method="_on_more_pressed"]

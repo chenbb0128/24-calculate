@@ -1,0 +1,448 @@
+openapi: 3.0.3
+info:
+  title: Sanhuo Arithmetic Practice Backend API
+  version: 2.1.0
+  description: Server-authoritative API for authentication, runs, rooms, matchmaking, rewards, and leaderboards.
+servers:
+  - url: /
+tags:
+  - name: system
+  - name: auth
+  - name: player
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Process health check
+      responses:
+        '200': {description: OK}
+  /ready:
+    get:
+      tags: [system]
+      summary: MySQL and Redis readiness check
+      responses:
+        '200': {description: Ready}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/v1/auth/wechat-login:
+    post:
+      tags: [auth]
+      summary: Exchange a WeChat login code for tokens
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/WechatLoginInput'}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '401': {$ref: '#/components/responses/Error'}
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotate a refresh token
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/RefreshInput'}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '401': {$ref: '#/components/responses/Error'}
+  /api/v1/player/bootstrap:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Load server-owned player state
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '401': {$ref: '#/components/responses/Error'}
+  /api/v1/player/campaign/runs:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Start a campaign run
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/CampaignStartInput'}}
+      responses:
+        '201': {$ref: '#/components/responses/Success'}
+  /api/v1/player/campaign/runs/{run_id}:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Resume a campaign run
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}, '410': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/campaign/runs/{run_id}/submit:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Submit a validated campaign run
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/RunSubmission'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/daily/runs:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Start or report the current daily challenge
+      responses: {'201': {$ref: '#/components/responses/Success'}}
+  /api/v1/player/daily/runs/{run_id}:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Resume a daily run
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}, '410': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/daily/runs/{run_id}/submit:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Submit a validated daily run
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/RunSubmission'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/endless/runs:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Start an endless run
+      responses: {'201': {$ref: '#/components/responses/Success'}}
+  /api/v1/player/endless/runs/{run_id}:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Resume an endless run
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}, '410': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/endless/runs/{run_id}/submit:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Submit a validated endless run
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/RunSubmission'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/friend/rooms:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Create a friend room
+      responses: {'201': {$ref: '#/components/responses/Success'}}
+  /api/v1/player/friend/rooms/{room_code}/join:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Join a friend room
+      parameters: [{$ref: '#/components/parameters/RoomCode'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/friend/rooms/{room_code}:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Get a friend room
+      parameters: [{$ref: '#/components/parameters/RoomCode'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+    delete:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Leave a friend room
+      parameters: [{$ref: '#/components/parameters/RoomCode'}]
+      responses: {'204': {description: Left}}
+  /api/v1/player/friend/rooms/{room_code}/ready:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Set friend room ready state
+      parameters: [{$ref: '#/components/parameters/RoomCode'}]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/ReadyInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/friend/rooms/{room_code}/start:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Start a friend room countdown
+      parameters: [{$ref: '#/components/parameters/RoomCode'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/friend/rooms/{room_code}/match/progress:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Read server-owned friend match progress
+      parameters: [{$ref: '#/components/parameters/RoomCode'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Submit monotonic friend match progress
+      parameters: [{$ref: '#/components/parameters/RoomCode'}]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/FriendProgressInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/friend/rooms/{room_code}/match/submit:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Submit a validated friend match
+      parameters: [{$ref: '#/components/parameters/RoomCode'}]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/FriendSubmission'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/matchmaking/join:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Join quick matchmaking
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/MatchmakingJoinInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /api/v1/player/matchmaking/status:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Read matchmaking status
+      parameters:
+        - {name: ticket_id, in: query, required: true, schema: {type: string}}
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /api/v1/player/matchmaking/cancel:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Cancel quick matchmaking
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/MatchmakingCancelInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /api/v1/player/leaderboards/{mode}:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Read a paginated leaderboard
+      parameters:
+        - {name: mode, in: path, required: true, schema: {type: string, enum: [campaign, daily, endless, friend, overall]}}
+        - {name: scope, in: query, schema: {type: string, enum: [global, friends], default: global}}
+        - {name: period, in: query, schema: {type: string, enum: [all, weekly, monthly], default: all}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Submit a legacy leaderboard record
+      parameters:
+        - {name: mode, in: path, required: true, schema: {type: string, enum: [endless, friend]}}
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/LeaderboardSubmission'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/levels/{level_id}/complete:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Legacy campaign completion endpoint
+      parameters:
+        - {name: level_id, in: path, required: true, schema: {type: integer, minimum: 0, maximum: 199}}
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/LevelCompletionInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/daily/complete:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Legacy daily completion endpoint
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/DailyCompletionInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/skins/{skin_id}/purchase:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Purchase a skin with server-owned coins
+      parameters: [{name: skin_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/IdempotencyInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/skins/{skin_id}/equip:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Equip an owned skin
+      parameters: [{name: skin_id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /api/v1/player/cosmetics/{cosmetic_id}/purchase:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Purchase a cosmetic
+      parameters: [{name: cosmetic_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/IdempotencyInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/cosmetics/{cosmetic_id}/equip:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Equip an owned cosmetic
+      parameters: [{name: cosmetic_id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /api/v1/player/preferences:
+    patch:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Update bounded player preferences
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/PreferencesInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  parameters:
+    RunID: {name: run_id, in: path, required: true, schema: {type: string}}
+    RoomCode: {name: room_code, in: path, required: true, schema: {type: string, pattern: '^[0-9]{6}$'}}
+  responses:
+    Success:
+      description: Successful response
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/SuccessResponse'}
+    Error:
+      description: Error response with a legacy numeric code and request ID
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+  schemas:
+    SuccessResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, example: 0}
+        message: {type: string, example: success}
+        data: {nullable: true}
+    ErrorResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, example: 10001}
+        message: {type: string}
+        request_id: {type: string}
+        data: {nullable: true, example: null}
+    WechatLoginInput:
+      type: object
+      required: [code]
+      properties:
+        code: {type: string, maxLength: 512}
+        nickname: {type: string, maxLength: 100}
+        avatar: {type: string, maxLength: 500}
+    RefreshInput:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: {type: string}
+    CampaignStartInput:
+      type: object
+      required: [level_id]
+      properties:
+        level_id: {type: integer, minimum: 0, maximum: 199}
+    RunSubmission:
+      type: object
+      required: [protocol_version, idempotency_key, run_id, attempts, summary]
+      properties:
+        protocol_version: {type: integer}
+        idempotency_key: {type: string, minLength: 8, maxLength: 128}
+        run_id: {type: string}
+        attempts: {type: array, items: {type: object}}
+        summary: {type: object}
+        client_authoritative: {type: boolean, default: false}
+    ReadyInput:
+      type: object
+      required: [ready]
+      properties: {ready: {type: boolean}}
+    FriendProgressInput:
+      type: object
+      required: [question_index, solved, score, elapsed_ms, match_id, question_hash, event_id]
+      properties:
+        question_index: {type: integer, minimum: 0}
+        solved: {type: integer, minimum: 0}
+        score: {type: integer, minimum: 0}
+        elapsed_ms: {type: integer, minimum: 0}
+        finished: {type: boolean}
+        match_id: {type: string}
+        question_hash: {type: string}
+        event_id: {type: string}
+    FriendSubmission:
+      allOf:
+        - {$ref: '#/components/schemas/RunSubmission'}
+    MatchmakingJoinInput:
+      type: object
+      required: [mode, rules_version, client_ticket]
+      properties:
+        mode: {type: string, enum: [friend]}
+        rules_version: {type: integer, example: 1}
+        client_ticket: {type: string, minLength: 8, maxLength: 128}
+        region: {type: string, maxLength: 32}
+    MatchmakingCancelInput:
+      type: object
+      required: [ticket_id]
+      properties: {ticket_id: {type: string}}
+    LeaderboardSubmission:
+      type: object
+      required: [idempotency_key, score]
+      properties:
+        idempotency_key: {type: string, minLength: 8, maxLength: 128}
+        score: {type: integer, minimum: 0}
+        questions: {type: integer, minimum: 0}
+        elapsed_ms: {type: integer, minimum: 0}
+        room_id: {type: string}
+        outcome: {type: string}
+        metadata: {type: object}
+    LevelCompletionInput:
+      type: object
+      required: [idempotency_key, score, stars]
+      properties:
+        idempotency_key: {type: string, minLength: 8, maxLength: 128}
+        score: {type: integer, minimum: 0, maximum: 100}
+        stars: {type: integer, minimum: 1, maximum: 3}
+    DailyCompletionInput:
+      type: object
+      required: [idempotency_key, score]
+      properties:
+        idempotency_key: {type: string, minLength: 8, maxLength: 128}
+        score: {type: integer, minimum: 0}
+    IdempotencyInput:
+      type: object
+      properties:
+        idempotency_key: {type: string, minLength: 8, maxLength: 128}
+    PreferencesInput:
+      type: object
+      properties:
+        music_enabled: {type: boolean}
+        sfx_enabled: {type: boolean}
+        music_track: {type: integer, minimum: 0, maximum: 2}
+        music_volume: {type: number, minimum: 0, maximum: 1}
+        sfx_volume: {type: number, minimum: 0, maximum: 1}

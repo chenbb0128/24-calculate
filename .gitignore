@@ -1,0 +1,43 @@
+# Local Codex and tool state
+.codex-*.txt
+.codex-*.json
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+*.secret
+**/project.private.config.json
+
+# Go build output and local runtime files
+**/bin/
+**/tmp/
+**/*.exe
+**/*.test
+**/*.log
+**/*.db
+**/*.db-*
+**/*.ldb
+
+# JavaScript dependencies and build output
+**/node_modules/
+**/dist/
+**/build/
+**/.cache/
+**/.godot/
+**/exports/
+
+# Local WeChat developer-tools profile
+tools/wechat_devtools_clean_userdata/
+tools/wechat_devtools_localappdata/
+tools/wechat_devtools_cache_backup_*/
+
+# Local SDK/installers and extracted application data
+tools/Godot4.7.1Portable/
+tools/app_asar_strings.txt
+
+# IDE and operating-system files
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

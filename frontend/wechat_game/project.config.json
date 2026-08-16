@@ -1,0 +1,49 @@
+{
+  "description": "三火算术练习微信小游戏",
+  "packOptions": {
+    "ignore": [
+      {
+        "value": "node_modules",
+        "type": "folder"
+      }
+    ],
+    "include": []
+  },
+  "compileType": "game",
+  "isGameTourist": false,
+  "projectArchitecture": "miniProgram",
+  "simulatorType": "wechat",
+  "libVersion": "3.17.1",
+  "appid": "wx1e7ac815548c561c",
+  "projectname": "sanhuo-arithmetic-practice",
+  "miniprogramRoot": "./",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": false,
+    "newFeature": true,
+    "coverView": true,
+    "showShadowRootInWxmlPanel": true,
+    "useCompilerPlugins": false,
+    "compileWorklet": false,
+    "uglifyFileName": false,
+    "uploadWithSourceMap": true,
+    "packNpmManually": false,
+    "packNpmRelationList": [],
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "condition": false,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
+  },
+  "condition": {},
+  "simulatorPluginLibVersion": {},
+  "editorSetting": {}
+}

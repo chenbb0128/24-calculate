@@ -1,0 +1,59 @@
+app:
+  name: go-service
+  env: development
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  read_header_timeout: 5s
+  read_timeout: 15s
+  write_timeout: 15s
+  idle_timeout: 60s
+  shutdown_timeout: 10s
+  max_header_bytes: 1048576
+  max_request_body_bytes: 2097152
+  trusted_proxies: []
+  cors_allowed_origins:
+    - http://localhost:3000
+
+database:
+  host: 127.0.0.1
+  port: 3306
+  user: root
+  name: go_service
+  max_open_conns: 25
+  max_idle_conns: 10
+  conn_max_lifetime: 30m
+  conn_max_idle_time: 5m
+  connect_timeout: 5s
+  # password must come from GO_SERVICE_DATABASE_PASSWORD.
+
+redis:
+  addr: 127.0.0.1:6379
+  db: 0
+  dial_timeout: 5s
+  read_timeout: 3s
+  write_timeout: 3s
+  # password must come from GO_SERVICE_REDIS_PASSWORD.
+
+jwt:
+  algorithm: HS256
+  issuer: go-service
+  access_ttl: 15m
+  refresh_ttl: 168h
+  # secret must come from GO_SERVICE_JWT_SECRET and be at least 32 bytes.
+
+queue:
+  name: default
+  concurrency: 10
+  task_timeout: 30s
+  max_retry: 5
+
+game:
+  # Keep the daily seed secret outside the repository in production.
+  daily_seed_secret: ""
+  matchmaking_wait_seconds: 12
+
+log:
+  level: info
+  format: json

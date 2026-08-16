@@ -1,0 +1,82 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-go_service}
+      MYSQL_USER: ${MYSQL_USER:-go_service}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-local-password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-local-root-password}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [backend]
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    command: ["/app/api"]
+    environment:
+      GO_SERVICE_APP_ENV: ${GO_SERVICE_APP_ENV:-development}
+      GO_SERVICE_SERVER_HOST: 0.0.0.0
+      GO_SERVICE_SERVER_PORT: 8080
+      GO_SERVICE_DATABASE_HOST: mysql
+      GO_SERVICE_DATABASE_PORT: 3306
+      GO_SERVICE_DATABASE_USER: ${MYSQL_USER:-go_service}
+      GO_SERVICE_DATABASE_PASSWORD: ${MYSQL_PASSWORD:-local-password}
+      GO_SERVICE_DATABASE_NAME: ${MYSQL_DATABASE:-go_service}
+      GO_SERVICE_REDIS_ADDR: redis:6379
+      GO_SERVICE_JWT_SECRET: ${GO_SERVICE_JWT_SECRET:-local-development-secret-change-me-32}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8080}:8080"
+    networks: [backend]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    command: ["/app/worker"]
+    environment:
+      GO_SERVICE_APP_ENV: ${GO_SERVICE_APP_ENV:-development}
+      GO_SERVICE_DATABASE_HOST: mysql
+      GO_SERVICE_DATABASE_PORT: 3306
+      GO_SERVICE_DATABASE_USER: ${MYSQL_USER:-go_service}
+      GO_SERVICE_DATABASE_PASSWORD: ${MYSQL_PASSWORD:-local-password}
+      GO_SERVICE_DATABASE_NAME: ${MYSQL_DATABASE:-go_service}
+      GO_SERVICE_REDIS_ADDR: redis:6379
+      GO_SERVICE_JWT_SECRET: ${GO_SERVICE_JWT_SECRET:-local-development-secret-change-me-32}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [backend]
+
+volumes:
+  mysql_data:
+  redis_data:
+
+networks:
+  backend:
+    driver: bridge
