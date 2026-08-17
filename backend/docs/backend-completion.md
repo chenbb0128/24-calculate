@@ -1,6 +1,6 @@
 # 后端完善报告
 
-更新时间：2026-08-16
+更新时间：2026-08-18
 
 ## 已完成
 
@@ -19,6 +19,9 @@
 10. 排行榜支持 campaign、daily、endless、friend、overall，支持 global/friends、all/weekly/monthly、分页和 `anomaly` 标记；空榜返回正常成功响应。
 11. JWT access/refresh、refresh 一次性消费、微信登录限流、请求 ID、统一错误响应、`/health` 和 `/ready` 已保留并完善。
 12. OpenAPI 文档已经覆盖实际路由，并通过自动 YAML 解析测试。
+13. 排位系统使用 `player_rank_profiles` 按 `user_id + season_id` 保存服务器段位；排位结算使用 `ranked_match_results` 审计表和数据库事务，重复请求返回第一次结算结果。
+14. 排位快速匹配按模式、规则版本、地区、赛季、大段位和小分区隔离；公开好友房和 AI 房强制休闲，只有服务端创建的快速匹配真人房可进入排位结算。
+15. `GET /api/v1/player/rank` 和 `leaderboards/ranked` 已接入；排位排行榜始终使用服务端当前赛季，`period=season` 可用。
 
 ## 数据与兼容性
 
@@ -46,3 +49,13 @@ D:\bin\go.exe build ./...
 - 广告奖励尚未接入第三方广告服务端回调；后端不会凭客户端字段发放广告奖励。
 - 排行榜尚未接入跨实例 Redis 快照缓存，集群部署前需要补充。
 - 人机推进当前由匹配状态读取触发；需要无轮询后台推进时，可将其迁移为 Asynq 定时任务。
+
+## 排位系统上线前迁移
+
+新增 Goose 迁移：
+
+- `00007_create_player_rank_profiles.sql`
+- `00008_create_ranked_match_results.sql`
+- `00009_extend_ranked_match_results.sql`
+
+执行全部未执行迁移后，服务端会按当前上海时区季度创建赛季记录。客户端提交的 rating、tier、division、stars、winner 和 delta 不参与真实结算。

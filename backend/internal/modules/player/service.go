@@ -45,8 +45,10 @@ type Service struct {
 	dailyRuns       DailyRunStore
 	matchmaking     MatchmakingStore
 	locks           DistributedLockStore
+	rankStore       RankStore
 	dailySeedSecret string
 	matchmakingWait time.Duration
+	rankSeason      string
 }
 
 const defaultMatchmakingWait = 15 * time.Second
@@ -95,6 +97,36 @@ func (s *Service) SetMatchmakingWait(wait time.Duration) {
 	if s != nil && wait > 0 {
 		s.matchmakingWait = wait
 	}
+}
+
+func (s *Service) SetRankStore(rankStore RankStore) {
+	if s != nil {
+		s.rankStore = rankStore
+	}
+}
+
+func (s *Service) SetRankSeasonID(seasonID string) error {
+	if s == nil {
+		return fmt.Errorf("player service is nil")
+	}
+	seasonID = strings.TrimSpace(seasonID)
+	if seasonID == "" {
+		s.rankSeason = ""
+		return nil
+	}
+	normalized, err := normalizeRankSeasonID(seasonID)
+	if err != nil {
+		return err
+	}
+	s.rankSeason = normalized
+	return nil
+}
+
+func (s *Service) currentRankSeasonID() string {
+	if s != nil && strings.TrimSpace(s.rankSeason) != "" {
+		return s.rankSeason
+	}
+	return rankSeasonID(time.Now())
 }
 
 func (s *Service) Bootstrap(ctx context.Context, userID uint64) (BootstrapResponse, error) {
@@ -155,6 +187,16 @@ func (s *Service) Bootstrap(ctx context.Context, userID uint64) (BootstrapRespon
 	progress := strings.TrimSpace(string(progressRaw))
 	if !json.Valid([]byte(progress)) || progress == "" {
 		progress = DefaultProgressJSON
+	}
+	if s.rankStore != nil {
+		rank, rankErr := s.rankStore.GetOrCreateRankProfile(ctx, userID, s.currentRankSeasonID())
+		if rankErr != nil {
+			return BootstrapResponse{}, rankErr
+		}
+		progress, rankErr = progressWithRank(progress, rankView(rank))
+		if rankErr != nil {
+			return BootstrapResponse{}, rankErr
+		}
 	}
 	return BootstrapResponse{
 		User:        profile,

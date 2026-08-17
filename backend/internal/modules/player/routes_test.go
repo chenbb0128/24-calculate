@@ -28,6 +28,9 @@ func TestRegisterRoutesNeverExposeLegacyClientCompletions(t *testing.T) {
 	if !hasRoute(router, "POST", "/api/v1/player/daily/runs/:run_id/submit") {
 		t.Fatal("server-validated daily submit route was not registered")
 	}
+	if !hasRoute(router, "GET", "/api/v1/player/rank") {
+		t.Fatal("server-authoritative rank route was not registered")
+	}
 }
 
 func hasRoute(router *gin.Engine, method, path string) bool {

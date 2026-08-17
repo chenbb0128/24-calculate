@@ -4,7 +4,13 @@ function findGameCardAtPoint(app, x, y) {
   if (app.screen !== 'game' || !Array.isArray(app.cards) || !app.cards.length) return -1;
   const layout = app.gameLayout();
   const startX = (app.width - layout.cardWidth * 2 - layout.gapX) / 2;
-  const padding = 12;
+  // Touch padding must never make two neighboring cards overlap. The old
+  // fixed 12px padding was larger than half of the 16px card gap, so a tap
+  // near the left edge of the right/bottom card could be claimed by the
+  // previous card (most visible on real phones after scaling).
+  const gapX = Math.max(0, Number(layout.gapX) || 0);
+  const gapY = Math.max(0, Number(layout.gapY) || 0);
+  const padding = Math.max(0, Math.min(6, Math.floor(Math.min(gapX, gapY) / 2) - 1));
   for (let index = 0; index < app.cards.length; index += 1) {
     const rect = app.cardRect(index, startX, layout.cardStartY, layout.cardWidth, layout.cardHeight, layout.gapX, layout.gapY);
     if (x >= rect.x - padding && x <= rect.x + rect.width + padding

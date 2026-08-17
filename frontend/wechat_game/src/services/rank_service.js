@@ -59,6 +59,26 @@ function deriveVisibleRank(rating) {
   return { tier: tier.id, division, stars };
 }
 
+function rankPosition(value) {
+  const rank = value && typeof value === 'object' ? value : {};
+  const tierIndex = Math.max(0, TIERS.findIndex((tier) => tier.id === String(rank.tier || '').toLowerCase()));
+  const division = safeInt(rank.division, DIVISION_COUNT, 1, DIVISION_COUNT);
+  const stars = safeInt(rank.stars, 0, 0, STARS_PER_DIVISION - 1);
+  return tierIndex * DIVISION_COUNT * STARS_PER_DIVISION
+    + (DIVISION_COUNT - division) * STARS_PER_DIVISION + stars;
+}
+
+function rankFromPosition(position) {
+  const maxPosition = TIERS.length * DIVISION_COUNT * STARS_PER_DIVISION - 1;
+  const safePosition = safeInt(position, 0, 0, maxPosition);
+  const tierSize = DIVISION_COUNT * STARS_PER_DIVISION;
+  const tierIndex = Math.min(TIERS.length - 1, Math.floor(safePosition / tierSize));
+  const withinTier = safePosition % tierSize;
+  const division = DIVISION_COUNT - Math.floor(withinTier / STARS_PER_DIVISION);
+  const stars = withinTier % STARS_PER_DIVISION;
+  return { tier: TIERS[tierIndex].id, division, stars };
+}
+
 function defaults(dateValue = new Date()) {
   return {
     season_id: seasonId(dateValue),
@@ -203,6 +223,48 @@ function applyServerResult(current, payload, outcome = '') {
   };
 }
 
+// Offline/dev fallback only. Production matches must use the server result;
+// this keeps the local hidden-opponent experience playable without pretending
+// that the client is authoritative for a real online match.
+function applyLocalResult(current, outcome = '', options = {}) {
+  const normalizedOutcome = String(outcome || '').toLowerCase();
+  if (!['win', 'lose', 'draw'].includes(normalizedOutcome)) return null;
+  const before = normalize(current);
+  const starDelta = normalizedOutcome === 'win' ? 1 : normalizedOutcome === 'lose' ? -1 : 0;
+  const ratingDelta = normalizedOutcome === 'win' ? 32 : normalizedOutcome === 'lose' ? -22 : 0;
+  const afterVisible = rankFromPosition(rankPosition(before) + starDelta);
+  const beforeBestIndex = TIERS.findIndex((tier) => tier.id === before.best_tier);
+  const afterTierIndex = TIERS.findIndex((tier) => tier.id === afterVisible.tier);
+  const next = normalize(Object.assign({}, before, {
+    rating: safeInt(before.rating + ratingDelta, DEFAULT_RATING, 0, 9999),
+    tier: afterVisible.tier,
+    division: afterVisible.division,
+    stars: afterVisible.stars,
+    placement_matches: Math.min(5, before.placement_matches + 1),
+    ranked_matches: before.ranked_matches + 1,
+    wins: before.wins + (normalizedOutcome === 'win' ? 1 : 0),
+    losses: before.losses + (normalizedOutcome === 'lose' ? 1 : 0),
+    draws: before.draws + (normalizedOutcome === 'draw' ? 1 : 0),
+    best_tier: afterTierIndex > beforeBestIndex ? afterVisible.tier : before.best_tier,
+    last_delta: starDelta,
+    last_outcome: normalizedOutcome,
+    last_match_id: options.match_id || before.last_match_id,
+    updated_at: Date.now(),
+  }));
+  return {
+    profile: next,
+    change: {
+      eligible: true,
+      delta: starDelta,
+      outcome: normalizedOutcome,
+      before: summary(before),
+      after: summary(next),
+      placement: next.placement_matches < 5,
+      local: true,
+    },
+  };
+}
+
 function ineligibleChange(reason = '本局不计入段位') {
   return { eligible: false, delta: 0, reason: String(reason), before: null, after: null, placement: false };
 }
@@ -231,6 +293,7 @@ module.exports = {
   extractRankPayload,
   extractRankSnapshot,
   applyServerResult,
+  applyLocalResult,
   ineligibleChange,
   changeLabel,
 };

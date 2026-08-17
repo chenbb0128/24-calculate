@@ -72,6 +72,7 @@ type FriendMatchSubmissionResponse struct {
 	IdempotencyReplayed bool               `json:"idempotency_replayed"`
 	Outcome             string             `json:"outcome,omitempty"`
 	Pending             bool               `json:"pending,omitempty"`
+	RankResult          *RankResult        `json:"rank_result,omitempty"`
 	RewardCoins         int                `json:"reward_coins,omitempty"`
 	Coins               int                `json:"coins,omitempty"`
 	Progress            json.RawMessage    `json:"progress,omitempty"`
@@ -111,6 +112,7 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 	// never written to the leaderboard.
 	validatedOutcome := ""
 	matchResult := (*FriendMatchResult)(nil)
+	rankSettlement := (*RankSettlementResult)(nil)
 	idempotencyReplayed := false
 	currentRecord := FriendMatchSubmissionRecord{
 		UserID: userID, Solved: calculated.Solved, Score: calculated.Score,
@@ -160,6 +162,13 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 					OpponentMistakes: opponent.Mistakes, OpponentElapsedMS: opponent.ElapsedMS, OpponentElapsed: float64(opponent.ElapsedMS) / 1000,
 				}
 				validatedOutcome = outcome
+				rankSettlement, err = s.settleRankedFriendMatch(ctx, userID, room, submissions)
+				if err != nil {
+					return FriendMatchSubmissionResponse{}, err
+				}
+				if rankSettlement != nil {
+					matchResult.RankResult = &rankSettlement.Result
+				}
 			}
 		} else {
 			validatedOutcome = ""
@@ -201,6 +210,9 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 		IdempotencyReplayed: leaderboard.IdempotencyReplayed || idempotencyReplayed,
 		Outcome:             validatedOutcome, Pending: validatedOutcome == "", MatchResult: matchResult,
 	}
+	if rankSettlement != nil {
+		response.RankResult = &rankSettlement.Result
+	}
 	if matchResult != nil {
 		var reward int
 		progress, mutateErr := s.store.MutatePlayerProgress(ctx, userID, func(state map[string]any) error {
@@ -210,6 +222,14 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 		})
 		if mutateErr != nil {
 			return FriendMatchSubmissionResponse{}, mutateErr
+		}
+		if rankSettlement != nil {
+			var progressWithRankValue string
+			progressWithRankValue, mutateErr = progressWithRank(string(progress), rankView(rankSettlement.Profile))
+			if mutateErr != nil {
+				return FriendMatchSubmissionResponse{}, mutateErr
+			}
+			progress = json.RawMessage(progressWithRankValue)
 		}
 		response.RewardCoins = reward
 		response.Coins = progressCoins(string(progress))

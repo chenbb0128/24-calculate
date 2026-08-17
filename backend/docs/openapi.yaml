@@ -83,6 +83,15 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/Success'}
         '401': {$ref: '#/components/responses/Error'}
+  /api/v1/player/rank:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Read the current server-authoritative ranked profile
+      description: The season and all rank fields are selected by the server; client-local rank data is not trusted.
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '401': {$ref: '#/components/responses/Error'}
   /api/v1/player/campaign/runs:
     post:
       tags: [player]
@@ -164,7 +173,8 @@ paths:
     post:
       tags: [player]
       security: [{bearerAuth: []}]
-      summary: Create a friend room
+      summary: Create a casual friend room
+      description: Manual and invite-code rooms are always casual. ranked and season_id request fields are ignored.
       requestBody:
         required: false
         content:
@@ -270,9 +280,9 @@ paths:
       security: [{bearerAuth: []}]
       summary: Read a paginated leaderboard
       parameters:
-        - {name: mode, in: path, required: true, schema: {type: string, enum: [campaign, daily, endless, friend, overall]}}
+        - {name: mode, in: path, required: true, schema: {type: string, enum: [campaign, daily, endless, friend, overall, ranked]}}
         - {name: scope, in: query, schema: {type: string, enum: [global, friends], default: global}}
-        - {name: period, in: query, schema: {type: string, enum: [all, weekly, monthly], default: all}}
+        - {name: period, in: query, schema: {type: string, enum: [season, all, weekly, monthly], default: all, description: ranked defaults to season and is always scoped to the current server season}}
         - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
         - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
       responses: {'200': {$ref: '#/components/responses/Success'}}
@@ -368,6 +378,7 @@ components:
         avatar: {type: string, maxLength: 500, description: Built-in avatar ID or HTTPS image URL}
     FriendRoomCreateInput:
       type: object
+      description: Ranked rooms cannot be created through this public endpoint; only server-created matchmaking rooms can be ranked.
       properties:
         question_count: {type: integer, minimum: 1, maximum: 16, default: 8}
         time_limit_seconds: {type: integer, minimum: 30, maximum: 600, default: 120}
@@ -410,6 +421,50 @@ components:
     FriendSubmission:
       allOf:
         - {$ref: '#/components/schemas/RunSubmission'}
+      description: The response may include a server-generated RankResult when the room is an eligible ranked matchmaking room.
+    RankView:
+      type: object
+      required: [season_id, rating, tier, division, stars, placement_matches, ranked_matches, wins, losses, draws, best_tier]
+      properties:
+        season_id: {type: string, example: 2026-S3}
+        rating: {type: integer, minimum: 0, maximum: 9999}
+        tier: {type: string, enum: [bronze, silver, gold, platinum, diamond, master, king]}
+        division: {type: integer, minimum: 1, maximum: 3}
+        stars: {type: integer, minimum: 0, maximum: 4}
+        placement_matches: {type: integer, minimum: 0, maximum: 5}
+        ranked_matches: {type: integer, minimum: 0}
+        wins: {type: integer, minimum: 0}
+        losses: {type: integer, minimum: 0}
+        draws: {type: integer, minimum: 0}
+        best_tier: {type: string}
+        updated_at: {type: string, format: date-time}
+    RankResult:
+      type: object
+      required: [eligible]
+      properties:
+        eligible: {type: boolean}
+        reason: {type: string, enum: [casual_match, bot_match]}
+        season_id: {type: string}
+        match_id: {type: string}
+        outcome: {type: string, enum: [win, lose, draw]}
+        rating: {type: integer, minimum: 0, maximum: 9999}
+        rating_before: {type: integer, minimum: 0, maximum: 9999}
+        rating_delta: {type: integer}
+        rating_after: {type: integer, minimum: 0, maximum: 9999}
+        tier: {type: string}
+        tier_before: {type: string}
+        tier_after: {type: string}
+        division: {type: integer, minimum: 1, maximum: 3}
+        division_before: {type: integer, minimum: 1, maximum: 3}
+        division_after: {type: integer, minimum: 1, maximum: 3}
+        stars: {type: integer, minimum: 0, maximum: 4}
+        stars_before: {type: integer, minimum: 0, maximum: 4}
+        stars_after: {type: integer, minimum: 0, maximum: 4}
+        placement_matches: {type: integer, minimum: 0, maximum: 5}
+        ranked_matches: {type: integer, minimum: 0}
+        wins: {type: integer, minimum: 0}
+        losses: {type: integer, minimum: 0}
+        draws: {type: integer, minimum: 0}
     MatchmakingJoinInput:
       type: object
       required: [mode, rules_version, client_ticket]
@@ -418,6 +473,11 @@ components:
         rules_version: {type: integer, example: 1}
         client_ticket: {type: string, minLength: 8, maxLength: 128}
         region: {type: string, maxLength: 32}
+        ranked: {type: boolean, default: false, description: Selects the ranked queue; rank snapshot fields below are compatibility-only.}
+        season_id: {type: string, description: Ignored by the server; current season is selected from configuration/time.}
+        rank_tier: {type: string, description: Compatibility-only client snapshot.}
+        rank_division: {type: integer, minimum: 1, maximum: 3, description: Compatibility-only client snapshot.}
+        rank_stars: {type: integer, minimum: 0, maximum: 4, description: Compatibility-only client snapshot.}
     MatchmakingCancelInput:
       type: object
       required: [ticket_id]

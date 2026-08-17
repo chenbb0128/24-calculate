@@ -162,6 +162,59 @@ func TestMatchmakingMatchesTwoPlayersIntoServerRoom(t *testing.T) {
 	}
 }
 
+func TestPublicFriendRoomCannotEnableRankedMode(t *testing.T) {
+	rooms := &matchmakingRoomStoreFake{}
+	service := NewServiceWithRoomsAndEndless(matchmakingProfileReader{}, &leaderboardStore{}, rooms, &matchmakingStoreFake{})
+
+	room, err := service.CreateFriendRoomWithRules(context.Background(), 3, FriendRoomCreateInput{
+		Ranked:      true,
+		SeasonID:    "not-a-real-season",
+		MatchSource: "matchmaking",
+	})
+	if err != nil {
+		t.Fatalf("CreateFriendRoomWithRules() error = %v", err)
+	}
+	if room.Ranked || room.RankedEligible || room.SeasonID != "" || room.MatchSource != "manual" {
+		t.Fatalf("public room = %#v, want server-forced casual manual room", room)
+	}
+}
+
+func TestRankedMatchmakingUsesServerRankSnapshot(t *testing.T) {
+	matchmaking := &matchmakingStoreFake{}
+	rooms := &matchmakingRoomStoreFake{}
+	rankStore := &rankStoreFake{profile: RankProfile{
+		UserID: 3, Rating: 1500, Tier: RankTierPlatinum, Division: 2, Stars: 4,
+	}}
+	service := NewServiceWithRoomsAndEndless(matchmakingProfileReader{}, &leaderboardStore{}, rooms, matchmaking)
+	service.SetRankStore(rankStore)
+
+	result, err := service.JoinMatchmaking(context.Background(), 3, JoinMatchmakingInput{
+		Mode: matchmakingModeFriend, RulesVersion: matchmakingRulesV1, ClientTicket: "client-ranked-1",
+		Ranked: true, SeasonID: "1999-S1", RankTier: RankTierKing, RankDivision: 1, RankStars: 4,
+	})
+	if err != nil {
+		t.Fatalf("JoinMatchmaking() error = %v", err)
+	}
+	if !result.Ranked || result.SeasonID == "1999-S1" || result.RankSnapshot == nil ||
+		result.RankSnapshot.Rating != 1500 || result.RankSnapshot.Tier != RankTierPlatinum ||
+		result.RankSnapshot.Division != 2 || result.RankSnapshot.Stars != 4 {
+		t.Fatalf("ranked matchmaking result = %#v, want server rank snapshot", result)
+	}
+}
+
+func TestMatchmakingQueueDiscriminatorSeparatesRankedDimensions(t *testing.T) {
+	casual := MatchmakingTicket{Mode: matchmakingModeFriend, RulesVersion: matchmakingRulesV1, Region: "local"}
+	rankedBronze := MatchmakingTicket{Mode: matchmakingModeFriend, RulesVersion: matchmakingRulesV1, Region: "local", Ranked: true, SeasonID: "2026-S3", RankTier: RankTierBronze, RankDivision: 3}
+	rankedSilver := rankedBronze
+	rankedSilver.RankTier = RankTierSilver
+	if matchmakingQueueDiscriminator(casual) == matchmakingQueueDiscriminator(rankedBronze) {
+		t.Fatal("casual and ranked queues must be isolated")
+	}
+	if matchmakingQueueDiscriminator(rankedBronze) == matchmakingQueueDiscriminator(rankedSilver) {
+		t.Fatal("different ranked divisions must be isolated")
+	}
+}
+
 func TestMatchmakingTicketIsOwnedAndCanBeCancelled(t *testing.T) {
 	matchmaking := &matchmakingStoreFake{}
 	rooms := &matchmakingRoomStoreFake{}

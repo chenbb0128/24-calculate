@@ -79,21 +79,25 @@ type FriendMatchSubmissionRecord struct {
 }
 
 type FriendRoom struct {
-	Version      int                    `json:"version"`
-	RoomID       string                 `json:"room_id"`
-	RoomCode     string                 `json:"room_code"`
-	MatchID      string                 `json:"match_id,omitempty"`
-	RoomSeed     int64                  `json:"room_seed"`
-	OwnerID      uint64                 `json:"owner_id"`
-	Status       string                 `json:"status"`
-	StartAt      int64                  `json:"start_at,omitempty"`
-	Rules        FriendRoomRules        `json:"rules"`
-	QuestionHash string                 `json:"question_hash"`
-	PuzzleIDs    []string               `json:"puzzle_ids"`
-	Puzzles      []FriendPuzzleContract `json:"puzzles"`
-	Players      []FriendRoomPlayer     `json:"players"`
-	CreatedAt    time.Time              `json:"created_at"`
-	ExpiresAt    time.Time              `json:"expires_at"`
+	Version        int                    `json:"version"`
+	RoomID         string                 `json:"room_id"`
+	RoomCode       string                 `json:"room_code"`
+	MatchID        string                 `json:"match_id,omitempty"`
+	Ranked         bool                   `json:"ranked"`
+	SeasonID       string                 `json:"season_id,omitempty"`
+	RankedEligible bool                   `json:"ranked_eligible"`
+	MatchSource    string                 `json:"match_source,omitempty"`
+	RoomSeed       int64                  `json:"room_seed"`
+	OwnerID        uint64                 `json:"owner_id"`
+	Status         string                 `json:"status"`
+	StartAt        int64                  `json:"start_at,omitempty"`
+	Rules          FriendRoomRules        `json:"rules"`
+	QuestionHash   string                 `json:"question_hash"`
+	PuzzleIDs      []string               `json:"puzzle_ids"`
+	Puzzles        []FriendPuzzleContract `json:"puzzles"`
+	Players        []FriendRoomPlayer     `json:"players"`
+	CreatedAt      time.Time              `json:"created_at"`
+	ExpiresAt      time.Time              `json:"expires_at"`
 }
 
 type FriendRoomRules struct {
@@ -106,8 +110,11 @@ type FriendRoomRules struct {
 }
 
 type FriendRoomCreateInput struct {
-	QuestionCount    int `json:"question_count"`
-	TimeLimitSeconds int `json:"time_limit_seconds"`
+	QuestionCount    int    `json:"question_count"`
+	TimeLimitSeconds int    `json:"time_limit_seconds"`
+	Ranked           bool   `json:"ranked"`
+	SeasonID         string `json:"season_id"`
+	MatchSource      string `json:"match_source"`
 }
 
 type FriendRoomPlayer struct {
@@ -155,17 +162,20 @@ type FriendRoomReadyResponse struct {
 }
 
 type FriendMatchStartResponse struct {
-	MatchID       string                 `json:"match_id"`
-	RoomID        string                 `json:"room_id"`
-	RoomCode      string                 `json:"room_code"`
-	RoomSeed      int64                  `json:"room_seed"`
-	QuestionHash  string                 `json:"question_hash"`
-	PuzzleIDs     []string               `json:"puzzle_ids"`
-	Puzzles       []FriendPuzzleContract `json:"puzzles,omitempty"`
-	QuestionCount int                    `json:"question_count"`
-	TimeLimit     int                    `json:"time_limit"`
-	StartAt       int64                  `json:"start_at"`
-	Status        string                 `json:"status"`
+	MatchID        string                 `json:"match_id"`
+	RoomID         string                 `json:"room_id"`
+	RoomCode       string                 `json:"room_code"`
+	Ranked         bool                   `json:"ranked"`
+	SeasonID       string                 `json:"season_id,omitempty"`
+	RankedEligible bool                   `json:"ranked_eligible"`
+	RoomSeed       int64                  `json:"room_seed"`
+	QuestionHash   string                 `json:"question_hash"`
+	PuzzleIDs      []string               `json:"puzzle_ids"`
+	Puzzles        []FriendPuzzleContract `json:"puzzles,omitempty"`
+	QuestionCount  int                    `json:"question_count"`
+	TimeLimit      int                    `json:"time_limit"`
+	StartAt        int64                  `json:"start_at"`
+	Status         string                 `json:"status"`
 }
 
 type FriendMatchPlayerState struct {
@@ -189,6 +199,7 @@ type FriendMatchProgressResponse struct {
 	Status      string                   `json:"status"`
 	Players     []FriendMatchPlayerState `json:"players"`
 	MatchResult *FriendMatchResult       `json:"match_result,omitempty"`
+	RankResult  *RankResult              `json:"rank_result,omitempty"`
 	RewardCoins int                      `json:"reward_coins,omitempty"`
 	Coins       int                      `json:"coins,omitempty"`
 	Progress    json.RawMessage          `json:"progress,omitempty"`
@@ -222,6 +233,24 @@ func (s *Service) CreateFriendRoom(ctx context.Context, userID uint64) (FriendRo
 }
 
 func (s *Service) CreateFriendRoomWithRules(ctx context.Context, userID uint64, input FriendRoomCreateInput) (FriendRoom, error) {
+	// Public room creation is always casual. Ranked rooms are created only by
+	// the server's matchmaking path below; client-supplied ranked and season
+	// fields are intentionally ignored here.
+	return s.createFriendRoomWithRules(ctx, userID, input, false, "manual")
+}
+
+func (s *Service) createMatchmakingFriendRoom(ctx context.Context, userID uint64, ranked bool, seasonID string) (FriendRoom, error) {
+	return s.createFriendRoomWithRules(ctx, userID, FriendRoomCreateInput{
+		Ranked:   ranked,
+		SeasonID: seasonID,
+	}, true, "matchmaking")
+}
+
+func (s *Service) createBotFriendRoom(ctx context.Context, userID uint64) (FriendRoom, error) {
+	return s.createFriendRoomWithRules(ctx, userID, FriendRoomCreateInput{}, false, "bot")
+}
+
+func (s *Service) createFriendRoomWithRules(ctx context.Context, userID uint64, input FriendRoomCreateInput, allowRanked bool, trustedSource string) (FriendRoom, error) {
 	if s.rooms == nil {
 		return FriendRoom{}, apperror.ServiceUnavailable("好友房间服务暂不可用", nil)
 	}
@@ -246,6 +275,23 @@ func (s *Service) CreateFriendRoomWithRules(ctx context.Context, userID uint64, 
 	if timeLimitSeconds < 30 || timeLimitSeconds > 600 {
 		return FriendRoom{}, apperror.BadRequest("time_limit_seconds must be between 30 and 600", nil)
 	}
+	ranked := allowRanked && input.Ranked
+	seasonID := ""
+	if ranked {
+		currentSeason := s.currentRankSeasonID()
+		if strings.TrimSpace(input.SeasonID) != "" {
+			requestedSeason, seasonErr := normalizeRankSeasonID(input.SeasonID)
+			if seasonErr != nil || requestedSeason != currentSeason {
+				return FriendRoom{}, apperror.New(10001, 409, "排位赛季已切换，请重新匹配", seasonErr)
+			}
+		}
+		// The current season is selected by the server, never by the client.
+		seasonID = currentSeason
+	}
+	matchSource := strings.TrimSpace(trustedSource)
+	if matchSource == "" {
+		matchSource = "manual"
+	}
 
 	now := time.Now().UTC()
 	for attempt := 0; attempt < 5; attempt++ {
@@ -254,12 +300,16 @@ func (s *Service) CreateFriendRoomWithRules(ctx context.Context, userID uint64, 
 			return FriendRoom{}, err
 		}
 		room := FriendRoom{
-			Version:  1,
-			RoomID:   "friend-" + code,
-			RoomCode: code,
-			RoomSeed: seed,
-			OwnerID:  userID,
-			Status:   FriendRoomWaiting,
+			Version:        1,
+			RoomID:         "friend-" + code,
+			RoomCode:       code,
+			Ranked:         ranked,
+			SeasonID:       seasonID,
+			RankedEligible: ranked && matchSource == "matchmaking",
+			MatchSource:    matchSource,
+			RoomSeed:       seed,
+			OwnerID:        userID,
+			Status:         FriendRoomWaiting,
 			Rules: FriendRoomRules{
 				QuestionCount:       questionCount,
 				TimeLimitSeconds:    timeLimitSeconds,
@@ -469,6 +519,7 @@ func friendMatchStartResponse(room FriendRoom) FriendMatchStartResponse {
 	}
 	return FriendMatchStartResponse{
 		MatchID: matchID, RoomID: room.RoomID, RoomCode: room.RoomCode,
+		Ranked: room.Ranked, SeasonID: room.SeasonID, RankedEligible: room.RankedEligible,
 		RoomSeed: room.RoomSeed, QuestionHash: room.QuestionHash,
 		PuzzleIDs: append([]string(nil), room.PuzzleIDs...), QuestionCount: questionCount,
 		Puzzles:   append([]FriendPuzzleContract(nil), room.Puzzles...),
@@ -712,6 +763,9 @@ func (s *Service) GetFriendMatchProgress(ctx context.Context, userID uint64, roo
 		return FriendMatchProgressResponse{}, err
 	}
 	result.MatchResult = matchResult
+	if matchResult != nil {
+		result.RankResult = matchResult.RankResult
+	}
 	result.RewardCoins = reward
 	if len(progress) > 0 {
 		result.Progress = progress
@@ -752,6 +806,13 @@ func (s *Service) resolveFriendMatchForUser(ctx context.Context, userID uint64, 
 		OpponentSolved: opponent.Solved, OpponentScore: opponent.Score, OpponentMistakes: opponent.Mistakes,
 		OpponentElapsedMS: opponent.ElapsedMS, OpponentElapsed: float64(opponent.ElapsedMS) / 1000,
 	}
+	rankSettlement, err := s.settleRankedFriendMatch(ctx, userID, room, submissions)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if rankSettlement != nil {
+		matchResult.RankResult = &rankSettlement.Result
+	}
 	reward := 0
 	progress, err := s.store.MutatePlayerProgress(ctx, userID, func(state map[string]any) error {
 		var applyErr error
@@ -760,6 +821,14 @@ func (s *Service) resolveFriendMatchForUser(ctx context.Context, userID uint64, 
 	})
 	if err != nil {
 		return nil, 0, nil, err
+	}
+	if rankSettlement != nil {
+		var progressWithRankValue string
+		progressWithRankValue, err = progressWithRank(string(progress), rankView(rankSettlement.Profile))
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		progress = json.RawMessage(progressWithRankValue)
 	}
 	return matchResult, reward, progress, nil
 }

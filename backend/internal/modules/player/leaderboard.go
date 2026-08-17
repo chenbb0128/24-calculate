@@ -18,6 +18,7 @@ const (
 	LeaderboardFriend   = "friend"
 	LeaderboardGlobal   = "global"
 	LeaderboardFriends  = "friends"
+	LeaderboardRanked   = "ranked"
 )
 
 func (s *Service) Leaderboard(ctx context.Context, userID uint64, mode string) (LeaderboardResponse, error) {

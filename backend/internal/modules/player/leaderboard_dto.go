@@ -14,6 +14,7 @@ type LeaderboardResponse struct {
 	Mode     string             `json:"mode"`
 	Scope    string             `json:"scope"`
 	DateKey  string             `json:"date_key,omitempty"`
+	SeasonID string             `json:"season_id,omitempty"`
 	MyUserID uint64             `json:"my_user_id"`
 	Entries  []LeaderboardEntry `json:"entries"`
 	MyRank   int                `json:"my_rank"`
@@ -27,6 +28,7 @@ type LeaderboardResponse struct {
 type LeaderboardQuery struct {
 	Scope    string
 	Period   string
+	SeasonID string
 	Page     int
 	PageSize int
 }

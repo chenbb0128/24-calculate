@@ -43,6 +43,11 @@ type JoinMatchmakingInput struct {
 	RulesVersion int    `json:"rules_version"`
 	ClientTicket string `json:"client_ticket"`
 	Region       string `json:"region"`
+	Ranked       bool   `json:"ranked"`
+	SeasonID     string `json:"season_id"`
+	RankTier     string `json:"rank_tier"`
+	RankDivision int    `json:"rank_division"`
+	RankStars    int    `json:"rank_stars"`
 }
 
 type MatchmakingTicket struct {
@@ -52,6 +57,12 @@ type MatchmakingTicket struct {
 	Mode            string            `json:"mode"`
 	RulesVersion    int               `json:"rules_version"`
 	Region          string            `json:"region"`
+	Ranked          bool              `json:"ranked"`
+	SeasonID        string            `json:"season_id,omitempty"`
+	RankRating      int               `json:"rank_rating,omitempty"`
+	RankTier        string            `json:"rank_tier,omitempty"`
+	RankDivision    int               `json:"rank_division,omitempty"`
+	RankStars       int               `json:"rank_stars,omitempty"`
 	Player          FriendRoomPlayer  `json:"player"`
 	Status          string            `json:"status"`
 	MatchID         string            `json:"match_id,omitempty"`
@@ -75,6 +86,9 @@ type MatchmakingResponse struct {
 	CreatedAt      time.Time         `json:"created_at"`
 	ExpiresAt      time.Time         `json:"expires_at"`
 	WaitingSeconds int               `json:"waiting_seconds,omitempty"`
+	Ranked         bool              `json:"ranked"`
+	SeasonID       string            `json:"season_id,omitempty"`
+	RankSnapshot   *RankView         `json:"rank_snapshot,omitempty"`
 }
 
 func (s *Service) JoinMatchmaking(ctx context.Context, userID uint64, input JoinMatchmakingInput) (MatchmakingResponse, error) {
@@ -105,9 +119,29 @@ func (s *Service) JoinMatchmaking(ctx context.Context, userID uint64, input Join
 		return MatchmakingResponse{}, err
 	}
 	now := time.Now().UTC()
+	seasonID := ""
+	rankTier := ""
+	rankRating := 0
+	rankDivision := 0
+	rankStars := 0
+	if input.Ranked {
+		if s.rankStore == nil {
+			return MatchmakingResponse{}, apperror.ServiceUnavailable("排位匹配服务暂不可用", nil)
+		}
+		rank, rankErr := s.rankStore.GetOrCreateRankProfile(ctx, userID, s.currentRankSeasonID())
+		if rankErr != nil {
+			return MatchmakingResponse{}, rankErr
+		}
+		seasonID = rank.SeasonID
+		rankRating = rank.Rating
+		rankTier = rank.Tier
+		rankDivision = rank.Division
+		rankStars = rank.Stars
+	}
 	ticket := MatchmakingTicket{
 		TicketID: randomMatchmakingTicketID(), ClientTicket: clientTicket, UserID: userID,
 		Mode: matchmakingModeFriend, RulesVersion: matchmakingRulesV1, Region: region,
+		Ranked: input.Ranked, SeasonID: seasonID, RankRating: rankRating, RankTier: rankTier, RankDivision: rankDivision, RankStars: rankStars,
 		Player: FriendRoomPlayer{UserID: profile.ID, Nickname: profile.Nickname, Avatar: profile.Avatar, Ready: true},
 		Status: "searching", CreatedAt: now, ExpiresAt: now.Add(matchmakingTTL),
 	}
@@ -141,7 +175,7 @@ func (s *Service) JoinMatchmaking(ctx context.Context, userID uint64, input Join
 	if err != nil {
 		return MatchmakingResponse{}, err
 	}
-	room, err := s.CreateFriendRoom(ctx, userID)
+	room, err := s.createMatchmakingFriendRoom(ctx, userID, queued.Ranked, queued.SeasonID)
 	if err != nil {
 		return MatchmakingResponse{}, err
 	}
@@ -316,7 +350,7 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 	if current.Status != "searching" {
 		return current, nil
 	}
-	room, err := s.CreateFriendRoom(ctx, ticket.UserID)
+	room, err := s.createBotFriendRoom(ctx, ticket.UserID)
 	if err != nil {
 		return MatchmakingTicket{}, err
 	}
@@ -355,6 +389,7 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 		IsBot: true, BotDifficulty: difficulty,
 	}
 	current.Status, current.MatchID, current.Room, current.Opponent = "matched", room.MatchID, &room, &bot
+	current.Ranked, current.SeasonID, current.RankRating, current.RankTier, current.RankDivision, current.RankStars = false, "", 0, "", 0, 0
 	if err := s.matchmaking.SaveMatchmakingPair(ctx, current, botTicket); err != nil {
 		return MatchmakingTicket{}, err
 	}
@@ -386,11 +421,23 @@ func publicMatchmakingResponse(ticket MatchmakingTicket) MatchmakingResponse {
 		TicketID: ticket.TicketID, Mode: ticket.Mode, Status: ticket.Status,
 		MatchID: ticket.MatchID, Room: ticket.Room, Opponent: ticket.Opponent,
 		CreatedAt: ticket.CreatedAt, ExpiresAt: ticket.ExpiresAt, WaitingSeconds: waitingSeconds,
+		Ranked: ticket.Ranked, SeasonID: ticket.SeasonID,
+		RankSnapshot: func() *RankView {
+			if !ticket.Ranked || ticket.RankTier == "" {
+				return nil
+			}
+			return &RankView{SeasonID: ticket.SeasonID, Rating: ticket.RankRating, Tier: ticket.RankTier, Division: ticket.RankDivision, Stars: ticket.RankStars}
+		}(),
 	}
 }
 
 func matchmakingQueueDiscriminator(ticket MatchmakingTicket) string {
-	return fmt.Sprintf("%s:%d:%s", ticket.Mode, ticket.RulesVersion, strings.ToLower(strings.TrimSpace(ticket.Region)))
+	region := strings.ToLower(strings.TrimSpace(ticket.Region))
+	if !ticket.Ranked {
+		return fmt.Sprintf("%s:%d:%s:casual", ticket.Mode, ticket.RulesVersion, region)
+	}
+	return fmt.Sprintf("%s:%d:%s:ranked:%s:%s:%d", ticket.Mode, ticket.RulesVersion, region,
+		ticket.SeasonID, strings.ToLower(strings.TrimSpace(ticket.RankTier)), ticket.RankDivision)
 }
 
 func randomMatchmakingTicketID() string {

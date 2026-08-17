@@ -89,6 +89,7 @@ type QueueConfig struct {
 type GameConfig struct {
 	DailySeedSecret        string `mapstructure:"daily_seed_secret"`
 	MatchmakingWaitSeconds int    `mapstructure:"matchmaking_wait_seconds"`
+	RankSeasonID           string `mapstructure:"rank_season_id"`
 }
 
 type AvatarConfig struct {

@@ -15,6 +15,7 @@ func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatfo
 	routes := group.Group("/player")
 	routes.Use(middleware.RequireAuth(manager))
 	routes.GET("/bootstrap", handler.Bootstrap)
+	routes.GET("/rank", handler.Rank)
 	routes.GET("/leaderboards/:mode", handler.Leaderboard)
 	routes.POST("/endless/runs", handler.StartEndlessRun)
 	routes.GET("/endless/runs/:run_id", handler.ResumeEndlessRun)

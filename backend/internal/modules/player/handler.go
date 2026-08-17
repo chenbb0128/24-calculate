@@ -43,8 +43,22 @@ func (h *Handler) Leaderboard(c *gin.Context) {
 	page, _ := strconv.Atoi(c.Query("page"))
 	pageSize, _ := strconv.Atoi(c.Query("page_size"))
 	result, err := h.service.LeaderboardScopedPage(c.Request.Context(), userID, c.Param("mode"), LeaderboardQuery{
-		Scope: c.Query("scope"), Period: c.Query("period"), Page: page, PageSize: pageSize,
+		Scope: c.Query("scope"), Period: c.Query("period"), SeasonID: c.Query("season_id"), Page: page, PageSize: pageSize,
 	})
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+func (h *Handler) Rank(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	result, err := h.service.GetRank(c.Request.Context(), userID)
 	if err != nil {
 		response.WriteError(c, err)
 		return

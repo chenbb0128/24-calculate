@@ -54,6 +54,8 @@ game:
   # Keep the daily seed secret outside the repository in production.
   daily_seed_secret: ""
   matchmaking_wait_seconds: 15
+  # Optional. Empty means the server derives the current Shanghai-time quarter.
+  rank_season_id: ""
 
 avatar:
   # Files are written below this directory as avatars/{user_id}/{uuid}.webp.

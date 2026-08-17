@@ -163,17 +163,18 @@ func applyFriendServerResult(state map[string]any, result FriendMatchResult, dat
 }
 
 type FriendMatchResult struct {
-	Outcome           string  `json:"outcome"`
-	PlayerSolved      int     `json:"player_solved"`
-	PlayerScore       int     `json:"player_score"`
-	PlayerMistakes    int     `json:"player_mistakes"`
-	PlayerElapsedMS   int     `json:"-"`
-	PlayerElapsed     float64 `json:"player_elapsed"`
-	OpponentSolved    int     `json:"opponent_solved"`
-	OpponentScore     int     `json:"opponent_score"`
-	OpponentMistakes  int     `json:"opponent_mistakes"`
-	OpponentElapsedMS int     `json:"-"`
-	OpponentElapsed   float64 `json:"opponent_elapsed"`
+	Outcome           string      `json:"outcome"`
+	PlayerSolved      int         `json:"player_solved"`
+	PlayerScore       int         `json:"player_score"`
+	PlayerMistakes    int         `json:"player_mistakes"`
+	PlayerElapsedMS   int         `json:"-"`
+	PlayerElapsed     float64     `json:"player_elapsed"`
+	OpponentSolved    int         `json:"opponent_solved"`
+	OpponentScore     int         `json:"opponent_score"`
+	OpponentMistakes  int         `json:"opponent_mistakes"`
+	OpponentElapsedMS int         `json:"-"`
+	OpponentElapsed   float64     `json:"opponent_elapsed"`
+	RankResult        *RankResult `json:"rank_result,omitempty"`
 }
 
 func compareFriendResults(left, right FriendMatchSubmissionRecord) string {

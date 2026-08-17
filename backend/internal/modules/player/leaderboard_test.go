@@ -122,3 +122,28 @@ func TestAllLeaderboardModesAreSupported(t *testing.T) {
 		}
 	}
 }
+
+func TestRankedLeaderboardUsesCurrentServerSeasonAndSeasonPeriod(t *testing.T) {
+	rankStore := &rankStoreFake{
+		profile: RankProfile{UserID: 3, Rating: RankDefault, Tier: RankTierBronze, Division: 3, Stars: 0},
+		rows: []RankLeaderboardRow{
+			{UserID: 4, Rating: 1200, Tier: RankTierSilver, Division: 2, Stars: 2},
+			{UserID: 3, Rating: RankDefault, Tier: RankTierBronze, Division: 3, Stars: 0},
+		},
+	}
+	service := NewService(leaderboardProfileReader{profile: user.ProfileResponse{ID: 3, Nickname: "me"}}, &leaderboardStore{})
+	service.SetRankStore(rankStore)
+
+	result, err := service.LeaderboardScopedPage(context.Background(), 3, LeaderboardRanked, LeaderboardQuery{
+		Period: "season", SeasonID: "1999-S1", Page: 1, PageSize: 20,
+	})
+	if err != nil {
+		t.Fatalf("ranked leaderboard error = %v", err)
+	}
+	if result.Period != "season" || result.SeasonID == "1999-S1" || result.MyRank != 2 || result.MyScore != RankDefault {
+		t.Fatalf("ranked leaderboard result = %#v, want current season and rating score", result)
+	}
+	if len(rankStore.seasonRequests) == 0 || rankStore.seasonRequests[0] == "1999-S1" {
+		t.Fatalf("rank season requests = %#v, want server-selected current season", rankStore.seasonRequests)
+	}
+}

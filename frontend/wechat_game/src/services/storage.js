@@ -183,6 +183,9 @@ function defaults() {
     weekly_tasks: { week: '', values: {}, claimed: {} },
     leaderboards: {},
     achievements: { unlocked: {}, claimed: {} },
+    // 普通 Run 的断点只保存在当前账号的主存档中。好友对战使用自己的
+    // reconnect 流程，不写入这里，避免两个对战生命周期互相覆盖。
+    pending_runs: {},
   };
 }
 
@@ -230,6 +233,7 @@ function normalize(data) {
   result.player_stats.operator_counts = result.player_stats.operator_counts && typeof result.player_stats.operator_counts === 'object' ? result.player_stats.operator_counts : {};
   result.player_stats.mode_questions = result.player_stats.mode_questions && typeof result.player_stats.mode_questions === 'object' ? result.player_stats.mode_questions : {};
   result.levels = result.levels && typeof result.levels === 'object' ? result.levels : {};
+  result.pending_runs = normalizePendingRuns(result.pending_runs);
   result.daily.completed = result.daily.completed && typeof result.daily.completed === 'object' ? result.daily.completed : {};
   result.daily.reward_claimed = result.daily.reward_claimed && typeof result.daily.reward_claimed === 'object' ? result.daily.reward_claimed : {};
   result.coins = Math.max(0, Math.min(COIN_CAP, Math.floor(Number(result.coins) || 0)));
@@ -277,6 +281,56 @@ function normalize(data) {
   const date = todayKey();
   if (result.tasks.date !== date) result.tasks = { date, values: {}, claimed: {} };
   if (result.ads.date !== date) result.ads = { date, rewarded_used: 0 };
+  return result;
+}
+
+const PENDING_RUN_MODES = Object.freeze(['campaign', 'daily', 'endless']);
+
+function normalizePendingAttempt(attempt) {
+  if (!attempt || typeof attempt !== 'object') return null;
+  const result = clone(attempt);
+  if (!result || typeof result !== 'object') return null;
+  if (result.question_index !== undefined) result.question_index = Math.max(0, Math.floor(Number(result.question_index) || 0));
+  if (result.elapsed_ms !== undefined) result.elapsed_ms = Math.max(0, Math.floor(Number(result.elapsed_ms) || 0));
+  if (result.score !== undefined) result.score = Math.max(0, Math.floor(Number(result.score) || 0));
+  if (result.mistakes !== undefined) result.mistakes = Math.max(0, Math.floor(Number(result.mistakes) || 0));
+  return result;
+}
+
+function normalizePendingRun(record) {
+  if (!record || typeof record !== 'object') return null;
+  const mode = String(record.mode || '').trim().toLowerCase();
+  const runID = String(record.run_id || record.runId || '').trim();
+  if (!PENDING_RUN_MODES.includes(mode) || !runID) return null;
+  const attempts = Array.isArray(record.attempts)
+    ? record.attempts.map(normalizePendingAttempt).filter(Boolean)
+    : [];
+  const levelValue = record.level_id !== undefined && record.level_id !== null ? Number(record.level_id) : null;
+  const dateKey = String(record.date_key || record.dateKey || '').trim();
+  return {
+    mode,
+    run_id: runID,
+    level_id: Number.isFinite(levelValue) ? Math.max(0, Math.floor(levelValue)) : null,
+    date_key: dateKey,
+    question_index: Math.max(0, Math.floor(Number(record.question_index) || 0)),
+    score: Math.max(0, Math.floor(Number(record.score) || 0)),
+    mistakes: Math.max(0, Math.floor(Number(record.mistakes) || 0)),
+    hints_used: Math.max(0, Math.floor(Number(record.hints_used) || 0)),
+    best_combo: Math.max(0, Math.floor(Number(record.best_combo) || 0)),
+    attempts,
+    // 超过本地可安全保存的范围时不允许伪造恢复记录；调用方会要求重新开始。
+    attempts_complete: record.attempts_complete !== false && record.attempts_truncated !== true,
+    saved_at: Math.max(0, Number(record.saved_at) || Date.now()),
+  };
+}
+
+function normalizePendingRuns(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const result = {};
+  PENDING_RUN_MODES.forEach((mode) => {
+    const record = normalizePendingRun(source[mode]);
+    if (record) result[mode] = record;
+  });
   return result;
 }
 
@@ -349,6 +403,52 @@ function save(progress) {
     /* 本地缓存失败时仍保留当前会话 */
   }
   return normalized;
+}
+
+function getPendingRuns() {
+  const progress = load();
+  return clone(progress.pending_runs) || {};
+}
+
+function getPendingRun(mode) {
+  const safeMode = String(mode || '').trim().toLowerCase();
+  if (!PENDING_RUN_MODES.includes(safeMode)) return null;
+  const pending = getPendingRuns();
+  return pending[safeMode] ? clone(pending[safeMode]) : null;
+}
+
+function savePendingRun(record, progress = null) {
+  // A run ID is meaningful only after backend authentication. Never place a
+  // production run into the anonymous shared save namespace.
+  if (!getActiveAccountID()) return null;
+  const normalized = normalizePendingRun(record);
+  if (!normalized) return null;
+  const target = progress && typeof progress === 'object' ? progress : load();
+  target.pending_runs = normalizePendingRuns(target.pending_runs);
+  target.pending_runs[normalized.mode] = normalized;
+  return save(target);
+}
+
+function clearPendingRun(mode, runID = '', progress = null) {
+  if (!getActiveAccountID()) return false;
+  const safeMode = String(mode || '').trim().toLowerCase();
+  if (!PENDING_RUN_MODES.includes(safeMode)) return false;
+  const target = progress && typeof progress === 'object' ? progress : load();
+  target.pending_runs = normalizePendingRuns(target.pending_runs);
+  const current = target.pending_runs[safeMode];
+  if (!current) return false;
+  if (runID && String(current.run_id) !== String(runID)) return false;
+  delete target.pending_runs[safeMode];
+  save(target);
+  return true;
+}
+
+function clearPendingRuns(progress = null) {
+  if (!getActiveAccountID()) return false;
+  const target = progress && typeof progress === 'object' ? progress : load();
+  target.pending_runs = {};
+  save(target);
+  return true;
 }
 
 function restoreBackup() {
@@ -696,4 +796,5 @@ module.exports = {
   getLastLoadInfo, getDiagnostics, getErrorLogs, appendErrorLog, clearErrorLogs,
   mergeServerProgress, todayKey, todaySeed, isDailyCompleted, addCoins, spendCoins, claimDailyLoginReward,
   saveLevel, claimLevelReward, claimCampaignBonus, claimEndlessReward, claimFriendReward, clone,
+  getPendingRuns, getPendingRun, savePendingRun, clearPendingRun, clearPendingRuns,
 };

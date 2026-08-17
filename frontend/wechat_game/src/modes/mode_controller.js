@@ -155,8 +155,17 @@ class ModeController {
             && record.numbers.every((value) => Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 10);
         });
         if (!sameNumbers) throw new Error('服务端闯关题目与本地固定题库不一致');
-        this.campaignRun = run;
-        this.campaignRunLoading = false;
+         this.campaignRun = run;
+         this.campaignRunLoading = false;
+         this.savePendingRunCheckpoint('campaign', {
+           run_id: run.run_id || run.runId,
+           level_id: index,
+           question_index: this.currentQuestion,
+           score: this.score,
+           mistakes: this.mistakes,
+           best_combo: this.maxCombo,
+           attempts: this.campaignAttempts,
+         });
       }).catch((error) => {
         if (requestToken !== this.gameRequestToken || this.mode !== 'campaign' || this.currentLevel !== index) return;
         this.campaignRun = null;
@@ -228,8 +237,8 @@ class ModeController {
         if (!run || !run.run_id || !Array.isArray(run.puzzles) || run.puzzles.length !== dailyChallenge.DAILY_QUESTION_COUNT) {
           throw new Error('服务端每日挑战题目合同无效');
         }
-        this.dailyRun = run;
-        this.dailyRunLoading = false;
+         this.dailyRun = run;
+         this.dailyRunLoading = false;
         this.dailyChallenge = {
           ...run,
           date_key: run.date_key || run.dateKey || storage.todayKey(),
@@ -250,9 +259,18 @@ class ModeController {
             rules: Object.assign({ integerIntermediateResults: true, integer_intermediate_results: true, allowNegativeIntermediate: false, allow_negative_intermediate: false }, record.rules || {}),
           })),
         };
-        this.puzzles = this.dailyChallenge.puzzles;
-        this.currentQuestion = 0;
-        this.beginSession(Math.max(1, Number(this.dailyChallenge.time_limit_ms || this.dailyChallenge.time_limit * 1000 || 150000) / 1000));
+         this.puzzles = this.dailyChallenge.puzzles;
+         this.currentQuestion = 0;
+         this.savePendingRunCheckpoint('daily', {
+           run_id: run.run_id || run.runId,
+           date_key: this.dailyChallenge.date_key,
+           question_index: this.currentQuestion,
+           score: 0,
+           mistakes: 0,
+           best_combo: 0,
+           attempts: this.dailyAttempts,
+         });
+         this.beginSession(Math.max(1, Number(this.dailyChallenge.time_limit_ms || this.dailyChallenge.time_limit * 1000 || 150000) / 1000));
       }).catch((error) => {
         if (requestToken !== this.gameRequestToken || this.mode !== 'daily') return;
         this.markBackendModeUnavailable('服务器每日挑战暂不可用，请重试', 'home');
@@ -303,9 +321,60 @@ class ModeController {
     this.endlessAttempts = [];
     this.endlessServerResult = null;
     this.endlessRunLoading = false;
-    // 先使用本地已验证首题进入游戏，服务端合同在后台同步。
-    this.endlessLocalFallback = true;
     this.puzzles = [];
+
+    const backendReady = Boolean(this.backendAuth && this.backendAuth.status === 'ready');
+    if (backendReady) {
+      // 正式环境的题目必须来自服务端 Run 合同，不能先显示一题本地随机题
+      // 再尝试“对齐”。离线工具仍保留下面的快速本地入口。
+      this.endlessLocalFallback = false;
+      this.endlessRunLoading = true;
+      this.gamePaused = true;
+      this.screen = 'game';
+      this.status = '正在向服务端领取无尽题目…';
+      if (!apiClient.createEndlessRun) {
+        this.markBackendModeUnavailable('服务器无尽模式暂不可用，请重试', 'home');
+        this.gamePaused = false;
+        return;
+      }
+      apiClient.createEndlessRun().then((run) => {
+        if (requestToken !== this.gameRequestToken || this.mode !== 'endless') return;
+        if (!run || !run.run_id || !Array.isArray(run.puzzles) || !run.puzzles.length) throw new Error('服务端无尽题目合同为空');
+        this.endlessRun = run;
+        this.endlessRunId = String(run.run_id);
+        this.endlessSeed = Number(run.run_seed || this.endlessSeed);
+        this.puzzles = run.puzzles.map((record) => ({
+          ...record,
+          puzzleId: record.puzzleId || record.puzzle_id,
+          puzzle_id: record.puzzle_id || record.puzzleId,
+          target: 24,
+          rules: Object.assign({ integerIntermediateResults: true, integer_intermediate_results: true, allowNegativeIntermediate: true, allow_negative_intermediate: true }, record.rules || {}),
+        }));
+        this.currentQuestion = 0;
+        this.endlessAttempts = [];
+        this.endlessRunLoading = false;
+        this.gamePaused = false;
+        this.savePendingRunCheckpoint('endless', {
+          run_id: run.run_id,
+          question_index: 0,
+          score: 0,
+          mistakes: 0,
+          best_combo: 0,
+          attempts: [],
+        });
+        this.beginSession(Math.max(18, Number(run.time_limit || run.timeLimitSeconds || 45)));
+      }).catch((error) => {
+        if (requestToken !== this.gameRequestToken || this.mode !== 'endless') return;
+        this.endlessRunLoading = false;
+        this.gamePaused = false;
+        this.markBackendModeUnavailable('服务器无尽模式暂不可用，请重试', 'home');
+        try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-endless-start]', error); } catch (logError) { /* visible status is enough */ }
+      });
+      return;
+    }
+
+    // 离线工具/本地审计仍使用已经验证的快速首题，正式环境不会进入这里。
+    this.endlessLocalFallback = true;
 
     // 不让登录或网络请求阻塞首帧；首题生成只使用很小的已验证候选池。
     this.beginEndlessQuestion({ fastStart: true });
@@ -324,14 +393,22 @@ class ModeController {
           this.endlessLocalFallback = true;
           return;
         }
-        this.endlessRun = run;
-        this.endlessRunId = String(run.run_id);
+         this.endlessRun = run;
+         this.endlessRunId = String(run.run_id);
         this.endlessSeed = Number(run.run_seed || this.endlessSeed);
         if (localPuzzle) {
           localPuzzle.puzzleId = serverPuzzle.puzzleId || serverPuzzle.puzzle_id || localPuzzle.puzzleId;
           localPuzzle.puzzle_id = serverPuzzle.puzzle_id || serverPuzzle.puzzleId || localPuzzle.puzzle_id;
         }
-        this.endlessLocalFallback = false;
+         this.endlessLocalFallback = false;
+         this.savePendingRunCheckpoint('endless', {
+           run_id: run.run_id || run.runId,
+           question_index: this.currentQuestion,
+           score: this.score,
+           mistakes: this.mistakes,
+           best_combo: this.maxCombo,
+           attempts: this.endlessAttempts,
+         });
       }).catch((error) => {
         if (requestToken !== this.gameRequestToken || this.mode !== 'endless') return;
         this.endlessRunLoading = false;
@@ -431,6 +508,7 @@ class ModeController {
     this.friendProgressLastPollAt = 0;
     this.friendProgressLastSentKey = '';
     this.friendMatchResolutionApplied = false;
+    this.friendRankChange = null;
     this.friendStartedAt = Date.now();
     this.friendPlayerSolved = 0;
     this.beginSession(this.friendTimeLimit());
@@ -449,6 +527,7 @@ class ModeController {
     this.friendLobbyView = 'entry';
     this.friendLocalFallback = false;
     this.friendRanked = false;
+    this.friendRankChange = null;
     this.friendRoomBackendStatus = 'idle';
     this.friendRoomBackendLoading = false;
     this.friendRoomLastPollAt = 0;

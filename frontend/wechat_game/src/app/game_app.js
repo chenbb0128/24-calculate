@@ -119,6 +119,7 @@ class GameApp {
     this.friendRules = friendMatch.rules();
     this.friendLocalFallback = false;
     this.friendRanked = false;
+    this.friendRankChange = null;
     this.friendServerResult = null;
     this.friendStartRequestInFlight = false;
     this.friendMatchProgress = null;
@@ -305,7 +306,12 @@ class GameApp {
         }
         this.loginReward = Math.max(0, Number(bootstrap && bootstrap.login_reward || 0));
         this.backendAuth = { status: 'ready', user: accountUser, error: null };
-        this.syncFriendRoomWithBackend();
+        // 普通 Run 的恢复必须发生在 bootstrap 完成并确定账号之后。好友房
+        // 仍由现有 reconnect 链路接管，不能被这里的恢复流程抢走。
+        this.restorePendingRuns().then(() => this.syncFriendRoomWithBackend()).catch((restoreError) => {
+          this.status = '暂时无法恢复上次对局，请稍后重试';
+          try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-pending-run-restore]', restoreError); } catch (logError) { /* visible status is enough */ }
+        });
       }).catch((bootstrapError) => {
         this.backendAuth = { status: 'offline', user: null, error: String(bootstrapError && bootstrapError.message || bootstrapError || 'bootstrap failed') };
         if (this.screen === 'friend_lobby') {
@@ -330,6 +336,246 @@ class GameApp {
       try {
         if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-login]', this.backendAuth.error);
       } catch (logError) { /* 日志失败不影响游戏 */ }
+    });
+  }
+
+  pendingRunAPI(mode) {
+    return {
+      campaign: apiClient.resumeCampaignRun,
+      daily: apiClient.resumeDailyRun,
+      endless: apiClient.resumeEndlessRun,
+    }[String(mode || '').toLowerCase()];
+  }
+
+  pendingRunAttempts(mode) {
+    const key = String(mode || '').toLowerCase();
+    if (key === 'campaign') return Array.isArray(this.campaignAttempts) ? this.campaignAttempts : [];
+    if (key === 'daily') return Array.isArray(this.dailyAttempts) ? this.dailyAttempts : [];
+    if (key === 'endless') return Array.isArray(this.endlessAttempts) ? this.endlessAttempts : [];
+    return [];
+  }
+
+  pendingRunID(mode) {
+    const key = String(mode || '').toLowerCase();
+    if (key === 'campaign') return this.campaignRun && (this.campaignRun.run_id || this.campaignRun.runId);
+    if (key === 'daily') return this.dailyRun && (this.dailyRun.run_id || this.dailyRun.runId);
+    if (key === 'endless') return this.endlessRun && (this.endlessRun.run_id || this.endlessRun.runId || this.endlessRunId);
+    return '';
+  }
+
+  savePendingRunCheckpoint(mode, options = {}) {
+    const key = String(mode || '').toLowerCase();
+    if (!['campaign', 'daily', 'endless'].includes(key) || !storage.savePendingRun) return false;
+    const runID = String(options.run_id || this.pendingRunID(key) || '').trim();
+    if (!runID || !storage.getActiveAccountID || !storage.getActiveAccountID()) return false;
+    const attempts = Array.isArray(options.attempts) ? options.attempts : this.pendingRunAttempts(key);
+    const record = {
+      mode: key,
+      run_id: runID,
+      level_id: options.level_id !== undefined ? options.level_id : key === 'campaign' ? this.currentLevel : null,
+      date_key: options.date_key || (key === 'daily' ? (this.dailyRun && (this.dailyRun.date_key || this.dailyRun.dateKey)) : ''),
+      question_index: options.question_index !== undefined ? options.question_index : this.currentQuestion,
+      score: options.score !== undefined ? options.score : this.score,
+      mistakes: options.mistakes !== undefined ? options.mistakes : this.mistakes,
+      hints_used: options.hints_used !== undefined ? options.hints_used : (this.hintUsed ? 1 : 0),
+      best_combo: options.best_combo !== undefined ? options.best_combo : this.maxCombo,
+      attempts,
+      attempts_complete: options.attempts_complete !== false,
+      saved_at: Date.now(),
+    };
+    const saved = storage.savePendingRun(record, this.progress);
+    if (saved) this.progress = saved;
+    return Boolean(saved);
+  }
+
+  clearPendingRunCheckpoint(mode, runID = '') {
+    if (!storage.clearPendingRun) return false;
+    const cleared = storage.clearPendingRun(mode, runID, this.progress);
+    if (cleared) this.progress = storage.load();
+    return cleared;
+  }
+
+  unwrapRunPayload(payload) {
+    let value = payload && typeof payload === 'object' ? payload : {};
+    if (value.run && typeof value.run === 'object') value = value.run;
+    if (value.data && typeof value.data === 'object' && !Array.isArray(value.data)) value = value.data;
+    if (value.run && typeof value.run === 'object') value = value.run;
+    return value;
+  }
+
+  normalizeResumedRun(mode, pending, payload) {
+    const source = this.unwrapRunPayload(payload);
+    const runID = String(source.run_id || source.runId || pending.run_id || '').trim();
+    if (!runID || runID !== String(pending.run_id)) return null;
+    const status = String(source.status || source.state || '').toLowerCase();
+    const progress = source.progress && typeof source.progress === 'object' ? source.progress : {};
+    const summary = source.summary && typeof source.summary === 'object' ? source.summary : {};
+    const puzzles = Array.isArray(source.puzzles) ? source.puzzles : Array.isArray(source.questions) ? source.questions : [];
+    const attempts = Array.isArray(source.attempts)
+      ? source.attempts
+      : Array.isArray(progress.attempts) ? progress.attempts : Array.isArray(pending.attempts) ? pending.attempts : [];
+    const questionIndex = Math.max(0, Math.floor(Number(
+      source.question_index !== undefined ? source.question_index
+        : source.current_question_index !== undefined ? source.current_question_index
+          : progress.question_index !== undefined ? progress.question_index : pending.question_index,
+    ) || 0));
+    const run = Object.assign({}, source, {
+      run_id: runID,
+      puzzles,
+      attempts,
+      status,
+      question_index: questionIndex,
+      score: Math.max(0, Math.floor(Number(source.score !== undefined ? source.score : progress.score !== undefined ? progress.score : pending.score) || 0)),
+      mistakes: Math.max(0, Math.floor(Number(source.mistakes !== undefined ? source.mistakes : progress.mistakes !== undefined ? progress.mistakes : summary.mistakes !== undefined ? summary.mistakes : pending.mistakes) || 0)),
+      hints_used: Math.max(0, Math.floor(Number(source.hints_used !== undefined ? source.hints_used : progress.hints_used !== undefined ? progress.hints_used : summary.hints !== undefined ? summary.hints : pending.hints_used) || 0)),
+      best_combo: Math.max(0, Math.floor(Number(source.best_combo !== undefined ? source.best_combo : progress.best_combo !== undefined ? progress.best_combo : summary.best_combo !== undefined ? summary.best_combo : pending.best_combo) || 0)),
+    });
+    if (mode === 'campaign') run.level_id = source.level_id !== undefined ? source.level_id : pending.level_id;
+    if (mode === 'daily') run.date_key = source.date_key || source.dateKey || pending.date_key;
+    return run;
+  }
+
+  isFinishedRun(run) {
+    const status = String(run && (run.status || run.state) || '').toLowerCase();
+    return ['finished', 'submitted', 'completed', 'complete', 'settled'].includes(status)
+      || Boolean(run && (run.finished === true || run.submitted === true || run.completed === true));
+  }
+
+  isExpiredRunError(error) {
+    const status = Number(error && error.statusCode || 0);
+    const code = String(error && (error.apiCode || error.code) || '').toLowerCase();
+    return status === 404 || status === 410 || code.includes('expired') || code.includes('not_found') || code.includes('notfound');
+  }
+
+  resumeOnePendingRun(pending) {
+    const mode = String(pending && pending.mode || '').toLowerCase();
+    const resume = this.pendingRunAPI(mode);
+    if (!resume || !pending || !pending.run_id) return Promise.resolve({ status: 'invalid', pending });
+    return resume(String(pending.run_id)).then((payload) => {
+      const run = this.normalizeResumedRun(mode, pending, payload);
+      if (!run) return { status: 'invalid', pending };
+      if (this.isFinishedRun(run)) {
+        if (run.progress && typeof run.progress === 'object') {
+          // A finished response may carry the authoritative settlement
+          // snapshot when bootstrap happened just before the submit completed.
+          // Never synthesize coins locally; only merge the server payload.
+          this.progress = storage.mergeServerProgress(this.progress, run.progress, { authoritative: true });
+        }
+        this.clearPendingRunCheckpoint(mode, pending.run_id);
+        return { status: 'finished', pending, run };
+      }
+      const questionCount = Array.isArray(run.puzzles) ? run.puzzles.length : 0;
+      const hasCompleteAttempts = pending.attempts_complete !== false
+        && Array.isArray(run.attempts)
+        && (run.question_index <= 0 || run.attempts.length >= run.question_index);
+      if (!questionCount || !hasCompleteAttempts) {
+        return { status: 'incomplete', pending, run };
+      }
+      return { status: 'active', pending, run };
+    }).catch((error) => {
+      if (this.isExpiredRunError(error)) {
+        this.clearPendingRunCheckpoint(mode, pending.run_id);
+        return { status: 'expired', pending, error };
+      }
+      return { status: 'error', pending, error };
+    });
+  }
+
+  applyResumedRun(record) {
+    if (!record || record.status !== 'active' || !record.run) return false;
+    const mode = String(record.pending.mode || '').toLowerCase();
+    const run = record.run;
+    if (!Array.isArray(run.puzzles) || !run.puzzles.length) return false;
+    const questionIndex = Math.max(0, Math.min(run.puzzles.length - 1, Number(run.question_index) || 0));
+    this.gameRequestToken += 1;
+    this.mode = mode;
+    this.popup = '';
+    this.hintPopup = null;
+    this.resultHelpPopup = false;
+    this.currentQuestion = questionIndex;
+    this.score = Math.max(0, Number(run.score) || 0);
+    this.mistakes = Math.max(0, Number(run.mistakes) || 0);
+    this.maxCombo = Math.max(0, Number(run.best_combo) || 0);
+    this.combo = 0;
+    this.freeUndo = true;
+    this.freeHint = true;
+    this.hintUsed = false;
+    this.transitioning = false;
+    this.settling = false;
+    this.autoNextAt = 0;
+    this.puzzles = run.puzzles.map((puzzleRecord) => ({
+      ...puzzleRecord,
+      puzzleId: puzzleRecord.puzzleId || puzzleRecord.puzzle_id,
+      puzzle_id: puzzleRecord.puzzle_id || puzzleRecord.puzzleId,
+      target: 24,
+    }));
+    if (mode === 'campaign') {
+      this.currentLevel = Math.max(0, Math.floor(Number(run.level_id !== undefined ? run.level_id : record.pending.level_id) || 0));
+      this.campaignRun = run;
+      this.campaignAttempts = Array.isArray(run.attempts) ? run.attempts : [];
+      this.campaignRunLoading = false;
+      const config = this.levels[this.currentLevel] || {};
+      this.beginSession(safeNumber(config.timeLimit || config.time_limit, 60));
+    } else if (mode === 'daily') {
+      this.dailyRun = run;
+      this.dailyAttempts = Array.isArray(run.attempts) ? run.attempts : [];
+      this.dailyRunLoading = false;
+      this.dailyChallenge = {
+        ...run,
+        date_key: run.date_key || storage.todayKey(),
+        rule_id: run.rule_id || run.ruleId || '',
+        rule_title: run.rule_title || run.ruleTitle || '',
+        rule_text: run.rule_text || run.ruleText || '',
+        time_limit: Number(run.time_limit || run.timeLimitSeconds || 150),
+        time_limit_ms: Number(run.time_limit_ms || run.timeLimitMS || 150000),
+        allow_hint: run.allow_hint !== undefined ? Boolean(run.allow_hint) : true,
+        puzzles: this.puzzles,
+      };
+      this.beginSession(Math.max(1, Number(this.dailyChallenge.time_limit_ms || this.dailyChallenge.time_limit * 1000 || 150000) / 1000));
+    } else {
+      this.endlessRun = run;
+      this.endlessRunId = String(run.run_id);
+      this.endlessSeed = Number(run.run_seed || this.endlessSeed || makeEndlessSeed());
+      this.endlessAttempts = Array.isArray(run.attempts) ? run.attempts : [];
+      this.endlessRunLoading = false;
+      this.endlessLocalFallback = false;
+      this.beginSession(Math.max(18, Number(run.time_limit || run.timeLimitSeconds || 45)));
+    }
+    this.savePendingRunCheckpoint(mode, {
+      run_id: run.run_id,
+      level_id: mode === 'campaign' ? this.currentLevel : null,
+      date_key: mode === 'daily' ? run.date_key : '',
+      question_index: questionIndex,
+      score: this.score,
+      mistakes: this.mistakes,
+      hints_used: run.hints_used,
+      best_combo: this.maxCombo,
+      attempts: mode === 'campaign' ? this.campaignAttempts : mode === 'daily' ? this.dailyAttempts : this.endlessAttempts,
+    });
+    this.status = '已恢复上次对局，继续完成当前题目';
+    this.triggerFeedback('info', this.status);
+    return true;
+  }
+
+  restorePendingRuns() {
+    if (!this.backendAuth || this.backendAuth.status !== 'ready') return Promise.resolve(false);
+    if (this.friendRoomFromInvite || this.mode === 'friend' || ['friend_lobby', 'friend_matchmaking'].includes(this.screen)) return Promise.resolve(false);
+    const pending = storage.getPendingRuns ? Object.values(storage.getPendingRuns()) : [];
+    if (!pending.length) return Promise.resolve(false);
+    return Promise.all(pending.map((record) => this.resumeOnePendingRun(record))).then((results) => {
+      const active = results.filter((item) => item && item.status === 'active')
+        .sort((left, right) => Number(right.pending.saved_at || 0) - Number(left.pending.saved_at || 0));
+      const blocked = results.find((item) => item && item.status === 'incomplete');
+      const expired = results.find((item) => item && item.status === 'expired');
+      if (active.length) return this.applyResumedRun(active[0]);
+      if (blocked) {
+        this.status = '上次对局记录不完整，请重新开始本模式';
+        this.triggerFeedback('error', this.status);
+      } else if (expired) {
+        this.status = '上次对局已过期，请重新开始';
+        this.triggerFeedback('info', this.status);
+      }
+      return false;
     });
   }
 
@@ -740,6 +986,15 @@ class GameApp {
     this.progress.friend_matches = record;
     const reward = storage.claimFriendReward(this.progress, matchResult.outcome, storage.todayKey(), friendMatch.DAILY_REWARD_MATCH_LIMIT);
     if (reward <= 0 && Array.isArray(bonusLabels)) bonusLabels.push('今日对战奖励已达上限');
+    if (this.friendRanked) {
+      const rankApplied = rankService.applyLocalResult(this.progress.rank, matchResult.outcome, {
+        match_id: this.friendMatch && this.friendMatch.match_id,
+      });
+      if (rankApplied) {
+        this.progress.rank = rankApplied.profile;
+        this.friendRankChange = rankApplied.change;
+      }
+    }
     this.friendMatchResolutionApplied = true;
     storage.save(this.progress);
     return reward;
@@ -914,6 +1169,7 @@ class GameApp {
           this.result.bonusLabels.push(`闯关服务端奖励 +${this.result.rewardCoins}`);
         }
       }
+      this.clearPendingRunCheckpoint('campaign', serverResult.run_id || runID);
     };
 
     if (this.campaignRun && apiClient.submitCampaignRun) {
@@ -1025,6 +1281,7 @@ class GameApp {
             this.result.bonusLabels.push(`每日挑战服务端奖励 +${this.result.rewardCoins}`);
           }
         }
+        this.clearPendingRunCheckpoint('daily', serverResult.run_id || runID);
       }).catch((error) => {
         this.markServerSubmissionFailed('daily', error);
         try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-daily-submit]', error); } catch (logError) { /* daily local result remains visible */ }
@@ -1079,6 +1336,7 @@ class GameApp {
         }
         this.leaderboardRemote = {};
         this.leaderboardRemoteFailedAt = {};
+        this.clearPendingRunCheckpoint('endless', serverResult && (serverResult.run_id || runID));
       }).catch((error) => {
         this.markServerSubmissionFailed('endless', error);
         try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-endless-submit]', error); } catch (logError) { /* best effort */ }
@@ -3190,6 +3448,16 @@ class GameApp {
     const friend = this.mode === 'friend';
     const modeVariant = friend ? 'magenta' : this.mode === 'endless' ? 'violet' : this.mode === 'daily' ? 'gold' : 'cyan';
     this.drawGameHeader(title, '‹ 返回', () => this.backFromGame(), friend ? '同题竞速' : '');
+    if (this.endlessRunLoading && this.mode === 'endless' && !this.currentPuzzle) {
+      const panelWidth = Math.min(590, this.width - 84);
+      const panelX = (this.width - panelWidth) / 2;
+      const panelY = this.modalTop(250);
+      this.drawGamePanel(panelX, panelY, panelWidth, 250, 'violet', { radius: 28, shadowBlur: 18, shadowOffsetY: 0 });
+      this.drawFitText('正在准备无尽题目', this.width / 2, panelY + 82, panelWidth - 80, uiFont(28, 900), GAME_UI.text);
+      this.drawFitText('题目来自服务器，请稍候一下', this.width / 2, panelY + 138, panelWidth - 80, uiFont(17, 600), GAME_UI.secondary);
+      this.drawFitText('不会使用本地题目替代', this.width / 2, panelY + 184, panelWidth - 80, uiFont(15, 500), GAME_UI.cyanLight);
+      return;
+    }
     const progressRatio = this.mode === 'endless' ? ((this.currentQuestion % 3) + 1) / 3 : (this.currentQuestion + 1) / Math.max(1, this.puzzles.length);
     const questionTitle = `第 ${this.currentQuestion + 1} / ${this.mode === 'endless' ? '∞' : this.puzzles.length} 题`;
     const ratio = clamp(this.timeLeft / Math.max(1, this.timerLimit), 0, 1);
@@ -3926,8 +4194,6 @@ class GameApp {
     const state = this.friendMatchmaking || { status: 'searching', startedAt: Date.now() };
     const panelY = this.screenContentTop(156);
     const width = this.width - 116;
-    const elapsed = Math.max(0, Math.floor((Date.now() - Number(state.startedAt || Date.now())) / 1000));
-    const remaining = Math.max(0, friendMatch.MATCHMAKING_TIMEOUT - elapsed);
     const isBotReady = state.status === 'bot_ready';
     const isMatched = state.status === 'matched';
     this.drawGamePanel(58, panelY, width, 500, isBotReady ? 'gold' : 'violet', {
@@ -3956,8 +4222,8 @@ class GameApp {
     } else if (isMatched) {
       this.drawFitText('\u5bf9\u624b\u5df2\u51c6\u5907\uff0c\u5373\u5c06\u5f00\u59cb', this.width / 2, panelY + 320, width - 80, uiFont(19, 800), GAME_UI.cyanLight);
     } else {
-      this.drawFitText(`\u5df2\u7b49\u5f85 ${elapsed} \u79d2`, this.width / 2, panelY + 306, width - 80, uiFont(24, 900), GAME_UI.text);
-      this.drawFitText(`\u6b63\u5728\u6269\u5927\u5339\u914d\u8303\u56f4\uff0c\u8fd8\u5269 ${remaining} \u79d2`, this.width / 2, panelY + 354, width - 80, uiFont(16, 600), GAME_UI.secondary);
+      this.drawFitText('\u6b63\u5728\u5bfb\u627e\u76f8\u8fd1\u6bb5\u4f4d\u7684\u5bf9\u624b', this.width / 2, panelY + 320, width - 80, uiFont(22, 900), GAME_UI.text);
+      this.drawFitText('\u5339\u914d\u6210\u529f\u540e\u4f1a\u81ea\u52a8\u5f00\u59cb\u5bf9\u6218', this.width / 2, panelY + 366, width - 80, uiFont(16, 600), GAME_UI.secondary);
       this.drawFitText('\u540c\u65f6\u70b9\u51fb\u5feb\u901f\u5339\u914d\u7684\u73a9\u5bb6\u4f1a\u4f18\u5148\u5339\u914d', this.width / 2, panelY + 400, width - 82, uiFont(14, 500), GAME_UI.muted);
     }
     if (isBotReady) {
@@ -4031,6 +4297,7 @@ class GameApp {
     this.friendRoomFromInvite = kind === 'join';
     this.friendLocalFallback = !(apiClient.isConfigured && apiClient.isConfigured());
     this.friendRanked = false;
+    this.friendRankChange = null;
     this.friendRoomBackendStatus = this.friendLocalFallback ? 'local' : 'idle';
     this.friendRoomBackendLoading = false;
     this.friendRoomLastPollAt = 0;
@@ -4065,6 +4332,7 @@ class GameApp {
     const rank = rankService.normalize(this.progress && this.progress.rank);
     this.progress.rank = rank;
     this.friendRanked = true;
+    this.friendRankChange = null;
     this.friendMatchmakingRunId += 1;
     this.friendMatchmaking = {
       status: 'searching',
@@ -4074,6 +4342,7 @@ class GameApp {
       apiStarted: false,
       matchedAt: 0,
       botReadyAt: 0,
+      botFallbackAfter: friendMatch.matchmakingFallbackSeconds(now),
       ranked: true,
       season_id: rank.season_id,
       rank_tier: rank.tier,
@@ -4142,7 +4411,7 @@ class GameApp {
       }).catch(() => { /* matchmaking polling is best effort; timeout fallback remains available */ });
     }
 
-    if (elapsed >= friendMatch.MATCHMAKING_TIMEOUT) {
+    if (elapsed >= Number(state.botFallbackAfter || friendMatch.MATCHMAKING_TIMEOUT)) {
       if (this.isBackendRequired()) {
         state.status = 'error';
         this.friendMatchmakingError = '暂时没有匹配到玩家，请重试';
@@ -4207,7 +4476,8 @@ class GameApp {
     const seed = (Date.now() ^ Math.floor(Math.random() * 0x100000)) >>> 0 || 1;
     const code = String(100000 + (seed % 900000)).padStart(6, '0');
     const room = friendMatch.createLocalRoom(code, '\u6211', '\u5bf9\u624b');
-    const difficulty = friendMatch.randomBotDifficulty(room.room_seed);
+    const rank = rankService.normalize(this.progress && this.progress.rank);
+    const difficulty = friendMatch.randomBotDifficulty(room.room_seed, rank.tier);
     const profile = friendMatch.botProfile(difficulty);
     room.players[1] = { id: profile.id, name: '\u5bf9\u624b', ready: true, bot: true, difficulty };
     room.status = 'ready';
@@ -4215,7 +4485,7 @@ class GameApp {
     this.friendRoom = room;
     this.friendRules = friendMatch.rules();
     this.friendLocalFallback = true;
-    this.friendRanked = false;
+    this.friendRanked = true;
     this.friendRoomBackendStatus = 'local';
     this.friendRoomFromInvite = false;
     this.friendLobbyView = 'room';
@@ -4286,6 +4556,111 @@ class GameApp {
     });
   }
 
+  chooseAndUploadAvatar() {
+    if (this.profileSaving) return;
+    if (this.isBackendRequired && this.isBackendRequired()
+      && (!this.backendAuth || this.backendAuth.status !== 'ready')) {
+      this.profileNotice = '服务器尚未连接，暂时无法上传头像';
+      this.triggerFeedback('error', this.profileNotice);
+      return;
+    }
+    if (!apiClient.uploadAvatar || typeof wx === 'undefined') {
+      this.profileNotice = '当前版本暂不支持上传头像';
+      return;
+    }
+    const chooseFile = () => new Promise((resolve, reject) => {
+      const done = (filePath) => {
+        const value = String(filePath || '').trim();
+        if (value) resolve(value);
+        else reject({ cancelled: true });
+      };
+      const cancelled = (error) => {
+        const message = String(error && error.errMsg || error && error.message || '').toLowerCase();
+        if (message.includes('cancel')) reject({ cancelled: true });
+        else reject(error || new Error('选择头像失败'));
+      };
+      try {
+        if (typeof wx.chooseMedia === 'function') {
+          wx.chooseMedia({ count: 1, mediaType: ['image'], sourceType: ['album', 'camera'], success: (result) => {
+            const file = result && result.tempFiles && result.tempFiles[0];
+            done(file && (file.tempFilePath || file.path));
+          }, fail: cancelled });
+        } else if (typeof wx.chooseImage === 'function') {
+          wx.chooseImage({ count: 1, sizeType: ['compressed'], sourceType: ['album', 'camera'], success: (result) => {
+            done(result && result.tempFilePaths && result.tempFilePaths[0]);
+          }, fail: cancelled });
+        } else reject(new Error('当前基础库不支持选择图片'));
+      } catch (error) { cancelled(error); }
+    });
+    this.profileSaving = true;
+    this.profileNotice = '请选择一张头像…';
+    chooseFile().then((filePath) => {
+      this.profileNotice = '正在上传头像…';
+      return apiClient.uploadAvatar(filePath);
+    }).then((payload) => {
+      const source = payload && typeof payload === 'object' ? payload : {};
+      const profile = source.user && typeof source.user === 'object' ? source.user
+        : source.profile && typeof source.profile === 'object' ? source.profile : source;
+      const avatar = String(profile.avatar || profile.avatar_url || profile.avatarUrl || '').trim();
+      if (!/^https?:\/\//i.test(avatar)) throw new Error('服务器未返回有效头像地址');
+      const nickname = String(profile.nickname || profile.nickName || this.getPlayerProfile().nickname).trim().slice(0, 12);
+      this.progress.profile = {
+        nickname: nickname || '算术玩家',
+        avatar,
+        wechat_auth_status: 'granted',
+      };
+      if (this.backendAuth && this.backendAuth.user) {
+        this.backendAuth.user = Object.assign({}, this.backendAuth.user, { nickname, avatar });
+      }
+      this.profileAuthPending = false;
+      this.progress = storage.save(this.progress);
+      this.profileNotice = '头像已更新';
+      this.triggerFeedback('success', '头像上传成功');
+    }).catch((error) => {
+      if (error && error.cancelled) {
+        this.profileNotice = '';
+        return;
+      }
+      this.profileNotice = String(error && error.message || '头像上传失败，请重试');
+      this.triggerFeedback('error', this.profileNotice);
+    }).then(() => {
+      this.profileSaving = false;
+    });
+  }
+
+  logoutAccount() {
+    if (this.profileSaving) return;
+    this.profileSaving = true;
+    this.profileNotice = '正在退出登录…';
+    const finish = () => {
+      // Do not reuse the previous account's in-memory progress while the next
+      // wx.login is pending. The account namespace remains on disk for a later
+      // explicit login, but no old profile/coins/rank are rendered now.
+      if (storage.clearAccount) storage.clearAccount();
+      this.progress = storage.normalize({});
+      this.backendAuth = { status: 'logged_out', user: null, error: null };
+      this.profileAuthPending = false;
+      this.profileSaving = false;
+      this.popup = '';
+      this.friendRoom = null;
+      this.friendMatch = null;
+      this.screen = 'home';
+      this.status = '已退出登录，点击资料卡重新登录';
+      this.triggerFeedback('info', this.status);
+    };
+    try {
+      const request = apiClient.logout ? apiClient.logout() : Promise.resolve();
+      Promise.resolve(request).then(finish, finish);
+    } catch (error) { finish(); }
+  }
+
+  loginAfterLogout() {
+    if (!this.backendAuth || this.backendAuth.status !== 'logged_out') return;
+    this.profileNotice = '正在重新登录…';
+    this.backendAuth = { status: 'pending', user: null, error: null };
+    this.startBackendLogin();
+  }
+
   saveProfileChanges(changes = {}, onSaved = null) {
     if (this.profileSaving) return;
     const previous = this.getPlayerProfile();
@@ -4309,6 +4684,11 @@ class GameApp {
       storage.save(this.progress);
       if (typeof onSaved === 'function') onSaved(this.progress.profile);
     };
+    if (this.isBackendRequired && this.isBackendRequired()
+      && (!this.backendAuth || this.backendAuth.status !== 'ready')) {
+      this.profileNotice = '服务器尚未连接，资料暂未保存';
+      return;
+    }
     if (!this.backendAuth || this.backendAuth.status !== 'ready' || !apiClient.updateProfile) {
       apply(next);
       this.profileNotice = '\u5df2\u4fdd\u5b58\u5230\u672c\u673a';
@@ -4536,19 +4916,22 @@ class GameApp {
       return;
     }
     if (this.popup === 'profile') {
-      width = 560; height = 500;
+      width = 560; height = 560;
       x = (this.width - width) / 2;
       y = this.modalTop(height);
       const profile = this.getPlayerProfile();
+      const loggedOut = this.backendAuth && this.backendAuth.status === 'logged_out';
       this.drawModalFrame(x, y, width, height, '\u6211\u7684\u8d44\u6599', '\u6635\u79f0\u548c\u5934\u50cf\u4f1a\u540c\u6b65\u5230\u5bf9\u6218\u4e0e\u6392\u884c\u699c', 'cyan');
       this.drawGamePanel(x + 34, y + 112, width - 68, 128, 'dark', { radius: 24, shadow: false });
       this.drawProfileAvatar(x + 100, y + 176, 40, profile.avatar);
       this.drawFitText(profile.nickname, x + 166, y + 164, width - 220, uiFont(25, 900), GAME_UI.text, 'left');
-      this.drawNeonButton(x + 166, y + 181, width - 220, 36, '\u4fee\u6539\u6635\u79f0', () => this.editProfileNickname(), 'cyan', { fontSize: 15, radius: 16, key: 'profile-edit-name' });
+      this.drawNeonButton(x + 166, y + 181, width - 220, 36, '\u4fee\u6539\u6635\u79f0', () => this.editProfileNickname(), 'cyan', { fontSize: 15, radius: 16, key: 'profile-edit-name', disabled: loggedOut });
       this.drawFitText(profile.avatar ? '\u5fae\u4fe1\u5934\u50cf\u5df2\u542f\u7528' : '\u5c1a\u672a\u6388\u6743\u5fae\u4fe1\u5934\u50cf', this.width / 2, y + 274, width - 80, uiFont(17, 800), profile.avatar ? GAME_UI.success : GAME_UI.gold);
-      this.drawNeonButton(x + 34, y + 306, width - 68, 54, '\u4f7f\u7528\u5fae\u4fe1\u5934\u50cf\u548c\u6635\u79f0', () => this.importWechatProfile(), 'cyan', { fontSize: 16, radius: 16, key: 'profile-wechat-import', disabled: this.profileSaving });
-      if (this.profileNotice) this.drawFitText(this.profileNotice, this.width / 2, y + 382, width - 80, uiFont(14, 600), GAME_UI.secondary);
-      this.drawNeonButton(x + 34, y + 418, width - 68, 52, '\u5173\u95ed', () => { this.popup = ''; }, 'violet', { fontSize: 18, radius: 18, key: 'profile-close' });
+      this.drawNeonButton(x + 34, y + 306, width - 68, 54, loggedOut ? '\u91cd\u65b0\u767b\u5f55' : '\u4f7f\u7528\u5fae\u4fe1\u5934\u50cf\u548c\u6635\u79f0', () => loggedOut ? this.loginAfterLogout() : this.importWechatProfile(), 'cyan', { fontSize: 16, radius: 16, key: loggedOut ? 'profile-login' : 'profile-wechat-import', disabled: this.profileSaving });
+      this.drawNeonButton(x + 34, y + 370, width - 68, 54, '\u4ece\u624b\u673a\u9009\u62e9\u5934\u50cf', () => this.chooseAndUploadAvatar(), 'magenta', { fontSize: 16, radius: 16, key: 'profile-avatar-upload', disabled: this.profileSaving || loggedOut });
+      if (this.profileNotice) this.drawFitText(this.profileNotice, this.width / 2, y + 442, width - 80, uiFont(14, 600), GAME_UI.secondary);
+      this.drawNeonButton(x + 34, y + 482, 236, 48, '\u5173\u95ed', () => { this.popup = ''; }, 'violet', { fontSize: 17, radius: 18, key: 'profile-close' });
+      this.drawNeonButton(x + 290, y + 482, 236, 48, loggedOut ? '\u8bf7\u5148\u767b\u5f55' : '\u9000\u51fa\u767b\u5f55', () => loggedOut ? this.loginAfterLogout() : this.logoutAccount(), 'gold', { fontSize: 17, radius: 18, key: loggedOut ? 'profile-login-bottom' : 'profile-logout', disabled: this.profileSaving });
       return;
     }
     if (this.popup === 'settings') {
@@ -5287,6 +5670,14 @@ class GameApp {
   onTouchEnd(event) {
     // 少数真机版本会在 touchstart 阶段给出空 touches，或在 Canvas 缩放时丢掉
     // touchstart 的坐标。用 touchend 做一次只执行一次的兜底，专门保护最后一个数字。
+    // 如果 touchstart 已经成功命中了按钮或数字，不能再用 touchend 的备用
+    // 坐标候选重复执行。部分真机会把 touchend 坐标按另一种像素密度返回，
+    // 这会把本来点中的下排 4/9 错判成左上角的 1。
+    if (this.lastTouchHandled) {
+      if (this.volumeDragType) this.saveAudioSettings();
+      this.volumeDragType = '';
+      return;
+    }
     if (this.screen === 'game' && !this.transitioning) {
       const touch = event && event.changedTouches && event.changedTouches[0] || event && event.touches && event.touches[0];
       if (touch) {
@@ -5567,6 +5958,22 @@ class GameApp {
         solution_steps: Array.isArray(this.questionSteps) ? this.questionSteps.map((step) => ({ ...step })) : [],
       });
     }
+    if (['campaign', 'daily', 'endless'].includes(this.mode) && this.pendingRunID(this.mode)) {
+      // Save immediately after the completed question. If the final submit is
+      // still pending, keep this checkpoint until the server confirms it so a
+      // killed mini game cannot lose the run or submit a fabricated replay.
+      this.savePendingRunCheckpoint(this.mode, {
+        run_id: this.pendingRunID(this.mode),
+        level_id: this.mode === 'campaign' ? this.currentLevel : null,
+        date_key: this.mode === 'daily' && this.dailyRun ? (this.dailyRun.date_key || this.dailyRun.dateKey) : '',
+        question_index: passed && !isLast ? this.currentQuestion + 1 : this.currentQuestion,
+        score: this.score,
+        mistakes: this.mistakes,
+        hints_used: this.hintUsed ? 1 : 0,
+        best_combo: this.maxCombo,
+        attempts: this.pendingRunAttempts(this.mode),
+      });
+    }
     let stars = 0;
     let starSummary = '';
     let starDetails = [];
@@ -5754,8 +6161,9 @@ class GameApp {
     this.result = {
       passed, score: this.score, stars, starSummary, starDetails, combo: this.maxCombo, mistakes: this.mistakes, reason,
       rewardCoins: rewardCoins + matchReward, bonusLabels, levelComplete, matchResult,
-      rankChange: this.mode === 'friend' && !this.friendRanked
-        ? rankService.ineligibleChange('本局为休闲对战，不计入段位') : null,
+      rankChange: this.mode === 'friend'
+        ? (this.friendRanked ? this.friendRankChange : rankService.ineligibleChange('本局为休闲对战，不计入段位'))
+        : null,
       serverVerified: false,
       serverSubmitPending: serverAuthoritative,
       serverSubmitError: false,

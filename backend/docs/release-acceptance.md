@@ -33,6 +33,15 @@
 
 当前结论：健康检查、HTTPS 跳转、开发登录和 Swagger 检查通过；旧客户端可控结算接口检查未通过，不能将线上环境标记为发布完成。部署最新 `api` 二进制后，必须在 `frontend/wechat_game` 目录重新执行 `node tools/production_probe.js https://calc-api.pdurl.cn`，确认三条旧接口全部返回 HTTP 404。
 
+## 排位系统上线前检查
+
+1. 在生产 MySQL 执行 `00007`、`00008`、`00009` 三个未执行迁移，并确认 `player_rank_profiles`、`ranked_match_results` 存在唯一键和检查约束。
+2. 用真实账号调用 `GET /api/v1/player/rank`，确认返回当前上海季度、rating、tier、division、stars 和统计字段。
+3. 用快速匹配创建两名真人排位对局，确认房间 `ranked=true`、`match_source=matchmaking`、两名玩家同赛季；分别提交后只产生一次段位变化。
+4. 重复提交同一个 `idempotency_key`，确认返回第一次 `rank_result`，不重复增减 rating、金币或排行榜记录。
+5. 手动好友房、邀请码房和 AI 房即使请求体携带 `ranked=true`，也必须返回 `ranked=false` 且不改变段位。
+6. 请求 `GET /api/v1/player/leaderboards/ranked?scope=global&period=season`，确认只读取服务器当前赛季并按 rating、wins、ranked_matches、user_id 排序。
+
 ## 上线前仍需人工完成
 
 1. 在微信公众平台把 `calc-api.pdurl.cn` 配置为小游戏 request 合法域名，确认没有配置 `http://`、端口或路径。

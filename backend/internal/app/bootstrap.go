@@ -93,6 +93,14 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 	playerRepository := player.NewRepository(queries, txManager)
 	friendRoomRepository := player.NewFriendRoomRepository(redisClient)
 	playerService := player.NewServiceWithRoomsAndEndless(userService, playerRepository, friendRoomRepository, friendRoomRepository)
+	rankRepository := player.NewSQLRankRepository(database)
+	playerService.SetRankStore(rankRepository)
+	if err := playerService.SetRankSeasonID(cfg.Game.RankSeasonID); err != nil {
+		_ = database.Close()
+		_ = queueClient.Close()
+		_ = redisClient.Close()
+		return nil, err
+	}
 	seedSecret := cfg.Game.DailySeedSecret
 	if strings.TrimSpace(seedSecret) == "" {
 		seedSecret = cfg.JWT.Secret

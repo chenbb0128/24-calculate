@@ -17,15 +17,32 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 		return LeaderboardResponse{}, err
 	}
 	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode != LeaderboardCampaign && mode != LeaderboardDaily && mode != LeaderboardEndless && mode != LeaderboardFriend && mode != LeaderboardOverall {
+	if mode != LeaderboardCampaign && mode != LeaderboardDaily && mode != LeaderboardEndless && mode != LeaderboardFriend && mode != LeaderboardOverall && mode != LeaderboardRanked {
 		return LeaderboardResponse{}, apperror.BadRequest("leaderboard mode is invalid", nil)
+	}
+	seasonID := ""
+	if mode == LeaderboardRanked {
+		if s.rankStore == nil {
+			return LeaderboardResponse{}, apperror.ServiceUnavailable("段位排行榜服务暂不可用", nil)
+		}
+		// Ranked leaderboard reads are always scoped to the server-selected
+		// current season. A query-string season_id must not let clients switch
+		// the season used by matchmaking and rank APIs.
+		seasonID = s.currentRankSeasonID()
+		if _, err := s.rankStore.GetOrCreateRankProfile(ctx, userID, seasonID); err != nil {
+			return LeaderboardResponse{}, err
+		}
 	}
 	scope := normalizeLeaderboardScope(strings.ToLower(strings.TrimSpace(query.Scope)))
 	period := strings.ToLower(strings.TrimSpace(query.Period))
 	if period == "" {
-		period = "all"
+		if mode == LeaderboardRanked {
+			period = "season"
+		} else {
+			period = "all"
+		}
 	}
-	if period != "all" && period != "weekly" && period != "monthly" {
+	if period != "all" && period != "weekly" && period != "monthly" && !(mode == LeaderboardRanked && period == "season") {
 		return LeaderboardResponse{}, apperror.BadRequest("leaderboard period is invalid", nil)
 	}
 	page := query.Page
@@ -129,6 +146,14 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 		}
 	} else {
 		switch mode {
+		case LeaderboardRanked:
+			items, err := s.rankStore.ListRankLeaderboard(ctx, seasonID)
+			if err != nil {
+				return LeaderboardResponse{}, err
+			}
+			for _, item := range items {
+				appendRow(item.UserID, item.Nickname, item.Avatar, int64(item.Rating), item.UpdatedAt)
+			}
 		case LeaderboardCampaign:
 			items, err := s.store.ListCampaignLeaderboard(ctx)
 			if err != nil {
@@ -199,7 +224,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 	if to > total {
 		to = total
 	}
-	return LeaderboardResponse{Mode: mode, Scope: scope, DateKey: func() string {
+	return LeaderboardResponse{Mode: mode, Scope: scope, SeasonID: seasonID, DateKey: func() string {
 		if mode == LeaderboardDaily {
 			return now.In(shanghaiLocation).Format("2006-01-02")
 		}

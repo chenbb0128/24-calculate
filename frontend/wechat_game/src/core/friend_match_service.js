@@ -1,6 +1,8 @@
 const QUESTION_COUNT = 8;
 const TIME_LIMIT = 120;
-const MATCHMAKING_TIMEOUT = 15;
+const MATCHMAKING_TIMEOUT = 20;
+const MATCHMAKING_MIN_TIMEOUT = 18;
+const MATCHMAKING_MAX_TIMEOUT = 24;
 const MATCHMAKING_POLL_INTERVAL = 1000;
 const DAILY_REWARD_MATCH_LIMIT = 3;
 const ROOM_STATUS = Object.freeze({
@@ -111,6 +113,11 @@ function seeded(seed) {
   };
 }
 
+function matchmakingFallbackSeconds(seedValue) {
+  const random = seeded(Number(seedValue) + 77123);
+  return MATCHMAKING_MIN_TIMEOUT + Math.floor(random.next() * (MATCHMAKING_MAX_TIMEOUT - MATCHMAKING_MIN_TIMEOUT + 1));
+}
+
 function buildOpponentPlan(roomSeed, questionCount = QUESTION_COUNT, difficulty = 'standard') {
   const count = Math.max(1, Math.floor(Number(questionCount) || QUESTION_COUNT));
   const random = seeded(Number(roomSeed) + 24024);
@@ -134,10 +141,19 @@ function buildOpponentPlan(roomSeed, questionCount = QUESTION_COUNT, difficulty 
   return { question_count: count, difficulty: String(difficulty || 'standard'), solve_times: solveTimes, score_deltas: scoreDeltas };
 }
 
-function randomBotDifficulty(roomSeed) {
+function randomBotDifficulty(roomSeed, tier = 'bronze') {
   const random = seeded(Number(roomSeed) + 90909);
   const roll = random.next();
-  return roll < 0.34 ? 'easy' : roll < 0.82 ? 'standard' : 'hard';
+  const weights = {
+    bronze: [0.68, 0.97],
+    silver: [0.35, 0.88],
+    gold: [0.16, 0.72],
+    platinum: [0.08, 0.58],
+    diamond: [0.03, 0.43],
+    master: [0.02, 0.38],
+    king: [0.01, 0.34],
+  }[String(tier || 'bronze').toLowerCase()] || [0.35, 0.88];
+  return roll < weights[0] ? 'easy' : roll < weights[1] ? 'standard' : 'hard';
 }
 
 function botProfile(difficulty) {
@@ -185,6 +201,9 @@ module.exports = {
   QUESTION_COUNT,
   TIME_LIMIT,
   MATCHMAKING_TIMEOUT,
+  MATCHMAKING_MIN_TIMEOUT,
+  MATCHMAKING_MAX_TIMEOUT,
+  matchmakingFallbackSeconds,
   MATCHMAKING_POLL_INTERVAL,
   DAILY_REWARD_MATCH_LIMIT,
   ROOM_STATUS,

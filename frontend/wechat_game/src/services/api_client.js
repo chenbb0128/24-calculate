@@ -11,12 +11,17 @@ const REQUEST_TIMEOUTS = {
   room: 5000,
   progress: 2500,
   leaderboard: 3500,
+  upload: 12000,
 };
 const AUTH_STORAGE_KEY = 'twenty_four_auth';
 const DEV_LOGIN_SLOT_KEY = 'twenty_four_dev_login_slot';
 let refreshPromise = null;
 let freshSessionLoginPromise = null;
 let freshSessionLoginCompleted = false;
+// Invalidates in-flight auth work when the player logs out or switches account.
+// Without a generation guard, a late refresh response could write the old
+// account token back after logout.
+let sessionGeneration = 0;
 
 function isConfigured() {
   const url = String(API_BASE_URL || '').trim();
@@ -154,7 +159,7 @@ function loginCode() {
   });
 }
 
-function login(profile = {}) {
+function login(profile = {}, generation = sessionGeneration) {
   return loginCode().then((code) => request('/api/v1/auth/wechat-login', {
     method: 'POST',
     timeout: REQUEST_TIMEOUTS.login,
@@ -164,16 +169,19 @@ function login(profile = {}) {
       avatar: String(profile.avatar || ''),
     },
   })).then((data) => {
+    if (generation !== sessionGeneration) throw makeError('登录会话已切换，请重新登录', 401, 'SESSION_CHANGED');
     writeAuth(data);
     return data;
   });
 }
 
 function devLogin(slot = 1) {
+  const generation = sessionGeneration;
   return request('/api/v1/auth/dev-login', {
     method: 'POST',
     data: { slot: Math.max(1, Math.min(9, Math.floor(Number(slot) || 1))) },
   }).then((data) => {
+    if (generation !== sessionGeneration) throw makeError('登录会话已切换，请重新登录', 401, 'SESSION_CHANGED');
     writeAuth(data);
     return data;
   });
@@ -209,12 +217,15 @@ function freshSessionLogin(profile = {}) {
   // being established. A failed login therefore cannot silently fall back to
   // the old account.
   clearAuth();
-  freshSessionLoginPromise = login(profile).then((data) => {
-    freshSessionLoginCompleted = true;
-    freshSessionLoginPromise = null;
+  const generation = sessionGeneration;
+  freshSessionLoginPromise = login(profile, generation).then((data) => {
+    if (generation === sessionGeneration) {
+      freshSessionLoginCompleted = true;
+      freshSessionLoginPromise = null;
+    }
     return data;
   }, (error) => {
-    freshSessionLoginPromise = null;
+    if (generation === sessionGeneration) freshSessionLoginPromise = null;
     throw error;
   });
   return freshSessionLoginPromise;
@@ -224,21 +235,23 @@ function refresh() {
   if (refreshPromise) return refreshPromise;
   const auth = readAuth();
   if (!auth || !auth.refresh_token) return Promise.reject(makeError('没有可用的刷新令牌', 401, 20001));
+  const generation = sessionGeneration;
   refreshPromise = request('/api/v1/auth/refresh', {
     method: 'POST',
     timeout: REQUEST_TIMEOUTS.login,
     data: { refresh_token: auth.refresh_token },
   }).then((data) => {
+    if (generation !== sessionGeneration) throw makeError('登录会话已切换，请重新登录', 401, 'SESSION_CHANGED');
     writeAuth(data);
     return data;
   }).catch((error) => {
-    clearAuth();
+    if (generation === sessionGeneration) clearAuth();
     throw error;
   }).then((data) => {
-    refreshPromise = null;
+    if (generation === sessionGeneration) refreshPromise = null;
     return data;
   }, (error) => {
-    refreshPromise = null;
+    if (generation === sessionGeneration) refreshPromise = null;
     throw error;
   });
   return refreshPromise;
@@ -265,7 +278,13 @@ function ensureLogin(profile = {}) {
   if (requiresFreshWechatLogin() && !freshSessionLoginCompleted) return freshSessionLogin(profile);
   const auth = readAuth();
   if (!auth || !auth.access_token) return login(profile);
-  return authenticatedRequest('/api/v1/users/me').catch(() => login(profile));
+  return authenticatedRequest('/api/v1/users/me').catch((error) => {
+    // 网络超时不能静默触发第二次 wx.login；只在身份失效时重新登录。
+    if (error && Number(error.statusCode) === 401) {
+      return requiresFreshWechatLogin() ? freshSessionLogin(profile) : login(profile);
+    }
+    throw error;
+  });
 }
 
 function me() {
@@ -281,6 +300,123 @@ function updateProfile(data = {}) {
 
 function bootstrap() {
   return authenticatedRequest('/api/v1/player/bootstrap', { timeout: REQUEST_TIMEOUTS.bootstrap });
+}
+
+function resumeRun(path, runID) {
+  const safeRunID = encodeURIComponent(String(runID || '').trim());
+  if (!safeRunID) return Promise.reject(makeError('缺少 run_id，无法恢复对局', 400, 'RUN_ID_REQUIRED'));
+  return authenticatedRequest(`${path}/${safeRunID}`, { timeout: REQUEST_TIMEOUTS.runStart });
+}
+
+function resumeCampaignRun(runID) {
+  return resumeRun('/api/v1/player/campaign/runs', runID);
+}
+
+function resumeDailyRun(runID) {
+  return resumeRun('/api/v1/player/daily/runs', runID);
+}
+
+function resumeEndlessRun(runID) {
+  return resumeRun('/api/v1/player/endless/runs', runID);
+}
+
+function uploadAvatarAttempt(filePath, retried = false) {
+  if (!isConfigured()) return Promise.reject(makeError('后端地址尚未配置，无法上传头像', 0, 0));
+  if (!hasWx() || typeof wx.uploadFile !== 'function') return Promise.reject(makeError('当前环境不支持头像上传', 0, 'UPLOAD_UNSUPPORTED'));
+  const safePath = String(filePath || '').trim();
+  if (!safePath) return Promise.reject(makeError('未选择头像文件', 400, 'AVATAR_FILE_REQUIRED'));
+  const auth = readAuth();
+  if (!auth || !auth.access_token) return Promise.reject(makeError('用户尚未登录', 401, 20001));
+  const generation = sessionGeneration;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let uploadTask = null;
+    let timeoutTimer = null;
+    const settle = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      handler(value);
+    };
+    const fail = (error) => settle(reject, error instanceof Error ? error : makeError(error && error.errMsg || '头像上传失败', 0, 'UPLOAD_FAILED'));
+    try {
+      // Do not set Content-Type manually. wx.uploadFile must generate the
+      // multipart boundary itself; only the bearer header belongs here.
+      uploadTask = wx.uploadFile({
+        url: `${API_BASE_URL}/api/v1/users/me/avatar`,
+        filePath: safePath,
+        name: 'file',
+        header: { Authorization: `${auth.token_type || 'Bearer'} ${auth.access_token}` },
+        timeout: REQUEST_TIMEOUTS.upload,
+        success(response) {
+          if (generation !== sessionGeneration) {
+            fail(makeError('登录会话已切换，请重新上传头像', 401, 'SESSION_CHANGED'));
+            return;
+          }
+          const body = parseResponseBody(response && response.data);
+          const status = Number(response && response.statusCode || 0);
+          if (status >= 200 && status < 300 && Number(body.code) === 0) {
+            settle(resolve, body.data);
+            return;
+          }
+          const fallback = status === 401 ? '登录已过期，请重试' : status === 413 ? '头像文件过大' : '头像上传失败';
+          fail(makeError(body.message || fallback, status, body.code));
+        },
+        fail(error) { fail(makeError(error && error.errMsg || '头像上传失败', 0, 'UPLOAD_NETWORK_ERROR')); },
+      });
+      if (!settled) {
+        timeoutTimer = setTimeout(() => {
+          try { if (uploadTask && uploadTask.abort) uploadTask.abort(); } catch (abortError) { /* ignore */ }
+          fail(makeError('头像上传超时，请重试', 0, 'REQUEST_TIMEOUT'));
+        }, REQUEST_TIMEOUTS.upload + 250);
+      }
+    } catch (error) {
+      fail(makeError(error && error.message || '头像上传失败', 0, 'UPLOAD_CREATE_FAILED'));
+    }
+  });
+}
+
+function uploadAvatar(filePath, retried = false) {
+  return uploadAvatarAttempt(filePath, retried).catch((error) => {
+    if (error && Number(error.statusCode) === 401 && !retried) {
+      return refresh().then(() => uploadAvatar(filePath, true));
+    }
+    throw error;
+  });
+}
+
+function invalidateSession() {
+  sessionGeneration += 1;
+  refreshPromise = null;
+  freshSessionLoginPromise = null;
+  freshSessionLoginCompleted = false;
+  clearAuth();
+}
+
+function logout() {
+  const auth = readAuth();
+  const generation = sessionGeneration;
+  const finish = (result) => {
+    // Logout is deliberately best effort. Tokens are removed even when the
+    // server is unreachable, and a late response cannot restore them.
+    if (generation === sessionGeneration) invalidateSession();
+    return result;
+  };
+  if (!auth || !auth.refresh_token || !isConfigured() || !hasWx() || typeof wx.request !== 'function') {
+    invalidateSession();
+    return Promise.resolve({ ok: false, skipped: true });
+  }
+  const header = { Authorization: `${auth.token_type || 'Bearer'} ${auth.access_token || ''}` };
+  // Invalidate immediately, before the network round trip. A late refresh or
+  // wx.login callback must not be able to repopulate the old session while the
+  // logout request is in flight.
+  invalidateSession();
+  return request('/api/v1/auth/logout', {
+    method: 'POST',
+    timeout: REQUEST_TIMEOUTS.login,
+    header,
+    data: { refresh_token: auth.refresh_token },
+  }).then(() => finish({ ok: true }), (error) => finish({ ok: false, error }));
 }
 
 function purchaseSkin(skinID) {
@@ -494,6 +630,11 @@ module.exports = {
   me,
   updateProfile,
   bootstrap,
+  resumeCampaignRun,
+  resumeDailyRun,
+  resumeEndlessRun,
+  uploadAvatar,
+  logout,
   purchaseSkin,
   equipSkin,
   purchaseCosmetic,
