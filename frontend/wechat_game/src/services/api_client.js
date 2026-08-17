@@ -171,6 +171,13 @@ function readDevLoginSlot() {
   }
 }
 
+function canUseDevLogin() {
+  const url = String(API_BASE_URL || '').trim();
+  // 开发登录接口只在本地 development 后端注册。生产 HTTPS 地址即使
+  // 本地残留了 dev slot，也必须走真实 wx.login，避免收到 404。
+  return ALLOW_LOCAL_BACKEND && /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.31\.132)(:\d+)?$/i.test(url);
+}
+
 function refresh() {
   if (refreshPromise) return refreshPromise;
   const auth = readAuth();
@@ -212,7 +219,7 @@ function authenticatedRequest(path, options = {}, retried = false) {
 function ensureLogin(profile = {}) {
   if (!isConfigured()) return Promise.reject(makeError('后端地址尚未配置，当前使用本地模式', 0, 0));
   const devSlot = readDevLoginSlot();
-  if (devSlot > 0) return devLogin(devSlot);
+  if (devSlot > 0 && canUseDevLogin()) return devLogin(devSlot);
   const auth = readAuth();
   if (!auth || !auth.access_token) return login(profile);
   return authenticatedRequest('/api/v1/users/me').catch(() => login(profile));
