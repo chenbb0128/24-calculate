@@ -1,8 +1,6 @@
-// 后端尚未配置时保持纯本地体验，避免手机把 127.0.0.1 当成自己的地址反复等待。
-// 后端上线后只需要替换为已配置业务域名的 HTTPS 地址。
-const API_BASE_URL = 'http://192.168.31.132:8080';
-// 本地地址只用于后端开发联调，默认关闭，避免真机把 127.0.0.1 当成手机自身地址。
-// 真机不能访问开发电脑的 127.0.0.1；正式后端未配置 HTTPS 前统一走本地兜底。
+// 正式后端 HTTPS 地址；本地开发时可临时切换为 localhost/局域网地址。
+const API_BASE_URL = 'https://calc-api.pdurl.cn';
+// 正式环境使用 HTTPS 时不需要开启本地后端兜底。
 const ALLOW_LOCAL_BACKEND = false;
 const REQUEST_TIMEOUTS = {
   default: 3500,
