@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const keyPrefix = "go-service"
+const keyPrefix = "twenty-four-calculate"
 
 func RefreshTokenKey(jti string) string {
 	return fmt.Sprintf("%s:auth:refresh:%s", keyPrefix, jti)
