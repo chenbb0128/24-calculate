@@ -55,8 +55,8 @@ func validFriendMatchSubmission() FriendMatchSubmissionInput {
 				ElapsedMS:       1000,
 				Solved:          true,
 				Mistakes:        0,
-				Score:           100,
-				ScoreDelta:      100,
+				Score:           714,
+				ScoreDelta:      714,
 				RoomSeed:        42,
 				QuestionHash:    room.QuestionHash,
 				EventID:         "friend-123456:0:1",
@@ -69,7 +69,7 @@ func validFriendMatchSubmission() FriendMatchSubmissionInput {
 				ElapsedMS:       2000,
 				Solved:          false,
 				Mistakes:        1,
-				Score:           100,
+				Score:           714,
 				ScoreDelta:      0,
 				RoomSeed:        42,
 				QuestionHash:    room.QuestionHash,
@@ -78,7 +78,7 @@ func validFriendMatchSubmission() FriendMatchSubmissionInput {
 		},
 		Summary: FriendMatchSummaryInput{
 			PlayerSolved:   1,
-			PlayerScore:    100,
+			PlayerScore:    714,
 			PlayerMistakes: 1,
 			PlayerElapsed:  2,
 			Outcome:        "win",
@@ -95,7 +95,7 @@ func TestSubmitFriendMatchAcceptsValidatedSubmission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitFriendMatch() error = %v", err)
 	}
-	if !result.Validated || result.Mode != LeaderboardFriend || result.Score != 100 || result.Questions != 1 || result.ElapsedMS != 2000 {
+	if !result.Validated || result.Mode != LeaderboardFriend || result.Score != 714 || result.Questions != 1 || result.ElapsedMS != 2000 {
 		t.Fatalf("result = %#v, want validated friend submission", result)
 	}
 	if len(store.created) != 1 {
@@ -103,6 +103,50 @@ func TestSubmitFriendMatchAcceptsValidatedSubmission(t *testing.T) {
 	}
 	if store.created[0].RoomID != "friend-123456" || store.created[0].Outcome != "" {
 		t.Fatalf("stored submission = %#v, want room and server-derived pending outcome", store.created[0])
+	}
+}
+
+func TestSubmitFriendMatchAcceptsRetryAndRecomputesScore(t *testing.T) {
+	room := testFriendMatchRoom()
+	input := validFriendMatchSubmission()
+	firstSolution := friendSolveDetailed(room.Puzzles[0].Numbers, 1)[0].steps
+	input.Attempts = []FriendMatchAttemptInput{
+		{
+			ProtocolVersion: 2, PuzzleID: room.PuzzleIDs[0], QuestionIndex: 0,
+			ElapsedMS: 1000, Solved: false, Mistakes: 1, Score: 0, ScoreDelta: 0,
+			RoomSeed: 42, QuestionHash: room.QuestionHash, EventID: "friend-123456:0:wrong",
+		},
+		{
+			ProtocolVersion: 2, PuzzleID: room.PuzzleIDs[0], QuestionIndex: 0,
+			ElapsedMS: 2000, Solved: true, Mistakes: 1, Score: 703, ScoreDelta: 703,
+			RoomSeed: 42, QuestionHash: room.QuestionHash, EventID: "friend-123456:0:right",
+			SolutionSteps: firstSolution,
+		},
+	}
+	input.Summary = FriendMatchSummaryInput{PlayerSolved: 1, PlayerScore: 703, PlayerMistakes: 1, PlayerElapsed: 2}
+
+	store := &friendSubmissionStore{leaderboardStore: &leaderboardStore{}}
+	rooms := &friendRoomStoreFake{room: room}
+	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, store, rooms)
+	result, err := service.SubmitFriendMatch(context.Background(), 3, room.RoomCode, input)
+	if err != nil {
+		t.Fatalf("SubmitFriendMatch() error = %v", err)
+	}
+	if result.Score != 703 || result.Questions != 1 || result.ElapsedMS != 2000 {
+		t.Fatalf("result = %#v, want server-recomputed retry score", result)
+	}
+}
+
+func TestSubmitFriendMatchRejectsScoreTamperingWithinLegacyRange(t *testing.T) {
+	store := &friendSubmissionStore{leaderboardStore: &leaderboardStore{}}
+	rooms := &friendRoomStoreFake{room: testFriendMatchRoom()}
+	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, store, rooms)
+	input := validFriendMatchSubmission()
+	input.Attempts[0].Score = 999
+	input.Attempts[0].ScoreDelta = 999
+	input.Summary.PlayerScore = 999
+	if _, err := service.SubmitFriendMatch(context.Background(), 3, "123456", input); err == nil {
+		t.Fatal("SubmitFriendMatch() error = nil for a score within the old range but outside the scoring formula")
 	}
 }
 

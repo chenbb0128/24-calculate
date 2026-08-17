@@ -51,25 +51,6 @@ func (h *Handler) Leaderboard(c *gin.Context) {
 	response.Success(c, http.StatusOK, result)
 }
 
-func (h *Handler) SubmitLeaderboard(c *gin.Context) {
-	userID, err := middleware.UserID(c)
-	if err != nil {
-		response.WriteError(c, err)
-		return
-	}
-	var input SubmitLeaderboardInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		response.WriteError(c, apperror.BadRequest("request body is invalid", err))
-		return
-	}
-	result, err := h.service.SubmitLeaderboard(c.Request.Context(), userID, c.Param("mode"), input)
-	if err != nil {
-		response.WriteError(c, err)
-		return
-	}
-	response.Success(c, http.StatusOK, result)
-}
-
 func (h *Handler) StartEndlessRun(c *gin.Context) {
 	userID, err := middleware.UserID(c)
 	if err != nil {

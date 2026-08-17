@@ -15,6 +15,15 @@ import (
 
 const friendMatchProtocolVersion = 2
 
+const friendMatchElapsedGraceMS = 5000
+
+type friendMatchCalculation struct {
+	Solved    int
+	Score     int
+	Mistakes  int
+	ElapsedMS int
+}
+
 type FriendMatchAttemptInput struct {
 	ProtocolVersion int                       `json:"protocol_version"`
 	PuzzleID        string                    `json:"puzzle_id"`
@@ -88,7 +97,8 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 	if room.MatchID == "" || (room.Status != FriendRoomRunning && room.Status != FriendRoomFinished) {
 		return FriendMatchSubmissionResponse{}, mapFriendRoomError(errForFriendRoomStatus(room.Status))
 	}
-	if err := validateFriendMatchSubmission(room, input); err != nil {
+	calculated, err := validateFriendMatchSubmission(room, input)
+	if err != nil {
 		return FriendMatchSubmissionResponse{}, err
 	}
 
@@ -99,8 +109,8 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 	matchResult := (*FriendMatchResult)(nil)
 	idempotencyReplayed := false
 	currentRecord := FriendMatchSubmissionRecord{
-		UserID: userID, Solved: input.Summary.PlayerSolved, Score: input.Summary.PlayerScore,
-		Mistakes: input.Summary.PlayerMistakes, ElapsedMS: int(math.Round(input.Summary.PlayerElapsed * 1000)),
+		UserID: userID, Solved: calculated.Solved, Score: calculated.Score,
+		Mistakes: calculated.Mistakes, ElapsedMS: calculated.ElapsedMS,
 		IdempotencyKey: input.IdempotencyKey, CreatedAt: time.Now().UTC(),
 	}
 	if resultStore, ok := s.rooms.(FriendMatchResultStore); ok {
@@ -204,7 +214,7 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 	return response, nil
 }
 
-func validateFriendMatchSubmission(room FriendRoom, input FriendMatchSubmissionInput) error {
+func validateFriendMatchSubmission(room FriendRoom, input FriendMatchSubmissionInput) (friendMatchCalculation, error) {
 	questionCount := room.Rules.QuestionCount
 	if questionCount <= 0 {
 		questionCount = 8
@@ -214,90 +224,105 @@ func validateFriendMatchSubmission(room FriendRoom, input FriendMatchSubmissionI
 		timeLimit = 120
 	}
 	if input.ProtocolVersion != friendMatchProtocolVersion || input.Action != "submitFriendMatch" || input.ClientAuthoritative {
-		return apperror.BadRequest("friend match protocol is invalid", nil)
+		return friendMatchCalculation{}, apperror.BadRequest("friend match protocol is invalid", nil)
 	}
 	if strings.TrimSpace(input.IdempotencyKey) == "" {
-		return apperror.BadRequest("idempotency_key is required", nil)
+		return friendMatchCalculation{}, apperror.BadRequest("idempotency_key is required", nil)
 	}
 	expectedMatchID := room.MatchID
 	if expectedMatchID == "" {
 		expectedMatchID = room.RoomID
 	}
 	if (input.MatchID != expectedMatchID && input.MatchID != room.RoomID) || input.RoomID != room.RoomID || input.RoomSeed != room.RoomSeed {
-		return apperror.BadRequest("friend match room contract is invalid", nil)
+		return friendMatchCalculation{}, apperror.BadRequest("friend match room contract is invalid", nil)
 	}
-	if input.QuestionCount != questionCount || len(input.PuzzleIDs) != questionCount || len(input.Attempts) == 0 || len(input.Attempts) > questionCount {
-		return apperror.BadRequest("friend match question count is invalid", nil)
+	maxAttempts := questionCount + maxInt(1, timeLimit/5) + 1
+	if input.QuestionCount != questionCount || len(input.PuzzleIDs) != questionCount || len(input.Attempts) == 0 || len(input.Attempts) > maxAttempts {
+		return friendMatchCalculation{}, apperror.BadRequest("friend match question count is invalid", nil)
 	}
 	expectedHash, expectedPuzzleIDs, expectedPuzzles := friendRoomContract(room)
 	if input.QuestionHash != expectedHash || len(input.QuestionHash) != 8 {
-		return apperror.BadRequest("friend match question hash is invalid", nil)
+		return friendMatchCalculation{}, apperror.BadRequest("friend match question hash is invalid", nil)
 	}
 	if _, err := hex.DecodeString(input.QuestionHash); err != nil {
-		return apperror.BadRequest("friend match question hash is invalid", err)
+		return friendMatchCalculation{}, apperror.BadRequest("friend match question hash is invalid", err)
 	}
 
 	seenPuzzleIDs := make(map[string]struct{}, len(input.PuzzleIDs))
 	for index, puzzleID := range input.PuzzleIDs {
 		puzzleID = strings.TrimSpace(puzzleID)
 		if puzzleID == "" {
-			return apperror.BadRequest("friend match puzzle id is invalid", nil)
+			return friendMatchCalculation{}, apperror.BadRequest("friend match puzzle id is invalid", nil)
 		}
 		if puzzleID != expectedPuzzleIDs[index] {
-			return apperror.BadRequest("friend match puzzle contract is invalid", nil)
+			return friendMatchCalculation{}, apperror.BadRequest("friend match puzzle contract is invalid", nil)
 		}
 		if _, exists := seenPuzzleIDs[puzzleID]; exists {
-			return apperror.BadRequest("friend match puzzle ids are duplicated", nil)
+			return friendMatchCalculation{}, apperror.BadRequest("friend match puzzle ids are duplicated", nil)
 		}
 		seenPuzzleIDs[puzzleID] = struct{}{}
 	}
 
 	previousScore := 0
 	previousElapsed := 0
+	previousMistakes := 0
+	combo := 0
+	nextQuestion := 0
 	solved := 0
 	lastMistakes := 0
 	seenEvents := make(map[string]struct{}, len(input.Attempts))
-	for index, attempt := range input.Attempts {
+	for _, attempt := range input.Attempts {
+		if attempt.QuestionIndex < 0 || attempt.QuestionIndex >= questionCount || attempt.QuestionIndex != nextQuestion ||
+			attempt.PuzzleID != expectedPuzzleIDs[attempt.QuestionIndex] {
+			return friendMatchCalculation{}, apperror.BadRequest("friend match attempt sequence is invalid", nil)
+		}
 		if attempt.ProtocolVersion != friendMatchProtocolVersion ||
-			attempt.QuestionIndex != index ||
-			attempt.PuzzleID != input.PuzzleIDs[index] ||
 			attempt.RoomSeed != input.RoomSeed ||
 			attempt.QuestionHash != input.QuestionHash {
-			return apperror.BadRequest("friend match attempt sequence is invalid", nil)
+			return friendMatchCalculation{}, apperror.BadRequest("friend match attempt sequence is invalid", nil)
 		}
 		if attempt.ElapsedMS < previousElapsed || attempt.ElapsedMS > timeLimit*1000 || attempt.ElapsedMS < 0 {
-			return apperror.BadRequest("friend match attempt time is invalid", nil)
+			return friendMatchCalculation{}, apperror.BadRequest("friend match attempt time is invalid", nil)
 		}
-		if attempt.Mistakes < 0 || attempt.Score < 0 || attempt.ScoreDelta < 0 || attempt.Score < previousScore {
-			return apperror.BadRequest("friend match attempt score is invalid", nil)
+		if attempt.Mistakes < previousMistakes || attempt.Mistakes > 10000 || attempt.Score < 0 || attempt.ScoreDelta < 0 || attempt.Score < previousScore {
+			return friendMatchCalculation{}, apperror.BadRequest("friend match attempt score is invalid", nil)
 		}
 		if attempt.Mistakes > 10000 || len(attempt.SolutionSteps) > 3 {
-			return apperror.BadRequest("friend match attempt details are invalid", nil)
+			return friendMatchCalculation{}, apperror.BadRequest("friend match attempt details are invalid", nil)
 		}
 		if attempt.EventID == "" {
-			return apperror.BadRequest("friend match attempt event_id is required", nil)
+			return friendMatchCalculation{}, apperror.BadRequest("friend match attempt event_id is required", nil)
 		}
 		if len(attempt.EventID) > 256 {
-			return apperror.BadRequest("friend match attempt event_id is invalid", nil)
+			return friendMatchCalculation{}, apperror.BadRequest("friend match attempt event_id is invalid", nil)
 		}
 		if _, exists := seenEvents[attempt.EventID]; exists {
-			return apperror.BadRequest("friend match attempt event_id is duplicated", nil)
+			return friendMatchCalculation{}, apperror.BadRequest("friend match attempt event_id is duplicated", nil)
 		}
 		seenEvents[attempt.EventID] = struct{}{}
 		if attempt.ScoreDelta != attempt.Score-previousScore {
-			return apperror.BadRequest("friend match score delta is invalid", nil)
-		}
-		if attempt.ScoreDelta > 1000 || attempt.Score > (solved+boolToInt(attempt.Solved))*1000 || (!attempt.Solved && attempt.ScoreDelta != 0) {
-			return apperror.BadRequest("friend match score is outside the server range", nil)
-		}
-		if attempt.Solved && !replayFriendSolution(expectedPuzzles[index].Numbers, attempt.SolutionSteps, expectedPuzzles[index].Rules) {
-			return apperror.BadRequest("friend match solution is invalid", nil)
+			return friendMatchCalculation{}, apperror.BadRequest("friend match score delta is invalid", nil)
 		}
 		if attempt.Solved {
+			if !replayFriendSolution(expectedPuzzles[attempt.QuestionIndex].Numbers, attempt.SolutionSteps, expectedPuzzles[attempt.QuestionIndex].Rules) {
+				return friendMatchCalculation{}, apperror.BadRequest("friend match solution is invalid", nil)
+			}
+			expectedDelta := friendMatchScoreDelta(timeLimit, attempt.ElapsedMS, combo, attempt.Mistakes)
+			if attempt.ScoreDelta != expectedDelta || attempt.ScoreDelta > 1000 {
+				return friendMatchCalculation{}, apperror.BadRequest("friend match score calculation is invalid", nil)
+			}
+			combo++
+			nextQuestion++
 			solved++
+		} else {
+			if attempt.ScoreDelta != 0 || len(attempt.SolutionSteps) != 0 {
+				return friendMatchCalculation{}, apperror.BadRequest("friend match unsolved attempt is invalid", nil)
+			}
+			combo = 0
 		}
 		previousScore = attempt.Score
 		previousElapsed = attempt.ElapsedMS
+		previousMistakes = attempt.Mistakes
 		lastMistakes = attempt.Mistakes
 	}
 
@@ -310,10 +335,32 @@ func validateFriendMatchSubmission(room FriendRoom, input FriendMatchSubmissionI
 		input.Summary.PlayerScore < 0 ||
 		input.Summary.PlayerElapsed < 0 ||
 		input.Summary.PlayerElapsed > float64(timeLimit) {
-		return apperror.BadRequest("friend match summary does not match attempts", nil)
+		return friendMatchCalculation{}, apperror.BadRequest("friend match summary does not match attempts", nil)
 	}
 	if input.Summary.Outcome != "" && input.Summary.Outcome != "pending" && input.Summary.Outcome != "win" && input.Summary.Outcome != "lose" && input.Summary.Outcome != "draw" {
-		return apperror.BadRequest("friend match outcome is invalid", nil)
+		return friendMatchCalculation{}, apperror.BadRequest("friend match outcome is invalid", nil)
 	}
-	return nil
+	if room.StartAt > 0 {
+		serverElapsed := time.Now().UTC().UnixMilli() - room.StartAt
+		if serverElapsed > 0 && int64(previousElapsed)+friendMatchElapsedGraceMS < minInt64(serverElapsed, int64(timeLimit*1000)) {
+			return friendMatchCalculation{}, apperror.BadRequest("friend match elapsed time is inconsistent", nil)
+		}
+	}
+	return friendMatchCalculation{Solved: solved, Score: previousScore, Mistakes: lastMistakes, ElapsedMS: previousElapsed}, nil
+}
+
+func friendMatchScoreDelta(timeLimitSeconds, elapsedMS, comboBefore, mistakes int) int {
+	remainingSeconds := float64(timeLimitSeconds*1000-elapsedMS) / 1000
+	delta := int(math.Round(remainingSeconds*6 + float64(comboBefore*30) - float64(mistakes*5)))
+	if delta < 10 {
+		return 10
+	}
+	return delta
+}
+
+func minInt64(left, right int64) int64 {
+	if left < right {
+		return left
+	}
+	return right
 }

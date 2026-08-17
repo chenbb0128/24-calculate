@@ -1,4 +1,7 @@
-# 24-calculate Production Deployment
+# 24-calculate Production Deployment (legacy Docker reference)
+
+> 当前项目的正式部署方案是不使用 Docker 的 Go + MySQL + Redis/Memurai + Nginx 原生部署。
+> 请以 [`../docs/production-native.md`](../docs/production-native.md) 为准。本文件仅保留给仍在使用旧 Docker 环境的维护者，不能作为新生产环境的部署步骤。
 
 This deployment is server-only. The WeChat mini game frontend is not deployed by these files.
 

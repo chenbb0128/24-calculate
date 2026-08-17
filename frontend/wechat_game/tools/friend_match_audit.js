@@ -13,7 +13,7 @@ function check(condition, message) {
   assert.ok(condition, message);
 }
 
-check(api.isConfigured() === false, 'loopback backend must stay disabled until an HTTPS domain is configured');
+check(api.isConfigured() === true && /^https:\/\//i.test(api.API_BASE_URL), 'production backend must use an HTTPS domain');
 
 const roomA = friend.createLocalRoom('628391');
 const roomB = friend.createLocalRoom('628391');

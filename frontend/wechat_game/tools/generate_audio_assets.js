@@ -107,11 +107,8 @@ function makeMelody(notes, noteDuration, volume) {
   return samples;
 }
 
-const tracks = [
-  ['music_morning.wav', [261.63, 329.63, 392.0, 329.63, 293.66, 349.23, 440.0, 349.23, 261.63, 329.63, 392.0, 523.25, 440.0, 392.0, 329.63, 293.66], 0.5, 0],
-  ['music_rainbow.wav', [523.25, 659.25, 783.99, 659.25, 587.33, 698.46, 880.0, 698.46, 523.25, 783.99, 987.77, 783.99, 659.25, 880.0, 1046.5, 880.0, 783.99, 659.25, 523.25, 659.25, 783.99, 987.77, 880.0, 783.99, 659.25, 587.33, 698.46, 880.0, 1046.5, 880.0, 783.99, 659.25], 0.25, 1],
-  ['music_stars.wav', [220.0, 261.63, 329.63, 392.0, 329.63, 293.66, 246.94, 196.0, 220.0, 293.66, 349.23, 440.0], 0.72, 2],
-];
+// 背景音乐由 generate_music_previews.js 生成；本脚本只保留音效生成。
+const tracks = [];
 
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 tracks.forEach(([fileName, notes, length, index]) => writeWav(fileName, makeMusic(notes, length, index)));
@@ -124,4 +121,4 @@ writeWav('error.wav', makeTone(260, 0.12, 0.24, -100));
 writeWav('countdown_tick.wav', makeTone(880, 0.045, 0.20, 0));
 writeWav('countdown_urgent.wav', makeTone(700, 0.075, 0.25, -90));
 
-console.log(`Generated ${tracks.length + 8} original WAV files in ${OUTPUT_DIR}`);
+console.log(`Generated ${tracks.length + 8} WAV sound-effect files in ${OUTPUT_DIR}`);

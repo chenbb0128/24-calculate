@@ -51,7 +51,7 @@ cd D:\微信小游戏\backend
 - `POST/GET /api/v1/player/daily/runs...`
 - `POST/GET /api/v1/player/endless/runs...`
 - `/api/v1/player/friend/rooms...` 和 `/api/v1/player/matchmaking...`
-- `GET/POST /api/v1/player/leaderboards/{mode}`，支持 campaign、daily、endless、friend、overall
+- `GET /api/v1/player/leaderboards/{mode}`，支持 campaign、daily、endless、friend、overall；成绩只通过对应的服务端校验 run/对战接口写入
 - 商城：skins、cosmetics、preferences
 - `GET /health`、`GET /ready`
 
@@ -75,7 +75,9 @@ D:\bin\go.exe test ./internal/modules/player -run "Test(FriendRoomRepositoryRedi
 
 ## 生产部署提示
 
-生产环境需要 HTTPS、微信平台合法 request 域名、反向代理、MySQL 定期备份和 Redis/Memurai 监控。MySQL 可使用 `mysqldump --single-transaction` 备份；Redis 中的 Run、房间、匹配和实时进度是带 TTL 的临时状态。
+生产环境需要 HTTPS、微信平台合法 request 域名、反向代理、MySQL 定期备份和 Redis/Memurai 监控。当前正式地址为 `https://calc-api.pdurl.cn`，线上验收记录见 [`docs/release-acceptance.md`](docs/release-acceptance.md)。MySQL 可使用 `mysqldump --single-transaction` 备份；Redis 中的 Run、房间、匹配和实时进度是带 TTL 的临时状态。
+
+生产部署不要求本机开发使用 Docker；Windows 本机步骤见 [`docs/local-windows.md`](docs/local-windows.md)。如果生产服务器直接运行 Go 二进制，可按 [`docs/production-native.md`](docs/production-native.md) 配置 systemd 和 Nginx。
 
 ## 当前限制
 

@@ -64,6 +64,19 @@ function makeError(message, statusCode, code) {
   return error;
 }
 
+function parseResponseBody(data) {
+  if (data && typeof data === 'object') return data;
+  if (typeof data !== 'string' || !data.trim()) return {};
+  try {
+    const parsed = JSON.parse(data);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    // 网关/代理在 4xx、5xx 时可能返回空文本或非 JSON 文本，不能让
+    // 微信小游戏运行时的自动 JSON 解析把整个游戏打断。
+    return {};
+  }
+}
+
 function request(path, options = {}) {
   if (!isConfigured()) {
     return Promise.reject(makeError('后端地址尚未配置，当前使用本地模式', 0, 0));
@@ -94,15 +107,18 @@ function request(path, options = {}) {
       method: options.method || 'GET',
       data: options.data,
       header,
+      // 手动安全解析，避免空错误响应触发 WAGame.js 的 JSON.parse 异常。
+      dataType: 'text',
       timeout,
       success(response) {
-        const body = response && response.data && typeof response.data === 'object'
-          ? response.data : {};
+        const body = parseResponseBody(response && response.data);
         if (response.statusCode >= 200 && response.statusCode < 300 && Number(body.code) === 0) {
           settle(resolve, body.data);
           return;
         }
-        settle(reject, makeError(body.message || '请求失败', response.statusCode, body.code));
+        const status = Number(response && response.statusCode || 0);
+        const fallback = status === 401 ? '登录未通过，请检查后端登录配置' : status === 404 ? '请求地址不存在' : '请求失败';
+        settle(reject, makeError(body.message || fallback, status, body.code));
       },
       fail(error) {
         settle(reject, makeError(error && error.errMsg || '网络请求失败', 0, 'NETWORK_ERROR'));
@@ -229,30 +245,15 @@ function me() {
   return authenticatedRequest('/api/v1/users/me');
 }
 
+function updateProfile(data = {}) {
+  const payload = {};
+  if (data.nickname !== undefined) payload.nickname = String(data.nickname || '').trim();
+  if (data.avatar !== undefined) payload.avatar = String(data.avatar || '').trim();
+  return authenticatedRequest('/api/v1/users/me', { method: 'PATCH', data: payload });
+}
+
 function bootstrap() {
   return authenticatedRequest('/api/v1/player/bootstrap', { timeout: REQUEST_TIMEOUTS.bootstrap });
-}
-
-function completeLevel(levelId, data = {}) {
-  const safeLevelID = encodeURIComponent(String(levelId));
-  return authenticatedRequest(`/api/v1/player/levels/${safeLevelID}/complete`, {
-    method: 'POST',
-    data: {
-      idempotency_key: String(data.idempotency_key || ''),
-      score: Number(data.score || 0),
-      stars: Number(data.stars || 0),
-    },
-  });
-}
-
-function completeDaily(data = {}) {
-  return authenticatedRequest('/api/v1/player/daily/complete', {
-    method: 'POST',
-    data: {
-      idempotency_key: String(data.idempotency_key || ''),
-      score: Number(data.score || 0),
-    },
-  });
 }
 
 function purchaseSkin(skinID) {
@@ -283,23 +284,6 @@ function getLeaderboard(mode, scope = 'global') {
   const safeMode = encodeURIComponent(String(mode || ''));
   const safeScope = encodeURIComponent(String(scope || 'global'));
   return authenticatedRequest(`/api/v1/player/leaderboards/${safeMode}?scope=${safeScope}`, { timeout: REQUEST_TIMEOUTS.leaderboard });
-}
-
-function submitLeaderboardScore(mode, data = {}) {
-  const safeMode = encodeURIComponent(String(mode || ''));
-  return authenticatedRequest(`/api/v1/player/leaderboards/${safeMode}/submit`, {
-    method: 'POST',
-    timeout: REQUEST_TIMEOUTS.runSubmit,
-    data: {
-      idempotency_key: String(data.idempotency_key || ''),
-      score: Number(data.score || 0),
-      questions: Number(data.questions || 0),
-      elapsed_ms: Number(data.elapsed_ms || 0),
-      room_id: String(data.room_id || ''),
-      outcome: String(data.outcome || ''),
-      metadata: data.metadata && typeof data.metadata === 'object' ? data.metadata : {},
-    },
-  });
 }
 
 function createEndlessRun() {
@@ -473,16 +457,14 @@ module.exports = {
   refresh,
   ensureLogin,
   me,
+  updateProfile,
   bootstrap,
-  completeLevel,
-  completeDaily,
   purchaseSkin,
   equipSkin,
   purchaseCosmetic,
   equipCosmetic,
   updatePreferences,
   getLeaderboard,
-  submitLeaderboardScore,
   createEndlessRun,
   submitEndlessRun,
   createCampaignRun,

@@ -6,7 +6,6 @@ const friendMatch = require('../core/friend_match_service.js');
 const matchData = require('../core/match_data.js');
 const storage = require('../services/storage.js');
 const apiClient = require('../services/api_client.js');
-const platform = require('../services/platform.js');
 const endlessMode = require('../core/endless_mode.js');
 const { safeNumber } = require('../app/app_utils.js');
 
@@ -18,6 +17,43 @@ function makeEndlessSeed() {
 }
 
 class ModeController {
+  isBackendRequired() {
+    // GameApp always creates backendAuth. Keeping the guard makes the
+    // controller safe for offline tools and unit-test harnesses that only
+    // exercise the local game rules.
+    return Boolean(this.backendAuth && apiClient.isConfigured && apiClient.isConfigured());
+  }
+
+  ensureBackendReady(mode, fallbackScreen) {
+    if (!this.isBackendRequired()) return true;
+    if (this.backendAuth.status === 'ready') return true;
+    const status = String(this.backendAuth.status || '').toLowerCase();
+    this.status = status === 'pending' || status === 'syncing'
+      ? '正在连接服务器，请稍后重试'
+      : '服务器暂时不可用，请点击重试';
+    if (fallbackScreen) this.screen = fallbackScreen;
+    if (mode === 'friend' && this.friendMatchmaking) {
+      this.friendMatchmaking.status = 'error';
+      this.friendMatchmakingError = this.status;
+    }
+    return false;
+  }
+
+  markBackendModeUnavailable(message, fallbackScreen) {
+    this.status = message || '服务器暂时不可用，请点击重试';
+    if (fallbackScreen) this.screen = fallbackScreen;
+    this.campaignRun = null;
+    this.campaignRunLoading = false;
+    this.dailyRun = null;
+    this.dailyRunLoading = false;
+    this.endlessRun = null;
+    this.endlessRunLoading = false;
+    if (this.friendMatchmaking) {
+      this.friendMatchmaking.status = 'error';
+      this.friendMatchmakingError = this.status;
+    }
+  }
+
   startCampaign(index, options = {}) {
     const forceRestart = Boolean(options && options.forceRestart);
     if (!forceRestart && this.campaignRunLoading) {
@@ -44,10 +80,14 @@ class ModeController {
     this.campaignRunLoading = false;
     // 闯关题目必须由本地固定题库决定。服务端可以返回同一关的校验运行记录，
     // 但不能用随机题目覆盖本地题库，否则玩家重复进入同一关会看到不同题目。
-    this.startCampaignLocal(index, config, questionCount);
-    if (this.screen !== 'game') return;
-    if (this.backendAuth && this.backendAuth.status === 'ready' && apiClient.createCampaignRun) {
+    // 闯关题目来自本地固定题库，不能因为登录、网络或服务端记录接口
+    // 尚未就绪而阻塞“点击关卡立即开始”。服务器记录在后台尽力同步。
+    const backendReady = Boolean(this.backendAuth && this.backendAuth.status === 'ready');
+    this.startCampaignLocal(index, config, questionCount, true);
+    if (!this.puzzles || this.puzzles.length !== questionCount) return;
+    if (backendReady && apiClient.createCampaignRun) {
       this.campaignRunLoading = true;
+      this.status = '正在同步闯关记录…';
       apiClient.createCampaignRun(index).then((run) => {
         if (requestToken !== this.gameRequestToken || this.mode !== 'campaign' || this.currentLevel !== index) return;
         if (!run || !run.run_id || !Array.isArray(run.puzzles) || run.puzzles.length !== questionCount) {
@@ -68,15 +108,13 @@ class ModeController {
         if (requestToken !== this.gameRequestToken || this.mode !== 'campaign' || this.currentLevel !== index) return;
         this.campaignRun = null;
         this.campaignRunLoading = false;
-        // 本地固定题库已经在进入关卡时启动，服务端失败只影响联网校验，
-        // 不得打断当前关卡或替换题目。
-        try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-campaign-start]', error); } catch (logError) { /* local fallback */ }
+        this.status = '服务器记录暂不可用，本局继续按本地闯关';
+        try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-campaign-start]', error); } catch (logError) { /* start failure is shown in the UI */ }
       });
-      return;
     }
   }
 
-  startCampaignLocal(index, config = this.levels[index] || {}, questionCount = 3) {
+  startCampaignLocal(index, config = this.levels[index] || {}, questionCount = 3, startImmediately = true) {
     this.mode = 'campaign';
     this.currentLevel = index;
     this.campaignRun = null;
@@ -90,11 +128,12 @@ class ModeController {
       return;
     }
     this.currentQuestion = 0;
-    this.beginSession(safeNumber(config.timeLimit || config.time_limit, 60));
+    if (startImmediately) this.beginSession(safeNumber(config.timeLimit || config.time_limit, 60));
   }
 
   startDaily() {
     const requestToken = ++this.gameRequestToken;
+    if (!this.ensureBackendReady('daily', 'home')) return;
     const today = storage.todayKey();
     const currentProgress = this.progress;
     const latestProgress = storage.load();
@@ -163,11 +202,8 @@ class ModeController {
         this.beginSession(Math.max(1, Number(this.dailyChallenge.time_limit_ms || this.dailyChallenge.time_limit * 1000 || 150000) / 1000));
       }).catch((error) => {
         if (requestToken !== this.gameRequestToken || this.mode !== 'daily') return;
-        this.dailyRun = null;
-        this.dailyRunLoading = false;
-        this.status = '服务端每日挑战暂不可用，已切换本地题目';
-        try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-daily-start]', error); } catch (logError) { /* local fallback */ }
-        this.startDailyLocal();
+        this.markBackendModeUnavailable('服务器每日挑战暂不可用，请重试', 'home');
+        try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-daily-start]', error); } catch (logError) { /* start failure is shown in the UI */ }
       });
       return;
     }
@@ -175,6 +211,10 @@ class ModeController {
   }
 
   startDailyLocal() {
+    if (this.isBackendRequired()) {
+      this.markBackendModeUnavailable('服务器每日挑战暂不可用，请重试', 'home');
+      return;
+    }
     this.dailyRun = null;
     this.dailyAttempts = [];
     this.dailyRunLoading = false;
@@ -192,6 +232,7 @@ class ModeController {
 
   startEndless() {
     const requestToken = ++this.gameRequestToken;
+    if (!this.ensureBackendReady('endless', 'home')) return;
     this.mode = 'endless';
     this.hintPopup = null;
     this.resultHelpPopup = false;
@@ -225,11 +266,8 @@ class ModeController {
         this.beginEndlessQuestion();
       }).catch((error) => {
         if (requestToken !== this.gameRequestToken || this.mode !== 'endless') return;
-        this.endlessRun = null;
-        this.endlessRunLoading = false;
-        this.status = '服务端无尽模式暂不可用，已切换本地模式';
-        try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-endless-start]', error); } catch (logError) { /* local fallback */ }
-        this.beginEndlessQuestion();
+        this.markBackendModeUnavailable('服务器无尽模式暂不可用，请重试', 'home');
+        try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-endless-start]', error); } catch (logError) { /* start failure is shown in the UI */ }
       });
       return;
     }

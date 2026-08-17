@@ -13,13 +13,6 @@ import (
 	db "github.com/example/go-service/internal/store/sqlc"
 )
 
-func (s *Service) SubmitLeaderboard(ctx context.Context, userID uint64, mode string, input SubmitLeaderboardInput) (SubmitLeaderboardResponse, error) {
-	if mode == LeaderboardEndless || mode == LeaderboardFriend {
-		return SubmitLeaderboardResponse{}, apperror.BadRequest("该排行榜必须通过对应对局接口提交", nil)
-	}
-	return s.submitLeaderboardRecord(ctx, userID, mode, input)
-}
-
 func (s *Service) submitLeaderboardRecord(ctx context.Context, userID uint64, mode string, input SubmitLeaderboardInput) (SubmitLeaderboardResponse, error) {
 	if mode != LeaderboardEndless && mode != LeaderboardFriend {
 		return SubmitLeaderboardResponse{}, apperror.BadRequest("leaderboard mode is invalid", nil)

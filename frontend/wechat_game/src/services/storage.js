@@ -2,17 +2,59 @@ const {
   KEY,
   BACKUP_KEY,
   ERROR_LOG_KEY,
+  ACCOUNT_KEY_PREFIX,
+  ACCOUNT_BACKUP_KEY_PREFIX,
+  ACCOUNT_ERROR_LOG_PREFIX,
+  ACTIVE_ACCOUNT_KEY,
+  LEGACY_MIGRATION_KEY,
   COIN_CAP,
   STORAGE_VERSION,
   LEGACY_KEYS,
 } = require('../config/storage_keys.js');
 
+let activeAccountID = '';
 let lastLoadInfo = {
+  accountID: '',
   recovered: false,
   primaryValid: false,
   backupValid: false,
   migratedLegacy: false,
 };
+
+function normalizeAccountID(accountID) {
+  const value = String(accountID === undefined || accountID === null ? '' : accountID).trim();
+  return value.length <= 128 ? value : value.slice(0, 128);
+}
+
+function getActiveAccountID() {
+  if (!activeAccountID) activeAccountID = normalizeAccountID(readWxValue(ACTIVE_ACCOUNT_KEY));
+  return activeAccountID;
+}
+
+function accountStorageKeys(accountID = getActiveAccountID()) {
+  const safeAccountID = normalizeAccountID(accountID);
+  if (!safeAccountID) {
+    return {
+      accountID: '',
+      scoped: false,
+      primary: KEY,
+      backup: BACKUP_KEY,
+      errorLog: ERROR_LOG_KEY,
+    };
+  }
+  const suffix = encodeURIComponent(safeAccountID);
+  return {
+    accountID: safeAccountID,
+    scoped: true,
+    primary: `${ACCOUNT_KEY_PREFIX}${suffix}`,
+    backup: `${ACCOUNT_BACKUP_KEY_PREFIX}${suffix}`,
+    errorLog: `${ACCOUNT_ERROR_LOG_PREFIX}${suffix}`,
+  };
+}
+
+function currentStorageKeys() {
+  return accountStorageKeys(getActiveAccountID());
+}
 
 function clone(value) {
   if (value === undefined || value === null) return value;
@@ -62,6 +104,62 @@ function writeWxValue(key, value) {
   return false;
 }
 
+function removeWxValue(key) {
+  try {
+    if (typeof wx !== 'undefined' && wx.removeStorageSync) {
+      wx.removeStorageSync(key);
+      return true;
+    }
+  } catch (error) {
+    return false;
+  }
+  return false;
+}
+
+function migrateLegacyToAccount(accountID) {
+  const keys = accountStorageKeys(accountID);
+  if (!keys.scoped) return false;
+  const marker = parseStoredRecord(readWxValue(LEGACY_MIGRATION_KEY));
+  if (marker && marker.checked) return Boolean(marker.migrated);
+
+  const scopedPrimary = parseStoredRecord(readWxValue(keys.primary));
+  const scopedBackup = parseStoredRecord(readWxValue(keys.backup));
+  let migrated = false;
+  if (!scopedPrimary && !scopedBackup) {
+    const legacyPrimary = parseStoredRecord(readWxValue(KEY));
+    const legacyBackup = parseStoredRecord(readWxValue(BACKUP_KEY));
+    const legacy = legacyPrimary || legacyBackup;
+    if (legacy) {
+      const normalized = normalize(legacy);
+      migrated = writeWxValue(keys.primary, normalized);
+      if (migrated) writeWxValue(keys.backup, normalized);
+    }
+  }
+  writeWxValue(LEGACY_MIGRATION_KEY, {
+    version: 1,
+    checked: true,
+    migrated,
+    account_id: keys.accountID,
+    checked_at: Date.now(),
+  });
+  return migrated;
+}
+
+function setAccount(accountID) {
+  const safeAccountID = normalizeAccountID(accountID);
+  if (!safeAccountID) return clearAccount();
+  activeAccountID = safeAccountID;
+  writeWxValue(ACTIVE_ACCOUNT_KEY, safeAccountID);
+  migrateLegacyToAccount(safeAccountID);
+  return load();
+}
+
+function clearAccount() {
+  activeAccountID = '';
+  removeWxValue(ACTIVE_ACCOUNT_KEY);
+  return load();
+}
+
 function defaults() {
   return {
     version: STORAGE_VERSION,
@@ -84,6 +182,7 @@ function defaults() {
       last_solve: {},
     },
     coins: 0,
+    profile: { nickname: '\u7b97\u672f\u73a9\u5bb6', avatar: '', wechat_auth_status: 'pending' },
     owned_skins: ['classic'],
     equipped_skin: 'classic',
     owned_cosmetics: ['card_classic', 'operator_classic', 'result_classic'],
@@ -132,10 +231,20 @@ function normalize(data) {
   const base = defaults();
   const source = clone(asRecord(data));
   const result = Object.assign(base, source && typeof source === 'object' ? source : {});
-  ['daily', 'endless', 'tasks', 'audio', 'friend_matches', 'ads', 'milestones', 'login', 'player_stats', 'weekly_tasks', 'achievements'].forEach((key) => {
+  ['daily', 'endless', 'tasks', 'audio', 'friend_matches', 'ads', 'milestones', 'login', 'player_stats', 'weekly_tasks', 'achievements', 'profile'].forEach((key) => {
     result[key] = Object.assign(base[key], result[key] && typeof result[key] === 'object' ? result[key] : {});
   });
   result.version = Math.max(Number(result.version || 0), STORAGE_VERSION);
+  // 旧版本的内置头像不再继续使用，保留昵称但要求重新授权微信头像。
+  const profileAvatar = String(result.profile && result.profile.avatar || '').trim();
+  const hasValidProfileAvatar = /^https?:\/\//i.test(profileAvatar);
+  if (!hasValidProfileAvatar) result.profile.avatar = '';
+  if (!['pending', 'granted', 'declined'].includes(String(result.profile.wechat_auth_status || ''))) {
+    result.profile.wechat_auth_status = hasValidProfileAvatar ? 'granted' : 'pending';
+  }
+  if (!hasValidProfileAvatar && result.profile.wechat_auth_status === 'granted') {
+    result.profile.wechat_auth_status = 'pending';
+  }
   result.level_rewards = result.level_rewards && typeof result.level_rewards === 'object' ? result.level_rewards : {};
   result.leaderboards = result.leaderboards && typeof result.leaderboards === 'object' ? result.leaderboards : {};
   result.player_stats.operator_counts = result.player_stats.operator_counts && typeof result.player_stats.operator_counts === 'object' ? result.player_stats.operator_counts : {};
@@ -192,13 +301,15 @@ function normalize(data) {
 }
 
 function load() {
-  const primaryRaw = readWxValue(KEY);
-  const backupRaw = readWxValue(BACKUP_KEY);
+  const keys = currentStorageKeys();
+  const primaryRaw = readWxValue(keys.primary);
+  const backupRaw = readWxValue(keys.backup);
   const primary = parseStoredRecord(primaryRaw);
   const backup = parseStoredRecord(backupRaw);
   const recovered = !primary && Boolean(backup);
   const data = primary || backup || {};
   lastLoadInfo = {
+    accountID: keys.accountID,
     recovered,
     primaryValid: Boolean(primary),
     backupValid: Boolean(backup),
@@ -206,13 +317,13 @@ function load() {
   };
   const result = normalize(data);
   if (recovered) {
-    writeWxValue(KEY, result);
-    writeWxValue(BACKUP_KEY, result);
+    writeWxValue(keys.primary, result);
+    writeWxValue(keys.backup, result);
     appendErrorLog('storage-recovery', '主存档损坏，已从备用存档恢复', { version: result.version });
   }
   // 兼容迁移前曾使用的三个独立键；新版本仍会同步写回，避免丢失玩家进度。
   try {
-    if (typeof wx !== 'undefined' && wx.getStorageSync) {
+    if (!keys.scoped && typeof wx !== 'undefined' && wx.getStorageSync) {
       const legacyCoins = Number(wx.getStorageSync(LEGACY_KEYS.coins));
       const legacyLevel = Number(wx.getStorageSync(LEGACY_KEYS.unlockedLevel));
       const legacyDailyDone = wx.getStorageSync(LEGACY_KEYS.dailyDone);
@@ -228,7 +339,7 @@ function load() {
         result.daily.completed[migratedDate] = true;
         result.daily.last_date = migratedDate;
         lastLoadInfo.migratedLegacy = true;
-        writeWxValue(KEY, result);
+        writeWxValue(keys.primary, result);
       }
     }
   } catch (error) { /* 读取旧键失败不影响主存档 */ }
@@ -236,51 +347,60 @@ function load() {
 }
 
 function save(progress) {
+  const keys = currentStorageKeys();
   const normalized = normalize(progress);
-  const previous = parseStoredRecord(readWxValue(KEY));
+  const previous = parseStoredRecord(readWxValue(keys.primary));
   // Keep the last known-good version. If the next write is interrupted, the
   // backup remains available for the next launch.
-  if (previous) writeWxValue(BACKUP_KEY, previous);
+  if (previous) writeWxValue(keys.backup, previous);
   try {
     if (typeof wx !== 'undefined' && wx.setStorageSync) {
-      wx.setStorageSync(KEY, normalized);
-      if (!previous) writeWxValue(BACKUP_KEY, normalized);
-      // 与旧版/外部页面约定保持兼容，后续可以平滑移除这些镜像键。
-      wx.setStorageSync(LEGACY_KEYS.coins, Number(normalized.coins || 0));
-      wx.setStorageSync(LEGACY_KEYS.unlockedLevel, Number(normalized.unlocked_level || 0));
-      wx.setStorageSync(LEGACY_KEYS.dailyDone, isDailyCompleted(normalized));
+      wx.setStorageSync(keys.primary, normalized);
+      if (!previous) writeWxValue(keys.backup, normalized);
+      // 仅匿名/离线存档继续维护旧版镜像键；账号存档不能写入共享键。
+      if (!keys.scoped) {
+        wx.setStorageSync(LEGACY_KEYS.coins, Number(normalized.coins || 0));
+        wx.setStorageSync(LEGACY_KEYS.unlockedLevel, Number(normalized.unlocked_level || 0));
+        wx.setStorageSync(LEGACY_KEYS.dailyDone, isDailyCompleted(normalized));
+      }
     }
   } catch (error) {
-    appendErrorLog('storage-save', error, { key: KEY, version: normalized.version });
+    appendErrorLog('storage-save', error, { key: keys.primary, version: normalized.version });
     /* 本地缓存失败时仍保留当前会话 */
   }
   return normalized;
 }
 
 function restoreBackup() {
-  const backup = parseStoredRecord(readWxValue(BACKUP_KEY));
+  const keys = currentStorageKeys();
+  const backup = parseStoredRecord(readWxValue(keys.backup));
   if (!backup) return null;
   const restored = normalize(backup);
-  if (!writeWxValue(KEY, restored)) return null;
-  writeWxValue(LEGACY_KEYS.coins, Number(restored.coins || 0));
-  writeWxValue(LEGACY_KEYS.unlockedLevel, Number(restored.unlocked_level || 0));
-  writeWxValue(LEGACY_KEYS.dailyDone, isDailyCompleted(restored));
+  if (!writeWxValue(keys.primary, restored)) return null;
+  if (!keys.scoped) {
+    writeWxValue(LEGACY_KEYS.coins, Number(restored.coins || 0));
+    writeWxValue(LEGACY_KEYS.unlockedLevel, Number(restored.unlocked_level || 0));
+    writeWxValue(LEGACY_KEYS.dailyDone, isDailyCompleted(restored));
+  }
   return restored;
 }
 
 function getLastLoadInfo() {
   return clone(lastLoadInfo) || {
+    accountID: '',
     recovered: false, primaryValid: false, backupValid: false, migratedLegacy: false,
   };
 }
 
 function getDiagnostics() {
-  const primary = parseStoredRecord(readWxValue(KEY));
-  const backup = parseStoredRecord(readWxValue(BACKUP_KEY));
+  const keys = currentStorageKeys();
+  const primary = parseStoredRecord(readWxValue(keys.primary));
+  const backup = parseStoredRecord(readWxValue(keys.backup));
   const logs = getErrorLogs();
   return {
-    key: KEY,
-    backupKey: BACKUP_KEY,
+    accountID: keys.accountID,
+    key: keys.primary,
+    backupKey: keys.backup,
     primaryValid: Boolean(primary),
     backupValid: Boolean(backup),
     primaryVersion: primary ? Number(primary.version || 0) : 0,
@@ -291,7 +411,7 @@ function getDiagnostics() {
 }
 
 function getErrorLogs() {
-  const raw = readWxValue(ERROR_LOG_KEY);
+  const raw = readWxValue(currentStorageKeys().errorLog);
   if (Array.isArray(raw)) return raw.slice(-30);
   if (typeof raw === 'string') {
     try {
@@ -318,17 +438,37 @@ function appendErrorLog(stage, error, context = {}) {
     screen: context.screen ? String(context.screen) : '',
   };
   logs.push(entry);
-  writeWxValue(ERROR_LOG_KEY, logs.slice(-30));
+  writeWxValue(currentStorageKeys().errorLog, logs.slice(-30));
   return entry;
 }
 
 function clearErrorLogs() {
-  return writeWxValue(ERROR_LOG_KEY, []);
+  return writeWxValue(currentStorageKeys().errorLog, []);
 }
+
+const SERVER_OWNED_PROGRESS_KEYS = [
+  'unlocked_level', 'last_level', 'levels', 'level_rewards', 'coins',
+  'owned_skins', 'equipped_skin', 'owned_cosmetics', 'equipped_cosmetics',
+  'login', 'daily', 'endless', 'friend_matches', 'tasks', 'weekly_tasks',
+  'player_stats', 'audio', 'achievements', 'server_events',
+];
 
 function mergeServerProgress(progress, remote, options = {}) {
   const local = normalize(progress);
   if (!remote || typeof remote !== 'object') return local;
+
+  if (options.authoritative === true) {
+    const server = normalize(remote);
+    SERVER_OWNED_PROGRESS_KEYS.forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(remote, key)) local[key] = clone(server[key]);
+    });
+    // These values are deliberately device-side. The backend owns gameplay
+    // progress, currency, tasks, achievements, cosmetics and statistics.
+    // Local leaderboard snapshots are cleared so a failed server request
+    // cannot be presented as an authoritative score.
+    local.leaderboards = {};
+    return save(local);
+  }
 
   // 登录 bootstrap 和服务端结算返回的余额是权威值；普通的部分同步仍保留
   // 本地较大值，兼容离线体验和旧版本没有 pending_mutations 的存档。
@@ -572,6 +712,7 @@ function claimCampaignBonus(progress, levelIndex, stars, chapterIndex, chapterCo
 
 module.exports = {
   KEY, BACKUP_KEY, ERROR_LOG_KEY, COIN_CAP, STORAGE_VERSION, defaults, normalize, load, save, restoreBackup,
+  getActiveAccountID, setAccount, clearAccount, accountStorageKeys,
   getLastLoadInfo, getDiagnostics, getErrorLogs, appendErrorLog, clearErrorLogs,
   mergeServerProgress, todayKey, todaySeed, isDailyCompleted, addCoins, spendCoins, claimDailyLoginReward,
   saveLevel, claimLevelReward, claimCampaignBonus, claimEndlessReward, claimFriendReward, clone,

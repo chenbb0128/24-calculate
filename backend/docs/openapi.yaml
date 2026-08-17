@@ -242,39 +242,6 @@ paths:
         - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
         - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
       responses: {'200': {$ref: '#/components/responses/Success'}}
-    post:
-      tags: [player]
-      security: [{bearerAuth: []}]
-      summary: Submit a legacy leaderboard record
-      parameters:
-        - {name: mode, in: path, required: true, schema: {type: string, enum: [endless, friend]}}
-      requestBody:
-        required: true
-        content:
-          application/json: {schema: {$ref: '#/components/schemas/LeaderboardSubmission'}}
-      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
-  /api/v1/player/levels/{level_id}/complete:
-    post:
-      tags: [player]
-      security: [{bearerAuth: []}]
-      summary: Legacy campaign completion endpoint
-      parameters:
-        - {name: level_id, in: path, required: true, schema: {type: integer, minimum: 0, maximum: 199}}
-      requestBody:
-        required: true
-        content:
-          application/json: {schema: {$ref: '#/components/schemas/LevelCompletionInput'}}
-      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
-  /api/v1/player/daily/complete:
-    post:
-      tags: [player]
-      security: [{bearerAuth: []}]
-      summary: Legacy daily completion endpoint
-      requestBody:
-        required: true
-        content:
-          application/json: {schema: {$ref: '#/components/schemas/DailyCompletionInput'}}
-      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
   /api/v1/player/skins/{skin_id}/purchase:
     post:
       tags: [player]
@@ -410,30 +377,6 @@ components:
       type: object
       required: [ticket_id]
       properties: {ticket_id: {type: string}}
-    LeaderboardSubmission:
-      type: object
-      required: [idempotency_key, score]
-      properties:
-        idempotency_key: {type: string, minLength: 8, maxLength: 128}
-        score: {type: integer, minimum: 0}
-        questions: {type: integer, minimum: 0}
-        elapsed_ms: {type: integer, minimum: 0}
-        room_id: {type: string}
-        outcome: {type: string}
-        metadata: {type: object}
-    LevelCompletionInput:
-      type: object
-      required: [idempotency_key, score, stars]
-      properties:
-        idempotency_key: {type: string, minLength: 8, maxLength: 128}
-        score: {type: integer, minimum: 0, maximum: 100}
-        stars: {type: integer, minimum: 1, maximum: 3}
-    DailyCompletionInput:
-      type: object
-      required: [idempotency_key, score]
-      properties:
-        idempotency_key: {type: string, minLength: 8, maxLength: 128}
-        score: {type: integer, minimum: 0}
     IdempotencyInput:
       type: object
       properties:

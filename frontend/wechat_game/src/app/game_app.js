@@ -62,10 +62,14 @@ class GameApp {
     this.renderOffsetY = 0;
     this.homeYScale = Math.min(1, this.height / 1584);
     this.applyRenderTransform();
-    this.progress = storage.load();
+    const backendConfigured = apiClient.isConfigured && apiClient.isConfigured();
+    // 正式模式在拿到服务端用户 ID 之前不读取任何旧账号存档，避免账号
+    // 切换时把上一个账号的本地进度显示或写入当前会话。
+    if (backendConfigured && storage.clearAccount) storage.clearAccount();
+    this.progress = backendConfigured ? storage.normalize({}) : storage.load();
     this.storageLoadInfo = storage.getLastLoadInfo ? storage.getLastLoadInfo() : {};
     this.backendAuth = { status: 'pending', user: null, error: null };
-    if (apiClient.isConfigured && apiClient.isConfigured()) this.startBackendLogin();
+    if (backendConfigured) this.startBackendLogin();
     else this.backendAuth = { status: 'offline', user: null, error: '后端地址尚未配置，当前使用本地模式' };
     // 先初始化，再领取登录奖励。不要在后面把已领取的奖励重置为 0，
     // 否则奖励虽然写入存档，但用户看不到提示反馈。
@@ -91,6 +95,11 @@ class GameApp {
     this.screen = 'home';
     this.audioScene = '';
     this.popup = '';
+    this.profileNotice = '';
+    this.profileSaving = false;
+    this.profileAuthPending = Boolean(this.progress.profile
+      && this.progress.profile.wechat_auth_status === 'pending'
+      && !String(this.progress.profile.avatar || '').trim());
     this.tutorialStep = 0;
     this.buttons = [];
     this.stars = this.makeStars();
@@ -218,6 +227,7 @@ class GameApp {
     this.lastTouchHandled = false;
     this.lastHandledTouchPoint = null;
     if (!this.progress.tutorial_seen) this.popup = 'tutorial';
+    else if (this.profileAuthPending) this.popup = 'profile_auth';
     this.leaderboardBoard = leaderboardService.BOARD_GLOBAL;
     this.leaderboardMode = leaderboardService.MODE_CAMPAIGN;
     this.leaderboardRemote = {};
@@ -243,27 +253,77 @@ class GameApp {
     this.loop();
   }
 
+  activateBackendAccount(user) {
+    const accountID = user && (user.id !== undefined ? user.id : user.user_id);
+    if (accountID === undefined || accountID === null || String(accountID).trim() === '') return false;
+    if (storage.setAccount) this.progress = storage.setAccount(accountID);
+    this.storageLoadInfo = storage.getLastLoadInfo ? storage.getLastLoadInfo() : {};
+    if (this.audio && this.progress.audio && this.audio.applySettings) this.audio.applySettings(this.progress.audio);
+    if (this.ads && this.progress.ads && this.ads.configure) this.ads.configure(this.progress.ads, storage.todayKey());
+    this.dateKey = storage.todayKey();
+    this.menuPage = clamp(Math.floor(safeNumber(this.progress.unlocked_level, 0) / 20), 0, 9);
+    const profile = this.progress.profile && typeof this.progress.profile === 'object' ? this.progress.profile : {};
+    this.profileAuthPending = profile.wechat_auth_status === 'pending' && !String(profile.avatar || '').trim();
+    if (this.popup === 'profile_auth' && !this.profileAuthPending) this.popup = '';
+    if (this.progress.tutorial_seen && this.profileAuthPending && !this.popup) this.popup = 'profile_auth';
+    return true;
+  }
+
+  syncProfileFromBackend(user) {
+    const remote = user && typeof user === 'object' ? user : {};
+    const nickname = String(remote.nickname || '').trim().slice(0, 12);
+    const avatar = String(remote.avatar || '').trim();
+    const hasWechatAvatar = /^https?:\/\//i.test(avatar);
+    if (!nickname && !hasWechatAvatar) return;
+    const current = this.progress.profile && typeof this.progress.profile === 'object'
+      ? this.progress.profile : {};
+    this.progress.profile = {
+      nickname: nickname || String(current.nickname || '\u7b97\u672f\u73a9\u5bb6'),
+      avatar: hasWechatAvatar ? avatar : String(current.avatar || '').trim(),
+      wechat_auth_status: hasWechatAvatar ? 'granted' : String(current.wechat_auth_status || 'pending'),
+    };
+    if (hasWechatAvatar) this.profileAuthPending = false;
+    storage.save(this.progress);
+  }
+
   startBackendLogin() {
     apiClient.ensureLogin().then((user) => {
-      this.backendAuth = { status: 'ready', user: user || null, error: null };
-      this.syncFriendRoomWithBackend();
+      this.activateBackendAccount(user);
+      this.syncProfileFromBackend(user);
+      this.backendAuth = { status: 'syncing', user: user && user.id ? user : null, error: null };
       apiClient.bootstrap().then((bootstrap) => {
+        const accountUser = (bootstrap && bootstrap.user) || user || null;
+        if (!this.activateBackendAccount(accountUser)) throw new Error('服务器未返回用户身份');
+        this.syncProfileFromBackend(accountUser);
         if (bootstrap && bootstrap.progress) {
           this.progress = storage.mergeServerProgress(this.progress, bootstrap.progress, { authoritative: true });
           this.ads.configure(this.progress.ads || {}, storage.todayKey());
+          this.syncProfileFromBackend(accountUser);
         }
         this.loginReward = Math.max(0, Number(bootstrap && bootstrap.login_reward || 0));
-        this.backendAuth = { status: 'ready', user: (bootstrap && bootstrap.user) || user || null, error: null };
+        this.backendAuth = { status: 'ready', user: accountUser, error: null };
         this.syncFriendRoomWithBackend();
       }).catch((bootstrapError) => {
+        this.backendAuth = { status: 'offline', user: null, error: String(bootstrapError && bootstrapError.message || bootstrapError || 'bootstrap failed') };
+        if (this.screen === 'friend_lobby') {
+          this.friendLocalFallback = false;
+          this.friendRoomBackendStatus = 'error';
+          this.friendRoomError = '服务器初始化失败，请重试';
+          this.status = this.friendRoomError;
+        }
         try {
           if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-bootstrap]', bootstrapError);
         } catch (logError) { /* 鍒濆鏁版嵁澶辫触涓嶅奖鍝嶆父鎴?*/ }
       });
     }).catch((error) => {
-      // Local play remains available when the API is unavailable in development.
       this.backendAuth = { status: 'offline', user: null, error: String(error && error.message || error || 'login failed') };
-      if (this.screen === 'friend_lobby') this.activateLocalFriendRoom(this.friendRoom && this.friendRoom.room_code);
+      if (this.screen === 'friend_lobby' && !this.isBackendRequired()) this.activateLocalFriendRoom(this.friendRoom && this.friendRoom.room_code);
+      else if (this.screen === 'friend_lobby') {
+        this.friendLocalFallback = false;
+        this.friendRoomBackendStatus = 'error';
+        this.friendRoomError = '服务器连接失败，请重试';
+        this.status = this.friendRoomError;
+      }
       try {
         if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-login]', this.backendAuth.error);
       } catch (logError) { /* 日志失败不影响游戏 */ }
@@ -288,10 +348,19 @@ class GameApp {
         if (!this.applyFriendRoomPayload(room)) return;
         this.friendLocalFallback = false;
         this.friendRoomBackendStatus = 'ready';
+      } else if (this.isBackendRequired()) {
+        this.friendRoomBackendStatus = 'error';
+        this.friendRoomError = '服务器房间数据无效，请重试';
+        this.status = this.friendRoomError;
       } else this.activateLocalFriendRoom(this.friendRoom && this.friendRoom.room_code);
     }).catch((error) => {
       if (requestToken !== this.gameRequestToken || this.screen !== 'friend_lobby') return;
-      this.activateLocalFriendRoom(this.friendRoom && this.friendRoom.room_code);
+      if (this.isBackendRequired()) {
+        this.friendLocalFallback = false;
+        this.friendRoomBackendStatus = 'error';
+        this.friendRoomError = '服务器房间暂不可用，请重试';
+        this.status = this.friendRoomError;
+      } else this.activateLocalFriendRoom(this.friendRoom && this.friendRoom.room_code);
       try {
         if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-friend-room-create]', error);
       } catch (logError) { /* local room remains available */ }
@@ -313,6 +382,11 @@ class GameApp {
         if (!this.applyFriendRoomPayload(room)) return;
         this.friendLocalFallback = false;
         this.friendRoomBackendStatus = 'ready';
+      } else if (this.isBackendRequired()) {
+        this.friendLocalFallback = false;
+        this.friendRoomBackendStatus = 'error';
+        this.friendRoomError = '服务器房间数据无效，请重试';
+        this.status = this.friendRoomError;
       } else this.activateLocalFriendRoom(roomCode);
     }).catch((error) => {
       if (requestToken !== this.gameRequestToken || this.screen !== 'friend_lobby') return;
@@ -323,6 +397,11 @@ class GameApp {
         this.friendRoomBackendStatus = 'ready';
         this.friendLocalFallback = false;
         this.beginFriendReconnect(error, 'join');
+      } else if (this.isBackendRequired()) {
+        this.friendLocalFallback = false;
+        this.friendRoomBackendStatus = 'error';
+        this.friendRoomError = '服务器房间暂不可用，请重试';
+        this.status = this.friendRoomError;
       } else {
         this.activateLocalFriendRoom(roomCode);
       }
@@ -335,6 +414,13 @@ class GameApp {
   }
 
   activateLocalFriendRoom(roomCode = '') {
+    if (this.isBackendRequired()) {
+      this.friendLocalFallback = false;
+      this.friendRoomBackendStatus = 'error';
+      this.friendRoomError = '正式模式不能切换本地房间，请重试服务器连接';
+      this.status = this.friendRoomError;
+      return null;
+    }
     const localRoom = friendMatch.createLocalRoom(roomCode || (this.friendRoom && this.friendRoom.room_code));
     this.friendRoom = localRoom;
     this.friendRules = Object.assign({}, friendMatch.rules(), localRoom.rules || {});
@@ -399,7 +485,25 @@ class GameApp {
     this.friendRoom = friendMatch.normalizeRoom(room, this.friendRoom);
     this.friendRules = Object.assign({}, friendMatch.rules(), this.friendRoom.rules || {});
     this.friendRoomLastPollAt = Date.now();
+    this.maybeAutoStartFriendRoom();
     return true;
+  }
+
+  maybeAutoStartFriendRoom() {
+    if (this.screen !== 'friend_lobby' || this.friendLobbyView !== 'room' || !this.friendRoom) return;
+    if (this.friendRoomExpired || this.friendStartRequestInFlight || this.friendServerStartAt) return;
+    const players = Array.isArray(this.friendRoom.players) ? this.friendRoom.players : [];
+    const allReady = players.length >= 2 && players.every((player) => Boolean(player && player.ready))
+      && Boolean(this.friendSelfReady);
+    if (!allReady) return;
+    const status = String(this.friendRoom.status || '').toLowerCase();
+    if (status === friendMatch.ROOM_STATUS.COUNTDOWN || status === friendMatch.ROOM_STATUS.RUNNING) {
+      this.friendServerStartAt = Number(this.friendRoom.start_at || this.friendRoom.startAt || 0) || Date.now();
+      this.startFriend();
+      return;
+    }
+    // 本地演示和正式房间都由状态机自动触发，界面不再需要“开始对战”按钮。
+    this.startFriend();
   }
 
   markFriendRoomExpired(reason = 'expired') {
@@ -524,7 +628,6 @@ class GameApp {
   }
 
   friendOpponentName() {
-    if (this.friendBotName) return this.friendBotName;
     const players = this.friendRoom && Array.isArray(this.friendRoom.players)
       ? this.friendRoom.players
       : [];
@@ -532,6 +635,9 @@ class GameApp {
       ? String(this.backendAuth.user.id || this.backendAuth.user.user_id || '')
       : 'local-player';
     const opponent = players.find((player) => String(player && (player.user_id || player.id) || '') !== currentPlayerID);
+    // 本地超时匹配会使用内部 bot 标记来驱动逐题进度，但这个实现细节
+    // 不应该暴露给玩家；正式服务端也可以复用同一规则。
+    if (opponent && opponent.bot) return '对手';
     return String(opponent && (opponent.nickname || opponent.name) || '').trim() || '对手';
   }
 
@@ -663,6 +769,8 @@ class GameApp {
     this.friendServerResult = payload;
     this.result.matchResult = matchResult;
     this.result.serverVerified = true;
+    this.result.serverSubmitPending = false;
+    this.result.serverSubmitError = false;
     // 对战结算以服务端数值为准，避免本地预测分数覆盖真实胜负。
     this.result.passed = matchResult.outcome === 'win';
     this.result.score = matchResult.player_score;
@@ -745,6 +853,21 @@ class GameApp {
     this.loadRemoteLeaderboard(mode, scope);
   }
 
+  markServerSubmissionFailed(mode, error) {
+    if (!this.isBackendRequired()) return;
+    const message = '服务器未确认，进度未保存，请重试';
+    if (this.result) {
+      this.result.serverSubmitPending = false;
+      this.result.serverVerified = false;
+      this.result.serverSubmitError = true;
+    }
+    this.status = message;
+    this.triggerFeedback('error', message);
+    try {
+      if (typeof console !== 'undefined' && console.warn) console.warn(`[game-backend-${mode}-submit]`, error);
+    } catch (logError) { /* visible feedback is sufficient */ }
+  }
+
   submitCampaignLevelCompletion(levelID, score, stars) {
     if (!this.backendAuth || this.backendAuth.status !== 'ready') return;
     const applyServerResult = (serverResult) => {
@@ -767,8 +890,11 @@ class GameApp {
           level_rewards: Number(serverResult.reward_coins || 0) > 0 ? { [serverLevelID]: true } : {},
         };
       this.progress = storage.mergeServerProgress(this.progress, serverProgress, { authoritative: true });
+      if (this.result) {
+        this.result.serverSubmitPending = false;
+        this.result.serverVerified = serverResult.validated !== undefined ? Boolean(serverResult.validated) : true;
+      }
       if (this.result && serverResult.validated !== undefined) {
-        this.result.serverVerified = Boolean(serverResult.validated);
         this.result.rewardCoins = Number(serverResult.reward_coins || 0);
         if (this.result.rewardCoins > 0 && Array.isArray(this.result.bonusLabels)) {
           this.result.bonusLabels.push(`闯关服务端奖励 +${this.result.rewardCoins}`);
@@ -810,6 +936,7 @@ class GameApp {
         },
         client_authoritative: false,
       }).then(applyServerResult).catch((error) => {
+        this.markServerSubmissionFailed('campaign', error);
         try {
           if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-campaign-submit]', error);
         } catch (logError) { /* 闯关本地结果仍可展示 */ }
@@ -817,17 +944,7 @@ class GameApp {
       return;
     }
 
-    if (!apiClient.completeLevel) return;
-    const idempotencyKey = `level_${levelID}_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
-    apiClient.completeLevel(levelID, {
-      idempotency_key: idempotencyKey,
-      score: Math.max(0, Math.min(100, Math.floor(Number(score) || 0))),
-      stars: Math.max(1, Math.min(3, Math.floor(Number(stars) || 1))),
-    }).then(applyServerResult).catch((error) => {
-      try {
-        if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-level-complete]', error);
-      } catch (logError) { /* legacy compatibility path */ }
-    });
+    if (this.isBackendRequired()) this.markServerSubmissionFailed('campaign', new Error('campaign run is missing'));
   }
 
   submitDailyChallengeCompletion(score) {
@@ -884,55 +1001,24 @@ class GameApp {
             },
           };
         this.progress = storage.mergeServerProgress(this.progress, serverProgress, { authoritative: true });
+        if (this.result) {
+          this.result.serverSubmitPending = false;
+          this.result.serverVerified = serverResult.validated !== undefined ? Boolean(serverResult.validated) : true;
+        }
         if (this.result && serverResult.validated !== undefined) {
-          this.result.serverVerified = Boolean(serverResult.validated);
           this.result.rewardCoins = Number(serverResult.reward_coins || 0);
           if (this.result.rewardCoins > 0 && Array.isArray(this.result.bonusLabels)) {
             this.result.bonusLabels.push(`每日挑战服务端奖励 +${this.result.rewardCoins}`);
           }
         }
       }).catch((error) => {
+        this.markServerSubmissionFailed('daily', error);
         try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-daily-submit]', error); } catch (logError) { /* daily local result remains visible */ }
       });
       return;
     }
-    if (!apiClient.completeDaily) return;
-    const idempotencyKey = `daily_${storage.todayKey()}_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
-    apiClient.completeDaily({
-      idempotency_key: idempotencyKey,
-      score: Math.max(0, Math.min(10000000, Math.floor(Number(score) || 0))),
-    }).then((serverResult) => {
-      if (!serverResult) return;
-      this.leaderboardRemote = {};
-      this.leaderboardRemoteFailedAt = {};
-      const dateKey = String(serverResult.date_key || storage.todayKey());
-      this.progress = storage.mergeServerProgress(this.progress, {
-        coins: Number(serverResult.coins || 0),
-        daily: {
-          last_date: dateKey,
-          streak: Number(serverResult.streak || 0),
-          best_score: Number(serverResult.best_score || 0),
-          completed: { [dateKey]: true },
-          reward_claimed: { [dateKey]: true },
-        },
-      });
-    }).catch((error) => {
-      try {
-        if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-daily-complete]', error);
-      } catch (logError) { /* 鍚庡彴涓嶅彲鐢ㄦ椂淇濈暀鏈湴姣忔棩鎸戞垬 */ }
-    });
-  }
-
-  submitServerLeaderboardScore(mode, data = {}) {
-    if (!this.backendAuth || this.backendAuth.status !== 'ready' || !apiClient.submitLeaderboardScore) return;
-    apiClient.submitLeaderboardScore(mode, data).then(() => {
-      this.leaderboardRemote = {};
-      this.leaderboardRemoteFailedAt = {};
-    }).catch((error) => {
-      try {
-        if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-leaderboard-submit]', error);
-      } catch (logError) { /* local leaderboard remains available */ }
-    });
+    if (this.isBackendRequired()) this.markServerSubmissionFailed('daily', new Error('daily run is missing'));
+    return;
   }
 
   submitEndlessLeaderboard(score, questions, elapsedMs) {
@@ -976,17 +1062,12 @@ class GameApp {
         this.leaderboardRemote = {};
         this.leaderboardRemoteFailedAt = {};
       }).catch((error) => {
+        this.markServerSubmissionFailed('endless', error);
         try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-endless-submit]', error); } catch (logError) { /* best effort */ }
       });
       return;
     }
-    this.submitServerLeaderboardScore(leaderboardService.MODE_ENDLESS, {
-      idempotency_key: runID,
-      score: Math.max(0, Math.floor(Number(score) || 0)),
-      questions: Math.max(0, Math.floor(Number(questions) || 0)),
-      elapsed_ms: Math.max(0, Math.floor(Number(elapsedMs) || 0)),
-      metadata: { run_id: runID },
-    });
+    if (this.isBackendRequired()) this.markServerSubmissionFailed('endless', new Error('endless run is missing'));
   }
 
   submitFriendLeaderboard(result, room, submission = null) {
@@ -1006,6 +1087,7 @@ class GameApp {
       }).catch((error) => {
         if (this.isFriendRoomTerminalError(error)) this.markFriendRoomExpired('expired');
         else this.beginFriendReconnect(error, 'result-submit');
+        this.markServerSubmissionFailed('friend', error);
         try {
           this.triggerFeedback('error', '对局校验失败，成绩未上传');
           if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-friend-match-submit]', error);
@@ -1013,15 +1095,7 @@ class GameApp {
       });
       return;
     }
-    this.submitServerLeaderboardScore(leaderboardService.MODE_FRIEND, {
-      idempotency_key: `friend_${matchID}`,
-      score: Math.max(0, Math.floor(Number(match.player_score) || 0)),
-      questions: Math.max(0, Math.floor(Number(match.player_solved) || 0)),
-      elapsed_ms: Math.max(0, Math.floor((Number(match.player_elapsed) || 0) * 1000)),
-      room_id: String(room && room.room_id || ''),
-      outcome: ['win', 'lose', 'draw'].includes(String(match.outcome || '')) ? String(match.outcome) : '',
-      metadata: { player_mistakes: Math.max(0, Math.floor(Number(match.player_mistakes) || 0)) },
-    });
+    if (this.isBackendRequired()) this.markServerSubmissionFailed('friend', new Error('friend match submission is missing'));
   }
 
   pauseForBackground() {
@@ -1115,7 +1189,7 @@ class GameApp {
       this.friendLobbyView = 'room';
       this.friendSelfReady = false;
       this.friendServerStartAt = 0;
-      this.friendLocalFallback = !(apiClient.isConfigured && apiClient.isConfigured());
+      this.friendLocalFallback = !this.isBackendRequired();
       this.friendRoomBackendStatus = this.friendLocalFallback ? 'local' : 'idle';
       this.screen = 'friend_lobby';
       // 分享进入要先让玩家看到房间，首次引导回到首页后再展示，不能盖住好友房间。
@@ -2618,6 +2692,75 @@ class GameApp {
     this.drawGoldTitle(HOME_TITLE.slice(2), 506, 529, uiFont(40, 900), 'left');
   }
 
+  getPlayerProfile() {
+    const user = this.backendAuth && this.backendAuth.user ? this.backendAuth.user : {};
+    const saved = this.progress && this.progress.profile && typeof this.progress.profile === 'object' ? this.progress.profile : {};
+    const userAvatar = String(user.avatar || '').trim();
+    const savedAvatar = String(saved.avatar || '').trim();
+    const candidateAvatar = /^https?:\/\//i.test(userAvatar) ? userAvatar : savedAvatar;
+    return {
+      nickname: String(user.nickname || saved.nickname || '\u7b97\u672f\u73a9\u5bb6').trim().slice(0, 12) || '\u7b97\u672f\u73a9\u5bb6',
+      avatar: /^https?:\/\//i.test(candidateAvatar) ? candidateAvatar : '',
+    };
+  }
+
+  drawProfileAvatar(cx, cy, radius, avatar = '') {
+    const key = String(avatar || '').trim();
+    const accent = GAME_UI.cyan;
+    this.ctx.save();
+    this.ctx.shadowColor = `${accent}aa`;
+    this.ctx.shadowBlur = 16;
+    this.ctx.beginPath();
+    this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    this.ctx.fillStyle = 'rgba(18,18,74,0.96)';
+    this.ctx.fill();
+    this.ctx.strokeStyle = accent;
+    this.ctx.lineWidth = 3;
+    this.ctx.stroke();
+    this.ctx.restore();
+    if (/^https?:\/\//i.test(key)) {
+      const profileImage = this.getProfileImage(key);
+      if (profileImage && profileImage.loaded) {
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, Math.max(1, radius - 2), 0, Math.PI * 2);
+        this.ctx.clip();
+        this.ctx.drawImage(profileImage.image, cx - radius + 2, cy - radius + 2, (radius - 2) * 2, (radius - 2) * 2);
+        this.ctx.restore();
+        return;
+      }
+    }
+    // 未授权或头像加载失败时只显示轮廓占位，不使用系统生成头像。
+    this.ctx.save();
+    this.ctx.strokeStyle = 'rgba(176,218,255,0.92)';
+    this.ctx.lineWidth = Math.max(2, radius * 0.09);
+    this.ctx.lineCap = 'round';
+    this.ctx.beginPath();
+    this.ctx.arc(cx, cy - radius * 0.22, radius * 0.22, 0, Math.PI * 2);
+    this.ctx.stroke();
+    this.ctx.beginPath();
+    this.ctx.arc(cx, cy + radius * 0.38, radius * 0.48, Math.PI * 1.08, Math.PI * 1.92);
+    this.ctx.stroke();
+    this.ctx.restore();
+  }
+
+  getProfileImage(url) {
+    if (!this.profileImageCache) this.profileImageCache = {};
+    if (this.profileImageCache[url]) return this.profileImageCache[url];
+    if (typeof wx === 'undefined' || !wx.createImage) return null;
+    try {
+      const image = wx.createImage();
+      const record = { image, loaded: false };
+      image.onload = () => { record.loaded = true; };
+      image.onerror = () => { record.loaded = false; record.failed = true; };
+      image.src = url;
+      this.profileImageCache[url] = record;
+      return record;
+    } catch (error) {
+      return null;
+    }
+  }
+
   drawTopHud() {
     const menuBottom = this.menuButton
       ? (safeNumber(this.menuButton.bottom, 0) - this.renderOffsetY) / this.renderScale
@@ -2630,11 +2773,27 @@ class GameApp {
     const settingHeight = 70;
     const settingY = Math.round(topY);
 
-    this.drawGlassCard(43, topY, 240, 70, 36, 'rgba(30,24,75,0.75)', 'rgba(255,205,77,0.82)', {
+    // 顶部顺序：资料 → 金币 → 设置。三个入口保持同一高度，避免真机上错位。
+    const profileX = 43;
+    const profileWidth = 240;
+    const profile = this.getPlayerProfile();
+    this.withHomePressEffect('profile', profileX, settingY, profileWidth, settingHeight, () => {
+      this.drawGlassCard(profileX, settingY, profileWidth, settingHeight, 31, 'rgba(23,21,71,0.76)', 'rgba(80,227,255,0.48)', {
+        shadowColor: 'rgba(80,227,255,0.20)', shadowBlur: 10, shadowOffsetY: 0, innerAlpha: 0.08,
+      });
+      this.drawProfileAvatar(profileX + 35, settingY + 35, 22, profile.avatar);
+      this.drawFitText(profile.nickname, profileX + 66, settingY + 28, profileWidth - 78, uiFont(19, 900), '#ffffff', 'left');
+      this.drawFitText('\u6211\u7684\u8d44\u6599', profileX + 66, settingY + 51, profileWidth - 78, uiFont(13, 600), GAME_UI.secondary, 'left');
+    });
+    this.addHomeHitArea('profile', profileX, settingY, profileWidth, settingHeight, () => { this.popup = this.popup === 'profile' ? '' : 'profile'; this.profileNotice = ''; });
+
+    const coinX = 326;
+    const coinWidth = 190;
+    this.drawGlassCard(coinX, topY, coinWidth, 70, 36, 'rgba(30,24,75,0.75)', 'rgba(255,205,77,0.82)', {
       shadowColor: 'rgba(255,190,50,0.34)', shadowBlur: 15, shadowOffsetY: 0, innerAlpha: 0.08,
     });
-    this.drawCoinIcon(87, topY + 35, 31);
-    this.drawFitText(String(safeNumber(this.progress.coins)), 165, topY + 37, 146, uiFont(39, 900), '#ffffff');
+    this.drawCoinIcon(coinX + 32, topY + 35, 24);
+    this.drawFitText(String(safeNumber(this.progress.coins)), coinX + 92, topY + 37, coinWidth - 108, uiFont(31, 900), '#ffffff');
 
     this.withHomePressEffect('settings', settingX, settingY, settingWidth, settingHeight, () => {
       this.drawGlassCard(settingX, settingY, settingWidth, settingHeight, 31, 'rgba(23,21,71,0.76)', 'rgba(210,210,255,0.55)', {
@@ -2815,7 +2974,7 @@ class GameApp {
       shadow: 'rgba(255,60,190,0.33)',
       shadowBlur: 24,
       hotspot: 'rgba(255,83,199,0.12)',
-    }, (cx, cy) => this.drawVsStar(cx, cy - 5, 0.76), '好友对战', '看看谁算得快', () => this.showFriendLobby());
+    }, (cx, cy) => this.drawVsStar(cx, cy - 5, 0.76), '对战模式', '和好友或玩家比速度', () => this.showFriendLobby());
 
     this.drawPrimaryModeCard('endless', 503, cardY + 8, cardWidth, cardHeight - 8, {
       top: 'rgba(125,70,220,0.47)',
@@ -2943,7 +3102,7 @@ class GameApp {
     this.gameCardHitAreas = [];
     this.gameCardHitCardCount = Array.isArray(this.cards) ? this.cards.length : 0;
     const layout = this.gameLayout();
-    const title = this.mode === 'campaign' ? `第 ${this.currentLevel + 1} 关` : this.mode === 'daily' ? '每日挑战' : this.mode === 'endless' ? '无尽模式' : '好友对战';
+    const title = this.mode === 'campaign' ? `第 ${this.currentLevel + 1} 关` : this.mode === 'daily' ? '每日挑战' : this.mode === 'endless' ? '无尽模式' : '对战模式';
     const friend = this.mode === 'friend';
     const modeVariant = friend ? 'magenta' : this.mode === 'endless' ? 'violet' : this.mode === 'daily' ? 'gold' : 'cyan';
     this.drawGameHeader(title, '‹ 返回', () => this.backFromGame(), friend ? '同题竞速' : '');
@@ -2968,14 +3127,23 @@ class GameApp {
     if (friend) {
       this.pollFriendMatchProgress();
       const opponent = this.friendOpponentState();
-      this.drawGamePanel(32, layout.infoY, this.width - 64, 72, 'magenta', {
+      const solvedCount = this.friendQuestionCount();
+      const selfRatio = clamp(this.friendPlayerSolved / Math.max(1, solvedCount), 0, 1);
+      const opponentRatio = clamp(opponent.solved / Math.max(1, solvedCount), 0, 1);
+      this.drawGamePanel(32, layout.infoY, this.width - 64, 122, 'magenta', {
         radius: 22,
         shadowColor: 'rgba(255,80,205,0.26)',
         shadowBlur: 10,
         shadowOffsetY: 0,
       });
-      this.drawFitText(`我 ${this.friendPlayerSolved} / ${this.friendQuestionCount()} 题   ·   ${this.friendOpponentName()} ${opponent.solved} / ${this.friendQuestionCount()} 题`, this.width / 2, layout.infoY + 25, this.width - 86, uiFont(15, 800), GAME_UI.text);
-      this.drawFitText('同一套题目 · 答错扣 5 秒 · 不允许提示', this.width / 2, layout.infoY + 52, this.width - 86, uiFont(13, 500), GAME_UI.secondary);
+      const opponentTitle = this.friendOpponentName();
+      this.drawFitText('我', 76, layout.infoY + 27, 90, uiFont(19, 900), GAME_UI.cyanLight, 'left');
+      this.drawFitText(opponentTitle, 392, layout.infoY + 27, 282, uiFont(18, 900), GAME_UI.magentaLight, 'left');
+      this.drawProgressLine(76, layout.infoY + 45, 260, selfRatio, 'cyan', 12);
+      this.drawProgressLine(392, layout.infoY + 45, 282, opponentRatio, 'magenta', 12);
+      this.drawFitText(`${this.friendPlayerSolved} / ${solvedCount} 题`, 76, layout.infoY + 83, 260, uiFont(22, 900), GAME_UI.text, 'left');
+      this.drawFitText(`${opponent.solved} / ${solvedCount} 题`, 392, layout.infoY + 83, 282, uiFont(22, 900), GAME_UI.text, 'left');
+      this.drawFitText('同一套题目 · 答错扣 5 秒 · 不允许提示', this.width / 2, layout.infoY + 108, this.width - 86, uiFont(13, 500), GAME_UI.secondary);
     }
 
     const contentTop = layout.contentY;
@@ -3179,6 +3347,19 @@ class GameApp {
     this.drawStatCard(284, statY, 182, 82, '错误次数', String(result.mistakes || 0), result.mistakes ? 'magenta' : 'cyan');
     this.drawStatCard(496, statY, 182, 82, '金币奖励', `+${safeNumber(result.rewardCoins)}`, 'gold');
     let noteY = statY + 116;
+    if (this.mode !== 'friend') {
+      const verificationLabel = result.serverVerified
+        ? '服务端已校验'
+        : result.serverSubmitPending
+          ? '等待服务端确认'
+          : result.serverSubmitError
+            ? '服务器未确认，进度未保存，请重试'
+            : this.isBackendRequired()
+              ? '服务器未确认，进度未保存'
+              : '本地体验模式';
+      this.drawFitText(verificationLabel, this.width / 2, noteY, this.width - 130, uiFont(14, 700), result.serverVerified ? GAME_UI.success : GAME_UI.muted);
+      noteY += 30;
+    }
     if (this.mode === 'endless') {
       const reached = this.currentQuestion + (result.passed ? 1 : 0);
       this.drawFitText(`无尽阶段 ${Math.floor(Math.max(0, reached - 1) / 3) + 1} · 全局答题 ${reached}`, this.width / 2, noteY, this.width - 130, uiFont(17, 800), GAME_UI.violetLight);
@@ -3512,7 +3693,6 @@ class GameApp {
     const shareY = panelY + roomPanelHeight + (compact ? 68 : 84);
     this.drawNeonButton(58, shareY, this.width - 116, 70, '分享给微信好友', () => this.sharePayload(shareService.createFriendRoomPayload(room)), 'cyan', { fontSize: 22, radius: 30, key: 'friend-share' });
     this.drawNeonButton(58, shareY + 102, this.width - 116, 70, selfReady ? '取消准备' : '准备', () => this.toggleFriendReady(), 'cyan', { fontSize: 22, radius: 30, disabled: this.friendReadyRequestInFlight, key: 'friend-ready' });
-    this.drawNeonButton(58, shareY + 204, this.width - 116, 70, `开始 ${roomRules.question_count || 8} 题同题竞速`, () => this.startFriend(), 'magenta', { fontSize: 22, radius: 30, disabled: !canStart, key: 'friend-start' });
     const lobbyHint = this.friendRoomBackendStatus === 'loading'
       ? '正在连接好友房间…'
       : this.friendRoomBackendStatus === 'error'
@@ -3522,9 +3702,9 @@ class GameApp {
         : !opponentReady
           ? '等待对手加入并准备'
           : canStart
-            ? (localMode ? '对手已准备，可以开始体验' : '双方已准备，将使用同一组题目')
+            ? (localMode ? '双方已准备，即将自动开始' : '双方已准备，正在自动启动对战')
             : '正在准备对战…';
-    this.drawFitText(lobbyHint, this.width / 2, Math.min(shareY + 314, this.visibleBottom(26)), this.width - 96, uiFont(14, 500), GAME_UI.muted);
+    this.drawFitText(lobbyHint, this.width / 2, Math.min(shareY + 230, this.visibleBottom(26)), this.width - 96, uiFont(14, 500), GAME_UI.muted);
   }
 
   toggleFriendReady() {
@@ -3541,6 +3721,7 @@ class GameApp {
     if (self) self.ready = nextReady;
     if (localMode || !apiClient.readyFriendRoom || !roomCode) {
       this.triggerFeedback('success', nextReady ? '\u5df2\u51c6\u5907' : '\u5df2\u53d6\u6d88\u51c6\u5907');
+      this.maybeAutoStartFriendRoom();
       return;
     }
     this.friendReadyRequestInFlight = true;
@@ -3550,6 +3731,7 @@ class GameApp {
         this.friendRules = Object.assign({}, friendMatch.rules(), room.rules || {});
       }
       this.triggerFeedback('success', nextReady ? '\u5df2\u51c6\u5907' : '\u5df2\u53d6\u6d88\u51c6\u5907');
+      this.maybeAutoStartFriendRoom();
     }).catch((error) => {
       this.friendSelfReady = !nextReady;
       if (self) self.ready = !nextReady;
@@ -3562,7 +3744,7 @@ class GameApp {
 
   drawFriendEntry() {
     this.buttons = [];
-    this.drawGameHeader('\u597d\u53cb\u5bf9\u6218', '\u2039 \u8fd4\u56de', () => this.goHome());
+    this.drawGameHeader('\u5bf9\u6218\u6a21\u5f0f', '\u2039 \u8fd4\u56de', () => this.goHome());
     const panelY = this.screenContentTop(96);
     const width = this.width - 116;
     const roomInput = friendMatch.sanitizeRoomCode(this.friendRoomInput || '');
@@ -3577,17 +3759,29 @@ class GameApp {
     this.drawFitText('\u548c\u670b\u53cb\u6216\u540c\u65f6\u5728\u7ebf\u7684\u73a9\u5bb6\u6bd4\u4e00\u5c40', this.width / 2, panelY + 112, width - 84, uiFont(17, 600), GAME_UI.text);
     this.drawFitText('\u623f\u95f4\u5bf9\u6218\u53ef\u5206\u4eab\uff0c\u5feb\u901f\u5339\u914d\u4f1a\u81ea\u52a8\u8fdb\u5165\u5bf9\u5c40', this.width / 2, panelY + 160, width - 70, uiFont(14, 500), GAME_UI.secondary);
 
-    // 将输入框、两个主按钮和规则说明作为一个整体放在剩余可视区域的中部，
-    // 避免入口页控件集中在上方、底部留下大块空白；不同手机高度会自动重新计算。
-    const actionStackHeight = 418;
-    const actionAreaTop = panelY + 220;
-    const actionAreaBottom = this.visibleBottom(74);
-    const inputY = clamp(
-      Math.round((actionAreaTop + actionAreaBottom - actionStackHeight) / 2),
-      panelY + 254,
-      Math.max(panelY + 254, actionAreaBottom - actionStackHeight),
-    );
-    this.drawFitText('\u8f93\u5165\u623f\u95f4\u7801', 84, inputY - 18, 180, uiFont(18, 800), GAME_UI.text, 'left');
+    // 快速匹配是主入口，好友房间作为下方的备用入口。
+    const quickY = panelY + 238;
+    this.drawGamePanel(58, quickY, width, 178, 'violet', {
+      radius: 28,
+      shadowColor: 'rgba(155,78,255,0.24)',
+      shadowBlur: 18,
+      shadowOffsetY: 0,
+    });
+    this.drawFitText('快速匹配', this.width / 2, quickY + 38, width - 80, uiFont(24, 900), GAME_UI.violetLight);
+    this.drawFitText('和正在等待的玩家自动组成一局', this.width / 2, quickY + 68, width - 90, uiFont(14, 500), GAME_UI.secondary);
+    this.drawNeonButton(82, quickY + 88, width - 48, 66, '开始快速匹配', () => this.startFriendMatchmaking(), 'violet', { fontSize: 21, radius: 24, key: 'friend-matchmaking' });
+
+    const roomY = quickY + 204;
+    this.drawGamePanel(58, roomY, width, 326, 'magenta', {
+      radius: 28,
+      shadowColor: 'rgba(255,80,205,0.20)',
+      shadowBlur: 16,
+      shadowOffsetY: 0,
+    });
+    this.drawFitText('好友房间', this.width / 2, roomY + 34, width - 80, uiFont(23, 900), GAME_UI.magentaLight);
+    this.drawFitText('输入房间码，和朋友进行同题竞速', this.width / 2, roomY + 62, width - 90, uiFont(14, 500), GAME_UI.secondary);
+    const inputY = roomY + 84;
+    this.drawFitText('\u8f93\u5165\u623f\u95f4\u7801', 84, inputY - 12, 180, uiFont(16, 800), GAME_UI.text, 'left');
     this.drawGamePanel(58, inputY, 390, 72, 'dark', {
       radius: 22,
       fill: 'rgba(8,8,48,0.82)',
@@ -3601,11 +3795,8 @@ class GameApp {
     this.drawNeonButton(468, inputY, 224, 72, '\u52a0\u5165\u623f\u95f4', () => this.joinFriendRoomEntry(), 'cyan', { fontSize: 20, radius: 22, disabled: roomInput.length !== 6, key: 'friend-room-join' });
 
     const createY = inputY + 104;
-    this.drawNeonButton(58, createY, width, 72, '\u521b\u5efa\u623f\u95f4\u5e76\u5206\u4eab', () => this.createFriendRoomEntry(), 'magenta', { fontSize: 22, radius: 28, key: 'friend-room-create' });
-    this.drawNeonButton(58, createY + 96, width, 72, '\u5feb\u901f\u5339\u914d', () => this.startFriendMatchmaking(), 'violet', { fontSize: 22, radius: 28, key: 'friend-matchmaking' });
-    this.drawGamePanel(58, createY + 204, width, 110, 'dark', { radius: 22, shadow: false, stroke: 'rgba(255,255,255,0.13)' });
-    this.drawFitText('\u5339\u914d\u89c4\u5219', this.width / 2, createY + 236, width - 60, uiFont(17, 900), GAME_UI.gold);
-    this.drawFitText('\u7b49\u5f85\u6700\u591a15\u79d2\uff0c\u5339\u914d\u8303\u56f4\u4f1a\u9010\u6b65\u6269\u5927', this.width / 2, createY + 278, width - 52, uiFont(15, 600), GAME_UI.secondary);
+    this.drawNeonButton(58, createY, width, 68, '\u521b\u5efa\u623f\u95f4\u5e76\u5206\u4eab', () => this.createFriendRoomEntry(), 'magenta', { fontSize: 20, radius: 25, key: 'friend-room-create' });
+    this.drawFitText('\u5feb\u901f\u5339\u914d\u8d85\u65f6\u540e\u4f1a\u5339\u914d\u4eba\u673a\uff0c\u597d\u53cb\u623f\u95f4\u53ef\u5206\u4eab', this.width / 2, roomY + 288, width - 60, uiFont(13, 500), GAME_UI.muted);
   }
 
   drawFriendMatchmaking() {
@@ -3635,10 +3826,10 @@ class GameApp {
     this.ctx.stroke();
     this.ctx.restore();
     if (isBotReady) {
-      const profile = friendMatch.botProfile(this.friendBotDifficulty);
-      this.drawFitText(profile.name, this.width / 2, panelY + 294, width - 90, uiFont(28, 900), GAME_UI.text);
-      this.drawFitText('\u5bf9\u624b\u5df2\u51c6\u5907', this.width / 2, panelY + 338, width - 100, uiFont(18, 700), GAME_UI.goldLight);
-      this.drawFitText('\u4e0d\u7528\u7b49\u5f85\uff0c\u73b0\u5728\u5c31\u5f00\u59cb\u7b54\u9898', this.width / 2, panelY + 386, width - 90, uiFont(16, 500), GAME_UI.secondary);
+      // 匹配超时后的本地对手与真人对手使用同一套文案，避免暴露匹配兜底策略。
+      this.drawFitText('\u5339\u914d\u6210\u529f', this.width / 2, panelY + 294, width - 90, uiFont(28, 900), GAME_UI.text);
+      this.drawFitText('\u5bf9\u624b\u5df2\u51c6\u5907\uff0c\u5373\u5c06\u5f00\u59cb', this.width / 2, panelY + 338, width - 100, uiFont(18, 700), GAME_UI.goldLight);
+      this.drawFitText('\u6b63\u5728\u8fdb\u5165\u5bf9\u6218\uff0c\u8bf7\u7a0d\u5019', this.width / 2, panelY + 386, width - 90, uiFont(16, 500), GAME_UI.secondary);
     } else if (isMatched) {
       this.drawFitText('\u5bf9\u624b\u5df2\u51c6\u5907\uff0c\u5373\u5c06\u5f00\u59cb', this.width / 2, panelY + 320, width - 80, uiFont(19, 800), GAME_UI.cyanLight);
     } else {
@@ -3647,7 +3838,16 @@ class GameApp {
       this.drawFitText('\u540c\u65f6\u70b9\u51fb\u5feb\u901f\u5339\u914d\u7684\u73a9\u5bb6\u4f1a\u4f18\u5148\u5339\u914d', this.width / 2, panelY + 400, width - 82, uiFont(14, 500), GAME_UI.muted);
     }
     if (isBotReady) {
-      this.drawNeonButton(58, panelY + 536, width, 72, '\u5f00\u59cb\u5bf9\u6218', () => this.startQueuedFriendMatch(), 'gold', { fontSize: 22, radius: 28, key: 'friend-bot-start' });
+      // updateFriendMatchmaking 会在短暂过渡后自动进入对局，不再绘制可点击的“开始对战”。
+      this.drawGamePanel(58, panelY + 536, width, 72, 'gold', {
+        radius: 28,
+        fill: 'rgba(94,70,150,0.58)',
+        stroke: 'rgba(255,211,77,0.62)',
+        shadowColor: 'rgba(255,205,74,0.22)',
+        shadowBlur: 12,
+        shadowOffsetY: 0,
+      });
+      this.drawFitText('\u6b63\u5728\u81ea\u52a8\u5f00\u59cb\u2026', this.width / 2, panelY + 580, width - 70, uiFont(21, 900), GAME_UI.goldLight);
     } else {
       this.drawNeonButton(58, panelY + 536, width, 72, '\u53d6\u6d88\u5339\u914d', () => this.cancelFriendMatchmaking(), 'violet', { fontSize: 22, radius: 28, key: 'friend-matchmaking-cancel' });
     }
@@ -3736,6 +3936,7 @@ class GameApp {
   startFriendMatchmaking() {
     if (this.friendInputKeyboardActive && wx.hideKeyboard) { try { wx.hideKeyboard(); } catch (error) { /* close is best effort */ } }
     this.friendInputKeyboardActive = false;
+    if (!this.ensureBackendReady('friend', 'friend_lobby')) return;
     const now = Date.now();
     this.friendMatchmakingRunId += 1;
     this.friendMatchmaking = {
@@ -3749,7 +3950,7 @@ class GameApp {
     };
     this.friendMatchmakingLastPollAt = 0;
     this.friendMatchmakingRequestInFlight = false;
-    this.friendMatchmakingLocal = !(apiClient.isConfigured && apiClient.isConfigured());
+    this.friendMatchmakingLocal = !this.isBackendRequired();
     this.friendMatchmakingError = '';
     this.screen = 'friend_matchmaking';
   }
@@ -3782,9 +3983,14 @@ class GameApp {
         this.applyFriendMatchmakingPayload(payload);
       }).catch((error) => {
         if (runId !== this.friendMatchmakingRunId || !this.friendMatchmaking) return;
-        this.friendMatchmakingLocal = true;
-        state.apiStarted = false;
         this.friendMatchmakingError = String(error && error.message || error || '\u7f51\u7edc\u5339\u914d\u5931\u8d25');
+        if (this.isBackendRequired()) {
+          state.status = 'error';
+          this.status = '服务器匹配暂不可用，请重试';
+        } else {
+          this.friendMatchmakingLocal = true;
+          state.apiStarted = false;
+        }
       }).then(() => {
         if (runId === this.friendMatchmakingRunId) this.friendMatchmakingRequestInFlight = false;
       });
@@ -3797,7 +4003,13 @@ class GameApp {
       }).catch(() => { /* matchmaking polling is best effort; timeout fallback remains available */ });
     }
 
-    if (elapsed >= friendMatch.MATCHMAKING_TIMEOUT) this.prepareBotFriendMatch();
+    if (elapsed >= friendMatch.MATCHMAKING_TIMEOUT) {
+      if (this.isBackendRequired()) {
+        state.status = 'error';
+        this.friendMatchmakingError = '暂时没有匹配到玩家，请重试';
+        this.status = '暂时没有匹配到玩家，请重试';
+      } else this.prepareBotFriendMatch();
+    }
   }
 
   updateFriendCountdown() {
@@ -3845,13 +4057,19 @@ class GameApp {
   }
 
   prepareBotFriendMatch() {
+    if (this.isBackendRequired()) {
+      if (this.friendMatchmaking) this.friendMatchmaking.status = 'error';
+      this.friendMatchmakingError = '正式模式不会自动切换机器人，请重试匹配';
+      this.status = this.friendMatchmakingError;
+      return;
+    }
     if (!this.friendMatchmaking || this.friendMatchmaking.status !== 'searching') return;
     const seed = (Date.now() ^ Math.floor(Math.random() * 0x100000)) >>> 0 || 1;
     const code = String(100000 + (seed % 900000)).padStart(6, '0');
-    const room = friendMatch.createLocalRoom(code, '\u6211', '\u4eba\u673a');
+    const room = friendMatch.createLocalRoom(code, '\u6211', '\u5bf9\u624b');
     const difficulty = friendMatch.randomBotDifficulty(room.room_seed);
     const profile = friendMatch.botProfile(difficulty);
-    room.players[1] = { id: profile.id, name: profile.name, ready: true, bot: true, difficulty };
+    room.players[1] = { id: profile.id, name: '\u5bf9\u624b', ready: true, bot: true, difficulty };
     room.status = 'ready';
     room.local_fallback = true;
     this.friendRoom = room;
@@ -3862,7 +4080,7 @@ class GameApp {
     this.friendLobbyView = 'room';
     this.friendSelfReady = true;
     this.friendBotDifficulty = difficulty;
-    this.friendBotName = profile.name;
+    this.friendBotName = '\u5bf9\u624b';
     this.friendMatchmaking.status = 'bot_ready';
     this.friendMatchmaking.botReadyAt = Date.now() + 750;
     this.friendMatchmakingRunId += 1;
@@ -3890,6 +4108,105 @@ class GameApp {
     this.friendLobbyView = 'entry';
     this.friendRoom = null;
     this.triggerFeedback('info', '\u5df2\u53d6\u6d88\u5339\u914d');
+  }
+
+  skipWechatProfile() {
+    this.progress.profile = Object.assign({}, this.progress.profile || {}, {
+      wechat_auth_status: 'declined',
+    });
+    this.profileAuthPending = false;
+    storage.save(this.progress);
+    this.profileNotice = '\u7a0d\u540e\u53ef\u5728\u6211\u7684\u8d44\u6599\u4e2d\u91cd\u65b0\u6388\u6743';
+    this.popup = '';
+  }
+
+  importWechatProfile() {
+    if (this.profileSaving) return;
+    if (!platform.requestWechatProfile) {
+      this.profileNotice = '当前版本暂不支持微信资料授权';
+      return;
+    }
+    this.profileNotice = '正在请求微信头像和昵称…';
+    platform.requestWechatProfile().then((profile) => {
+      const current = this.getPlayerProfile();
+      this.saveProfileChanges({
+        nickname: profile.nickname || current.nickname,
+        avatar: profile.avatar || current.avatar,
+        wechat_auth_status: 'granted',
+      }, () => {
+        this.progress.profile.wechat_auth_status = 'granted';
+        this.profileAuthPending = false;
+        this.popup = '';
+      });
+    }).catch((error) => {
+      this.profileNotice = String(error && error.message || '未获得微信资料授权');
+      this.triggerFeedback('info', '未授权也不影响正常游戏');
+    });
+  }
+
+  saveProfileChanges(changes = {}, onSaved = null) {
+    if (this.profileSaving) return;
+    const previous = this.getPlayerProfile();
+    const next = {
+      nickname: changes.nickname !== undefined ? String(changes.nickname || '').trim() : previous.nickname,
+      avatar: changes.avatar !== undefined ? String(changes.avatar || '').trim() : previous.avatar,
+      wechat_auth_status: changes.wechat_auth_status || (this.progress.profile && this.progress.profile.wechat_auth_status) || 'pending',
+    };
+    if (next.nickname.length < 1 || next.nickname.length > 12) {
+      this.profileNotice = '\u6635\u79f0\u9700\u89811\u523012\u4e2a\u5b57\u7b26';
+      this.triggerFeedback('error', this.profileNotice);
+      return;
+    }
+    const apply = (profile) => {
+      this.progress.profile = {
+        nickname: profile.nickname,
+        avatar: profile.avatar,
+        wechat_auth_status: profile.wechat_auth_status || next.wechat_auth_status || 'pending',
+      };
+      if (this.backendAuth && this.backendAuth.user) this.backendAuth.user = Object.assign({}, this.backendAuth.user, profile);
+      storage.save(this.progress);
+      if (typeof onSaved === 'function') onSaved(this.progress.profile);
+    };
+    if (!this.backendAuth || this.backendAuth.status !== 'ready' || !apiClient.updateProfile) {
+      apply(next);
+      this.profileNotice = '\u5df2\u4fdd\u5b58\u5230\u672c\u673a';
+      return;
+    }
+    this.profileSaving = true;
+    this.profileNotice = '\u6b63\u5728\u4fdd\u5b58\u8d44\u6599\u2026';
+    apiClient.updateProfile(next).then((remote) => {
+      const profile = remote && typeof remote === 'object' ? remote : next;
+      const saved = {
+        nickname: String(profile.nickname || next.nickname).trim().slice(0, 12),
+        avatar: String(profile.avatar || next.avatar).trim(),
+      };
+      apply(saved);
+      this.profileNotice = '\u8d44\u6599\u5df2\u540c\u6b65';
+    }).catch((error) => {
+      this.profileNotice = String(error && error.statusCode === 401 ? '\u767b\u5f55\u5df2\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u8fdb\u5165\u6e38\u620f' : '\u8d44\u6599\u4fdd\u5b58\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5');
+    }).then(() => { this.profileSaving = false; });
+  }
+
+  editProfileNickname() {
+    if (this.profileSaving || typeof wx === 'undefined' || !wx.showModal) {
+      this.profileNotice = '\u5f53\u524d\u73af\u5883\u6682\u4e0d\u652f\u6301\u7f16\u8f91\u6635\u79f0';
+      return;
+    }
+    const profile = this.getPlayerProfile();
+    try {
+      wx.showModal({
+        title: '\u4fee\u6539\u6635\u79f0',
+        content: profile.nickname,
+        editable: true,
+        placeholderText: '\u8bf7\u8f93\u51651\u523012\u4e2a\u5b57\u7b26',
+        confirmText: '\u4fdd\u5b58',
+        success: (result) => {
+          if (result && result.confirm) this.saveProfileChanges({ nickname: result.content });
+        },
+      });
+    } catch (error) {
+      this.profileNotice = '\u65e0\u6cd5\u6253\u5f00\u6635\u79f0\u7f16\u8f91';
+    }
   }
 
   saveAudioSettings() {
@@ -4000,7 +4317,7 @@ class GameApp {
   finishTutorial() {
     this.progress.tutorial_seen = true;
     storage.save(this.progress);
-    this.popup = '';
+    this.popup = this.profileAuthPending ? 'profile_auth' : '';
     this.tutorialStep = 0;
   }
 
@@ -4059,6 +4376,37 @@ class GameApp {
       this.drawFitText(this.tutorialStep === 0 ? '数字卡片' : this.tutorialStep === 1 ? '+   −   ×   ÷' : '合成结果 → 24', this.width / 2, y + 392, 240, uiFont(24, 900), GAME_UI.cyan);
       this.drawNeonButton(x + 48, y + 454, 210, 56, '跳过引导', () => this.finishTutorial(), 'violet', { fontSize: 17, radius: 18, key: 'tutorial-skip' });
       this.drawNeonButton(x + 282, y + 454, 242, 56, this.tutorialStep >= 2 ? '开始练习' : '下一步', () => this.nextTutorial(), 'cyan', { fontSize: 18, radius: 18, key: 'tutorial-next' });
+      return;
+    }
+    if (this.popup === 'profile_auth') {
+      width = 560; height = 500;
+      x = (this.width - width) / 2;
+      y = this.modalTop(height);
+      const profile = this.getPlayerProfile();
+      this.drawModalFrame(x, y, width, height, '\u4f7f\u7528\u5fae\u4fe1\u5934\u50cf\u548c\u6635\u79f0', '\u7528\u4e8e\u597d\u53cb\u5bf9\u6218\u548c\u6392\u884c\u699c\u5c55\u793a', 'cyan');
+      this.drawGamePanel(x + 34, y + 112, width - 68, 130, 'dark', { radius: 24, shadow: false });
+      this.drawProfileAvatar(x + 100, y + 177, 42, profile.avatar);
+      this.drawFitText(profile.nickname, x + 166, y + 166, width - 220, uiFont(25, 900), GAME_UI.text, 'left');
+      this.drawFitText('\u6388\u6743\u540e\u4f1a\u663e\u793a\u4f60\u7684\u5fae\u4fe1\u5934\u50cf\u548c\u6635\u79f0', x + 166, y + 204, width - 220, uiFont(15, 600), GAME_UI.secondary, 'left');
+      this.drawNeonButton(x + 34, y + 276, width - 68, 58, '\u6388\u6743\u5fae\u4fe1\u8d44\u6599', () => this.importWechatProfile(), 'cyan', { fontSize: 18, radius: 18, key: 'profile-auth-confirm', disabled: this.profileSaving });
+      this.drawNeonButton(x + 34, y + 354, width - 68, 52, '\u7a0d\u540e\u8bbe\u7f6e', () => this.skipWechatProfile(), 'violet', { fontSize: 17, radius: 18, key: 'profile-auth-skip', disabled: this.profileSaving });
+      if (this.profileNotice) this.drawFitText(this.profileNotice, this.width / 2, y + 438, width - 80, uiFont(13, 600), GAME_UI.secondary);
+      return;
+    }
+    if (this.popup === 'profile') {
+      width = 560; height = 500;
+      x = (this.width - width) / 2;
+      y = this.modalTop(height);
+      const profile = this.getPlayerProfile();
+      this.drawModalFrame(x, y, width, height, '\u6211\u7684\u8d44\u6599', '\u6635\u79f0\u548c\u5934\u50cf\u4f1a\u540c\u6b65\u5230\u5bf9\u6218\u4e0e\u6392\u884c\u699c', 'cyan');
+      this.drawGamePanel(x + 34, y + 112, width - 68, 128, 'dark', { radius: 24, shadow: false });
+      this.drawProfileAvatar(x + 100, y + 176, 40, profile.avatar);
+      this.drawFitText(profile.nickname, x + 166, y + 164, width - 220, uiFont(25, 900), GAME_UI.text, 'left');
+      this.drawNeonButton(x + 166, y + 181, width - 220, 36, '\u4fee\u6539\u6635\u79f0', () => this.editProfileNickname(), 'cyan', { fontSize: 15, radius: 16, key: 'profile-edit-name' });
+      this.drawFitText(profile.avatar ? '\u5fae\u4fe1\u5934\u50cf\u5df2\u542f\u7528' : '\u5c1a\u672a\u6388\u6743\u5fae\u4fe1\u5934\u50cf', this.width / 2, y + 274, width - 80, uiFont(17, 800), profile.avatar ? GAME_UI.success : GAME_UI.gold);
+      this.drawNeonButton(x + 34, y + 306, width - 68, 54, '\u4f7f\u7528\u5fae\u4fe1\u5934\u50cf\u548c\u6635\u79f0', () => this.importWechatProfile(), 'cyan', { fontSize: 16, radius: 16, key: 'profile-wechat-import', disabled: this.profileSaving });
+      if (this.profileNotice) this.drawFitText(this.profileNotice, this.width / 2, y + 382, width - 80, uiFont(14, 600), GAME_UI.secondary);
+      this.drawNeonButton(x + 34, y + 418, width - 68, 52, '\u5173\u95ed', () => { this.popup = ''; }, 'violet', { fontSize: 18, radius: 18, key: 'profile-close' });
       return;
     }
     if (this.popup === 'settings') {
@@ -4923,7 +5271,7 @@ class GameApp {
       this.status = '答对啦！正在进入下一题';
       return;
     }
-    if (safePassed && this.mode === 'daily' && isLastQuestion) {
+    if (safePassed && this.mode === 'daily' && isLastQuestion && !this.isBackendRequired()) {
       try {
         const date = storage.todayKey();
         this.progress.daily = this.progress.daily || { last_date: '', streak: 0, best_score: 0, completed: {}, reward_claimed: {} };
@@ -4949,7 +5297,7 @@ class GameApp {
       : { stars: safePassed ? 1 : 0, summary: '', starDetails: [] };
     const levelComplete = safePassed && this.mode === 'campaign' && isLastQuestion;
     // 结算的存档、任务、排行榜属于附属功能，即使其中一个异常，也不能把已经完成的题目降级成 1 星。
-    if (levelComplete) {
+    if (levelComplete && !this.isBackendRequired()) {
       try {
         if (this.progress && this.progress.levels && storage && storage.saveLevel) {
           storage.saveLevel(this.progress, this.currentLevel, starResult.stars, safeNumber(this.score));
@@ -4974,6 +5322,9 @@ class GameApp {
       bonusLabels: [],
       levelComplete,
       next: safePassed && (!isLastQuestion || hasNextLevel),
+      serverVerified: false,
+      serverSubmitPending: false,
+      serverSubmitError: false,
     };
     this.screen = 'result';
     this.renderRecovery = false;
@@ -5079,6 +5430,9 @@ class GameApp {
       (this.mode === 'endless' && this.endlessRun) ||
       (this.mode === 'friend' && !this.friendLocalFallback)
     ));
+    // When a production backend is configured, a missing or failed run must
+    // never fall back to local rewards, unlocks, tasks, or statistics.
+    const localProgressAllowed = !this.isBackendRequired() && !serverAuthoritative;
     if (passed && this.mode === 'campaign' && isLast) {
       const config = this.levels[this.currentLevel] || {};
       const starResult = this.calculateCampaignStars(config);
@@ -5087,7 +5441,7 @@ class GameApp {
       starDetails = starResult.starDetails || [];
       const oldRecord = this.progress.levels[String(this.currentLevel)] || {};
       const newLevelClear = safeNumber(oldRecord.best_score, 0) <= 0;
-      if (!serverAuthoritative) {
+      if (localProgressAllowed) {
         rewardCoins = storage.claimLevelReward(this.progress, this.currentLevel, stars);
         const bonus = storage.claimCampaignBonus(
           this.progress,
@@ -5100,7 +5454,9 @@ class GameApp {
         rewardCoins += bonus.coins;
         bonusLabels = bonus.labels;
       }
-      storage.saveLevel(this.progress, this.currentLevel, stars, this.score);
+      // In production the server response is the only source of unlocks and
+      // rewards. A failed or missing run must not persist a local unlock.
+      if (localProgressAllowed) storage.saveLevel(this.progress, this.currentLevel, stars, this.score);
       levelComplete = true;
       this.submitCampaignLevelCompletion(this.currentLevel, this.score, stars);
     } else if (passed) {
@@ -5111,7 +5467,7 @@ class GameApp {
     }
     if (passed && this.mode === 'daily' && isLast) {
       const date = storage.todayKey();
-      if (!serverAuthoritative) {
+      if (localProgressAllowed) {
       const alreadyCompleted = storage.isDailyCompleted(this.progress, date);
       const previousDate = previousDateKey(date);
       this.progress.daily.completed[date] = true;
@@ -5142,7 +5498,7 @@ class GameApp {
       this.progress.endless.best_combo = Math.max(safeNumber(this.progress.endless.best_combo), this.maxCombo);
       this.progress.endless.best_stage = Math.max(safeNumber(this.progress.endless.best_stage), Math.floor(Math.max(0, questionsReached - 1) / 3) + 1);
       this.progress.endless.last_score = this.score;
-      if (!serverAuthoritative) {
+      if (localProgressAllowed) {
       const endlessReward = storage.claimEndlessReward(this.progress, this.endlessRunId, questionsReached, storage.todayKey());
       if (endlessReward > 0) {
         rewardCoins += endlessReward;
@@ -5190,10 +5546,13 @@ class GameApp {
       } else {
         this.submitFriendLeaderboard(matchResult, this.friendRoom, submission);
       }
-      storage.save(this.progress);
+      // A server-backed match is persisted by applyServerFriendMatchResult
+      // only after the backend validates the submission. Local matches may
+      // persist their local-only result here.
+      if (this.friendLocalFallback) storage.save(this.progress);
     }
     const dateKey = storage.todayKey();
-    if (passed && !serverAuthoritative) {
+    if (passed && localProgressAllowed) {
       const modeId = this.mode === 'campaign' ? 'campaign' : this.mode === 'daily' ? 'daily' : this.mode === 'endless' ? 'endless' : 'friend';
       playerStats.recordSolve(this.progress, modeId, Math.max(0, (this.timerLimit - this.timeLeft) * 1000), Math.max(0, this.score - scoreBefore), this.combo, this.questionOperators, this.mode === 'campaign' ? this.currentLevel : -1);
       const taskRewards = [];
@@ -5222,9 +5581,6 @@ class GameApp {
       if (leaderboardMode) {
         const submitted = leaderboardService.submitScore(this.progress, leaderboardMode, this.score, { level: this.currentLevel, questions: this.currentQuestion + 1, mistakes: this.mistakes });
         if (submitted.new_record) bonusLabels.push('刷新个人最高分');
-        if (!this.backendAuth || this.backendAuth.status !== 'ready') {
-          platform.submitLeaderboard(leaderboardMode, this.score, { questions: this.currentQuestion + 1, mistakes: this.mistakes, clientAuthoritative: false });
-        }
       }
       storage.save(this.progress);
     }
@@ -5249,6 +5605,9 @@ class GameApp {
     this.result = {
       passed, score: this.score, stars, starSummary, starDetails, combo: this.maxCombo, mistakes: this.mistakes, reason,
       rewardCoins: rewardCoins + matchReward, bonusLabels, levelComplete, matchResult,
+      serverVerified: false,
+      serverSubmitPending: serverAuthoritative,
+      serverSubmitError: false,
       next: nextAvailable,
     };
     this.screen = 'result';

@@ -2,6 +2,41 @@ function hasWx() {
   return typeof wx !== 'undefined';
 }
 
+// 微信不会允许游戏在没有用户操作的情况下静默读取头像和昵称。
+// 资料导入必须由玩家点击按钮触发，并兼容不同基础库的接口名称。
+function requestWechatProfile() {
+  return new Promise((resolve, reject) => {
+    if (!hasWx()) {
+      reject(new Error('当前环境不支持微信资料授权'));
+      return;
+    }
+    const done = (result) => {
+      const info = result && (result.userInfo || result.user_info || result) || {};
+      const nickname = String(info.nickName || info.nickname || '').trim().slice(0, 12);
+      const avatar = String(info.avatarUrl || info.avatar || '').trim().slice(0, 500);
+      if (!nickname && !avatar) {
+        reject(new Error('微信未返回头像或昵称'));
+        return;
+      }
+      resolve({ nickname, avatar });
+    };
+    const fail = (error) => reject(new Error(String(error && (error.errMsg || error.message) || '用户未授权微信资料')));
+    try {
+      if (typeof wx.getUserProfile === 'function') {
+        wx.getUserProfile({ desc: '用于设置游戏头像和昵称', success: done, fail });
+        return;
+      }
+      if (typeof wx.getUserInfo === 'function') {
+        wx.getUserInfo({ withCredentials: false, success: done, fail });
+        return;
+      }
+      reject(new Error('当前基础库不支持微信资料授权'));
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 // 正式广告 ID 只在这里配置。占位 ID 保持静默，不会在开发者工具中反复报错。
 const AD_UNIT_IDS = {
   hint: 'adunit-placeholder',
@@ -78,51 +113,6 @@ function showRewardedAd(rewardType) {
   });
 }
 
-function submitLeaderboard(mode, score, metadata) {
-  // 正式版在这里调用云函数，客户端分数只作为候选值。
-  const payload = {
-    contractVersion: 1,
-    mode,
-    score: Math.max(0, Number(score || 0)),
-    metadata: metadata || {},
-    clientAuthoritative: false,
-    submitTo: 'server_or_cloud_function',
-  };
-  if (hasWx() && wx.cloud && wx.cloud.callFunction) {
-    try {
-      const request = wx.cloud.callFunction({ name: 'submitLeaderboard', data: payload });
-      // 开发者工具、未初始化云环境或测试桩可能返回 undefined；排行榜失败不能阻断结算。
-      if (!request || typeof request.then !== 'function') return Promise.resolve(payload);
-      return request.then((result) => result && result.result ? result.result : payload).catch(() => payload);
-    } catch (error) {
-      return Promise.resolve(payload);
-    }
-  }
-  return Promise.resolve(payload);
-}
-
-function submitFriendMatch(matchPayload) {
-  const protocolPayload = matchPayload && Number(matchPayload.protocol_version) >= 2;
-  const payload = protocolPayload
-    ? { ...matchPayload, client_authoritative: false, submitTo: 'server_or_cloud_function' }
-    : {
-      contractVersion: 1,
-      match: matchPayload || {},
-      clientAuthoritative: false,
-      submitTo: 'server_or_cloud_function',
-    };
-  if (hasWx() && wx.cloud && wx.cloud.callFunction) {
-    try {
-      const request = wx.cloud.callFunction({ name: 'submitFriendMatch', data: payload });
-      if (!request || typeof request.then !== 'function') return Promise.resolve(payload);
-      return request.then((result) => result && result.result ? result.result : payload).catch(() => payload);
-    } catch (error) {
-      return Promise.resolve(payload);
-    }
-  }
-  return Promise.resolve(payload);
-}
-
 function roomPayload(roomId, seed) {
   return {
     title: '来和我比一局《三火算术练习》！',
@@ -130,4 +120,4 @@ function roomPayload(roomId, seed) {
   };
 }
 
-module.exports = { AD_UNIT_IDS, hasWx, share, showRewardedAd, submitLeaderboard, submitFriendMatch, roomPayload };
+module.exports = { AD_UNIT_IDS, hasWx, requestWechatProfile, share, showRewardedAd, roomPayload };

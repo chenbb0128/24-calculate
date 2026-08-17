@@ -3,8 +3,8 @@
 // 不会影响题目、计时和触摸。以后只需要把文件放进 assets/audio，并补上路径即可。
 const TRACK_NAMES = ['首页童趣', '关卡欢快'];
 const TRACK_SOURCES = [
-  'assets/audio/previews/preview_home_childlike_v2.wav',
-  'assets/audio/previews/preview_level_childlike_v2.wav',
+  'assets/audio/music_home_childlike.wav',
+  'assets/audio/music_level_childlike.wav',
 ];
 const SFX_SOURCES = {
   click: 'assets/audio/click.wav',

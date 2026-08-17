@@ -35,7 +35,9 @@ Object.assign(entry, {
   friendMatchmakingLocal: true,
   friendBotDifficulty: 'standard',
   friendBotName: '',
-  backendAuth: { status: 'offline' },
+  // An explicit null auth object represents the offline/local test harness.
+  // A configured backend with status=offline must not enter the bot fallback.
+  backendAuth: null,
   screen: 'home',
   triggerFeedback() {},
   syncFriendRoomWithBackend() {},

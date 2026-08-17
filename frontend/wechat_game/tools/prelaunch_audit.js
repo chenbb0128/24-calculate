@@ -9,6 +9,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const SRC = path.join(ROOT, 'src');
 const warnings = [];
+const strictRelease = process.argv.includes('--strict') || process.env.RELEASE_STRICT === '1';
 
 function check(condition, message) {
   assert.ok(condition, message);
@@ -30,24 +31,38 @@ function listFiles(directory, suffix) {
 
 function testProjectConfig() {
   const project = readJson('project.config.json');
-  const privateConfig = readJson('project.private.config.json');
+  // project.private.config.json is a local WeChat DevTools override and is
+  // intentionally ignored by Git; a clean checkout must still be auditable.
+  const privateConfig = fs.existsSync(path.join(ROOT, 'project.private.config.json'))
+    ? readJson('project.private.config.json')
+    : project;
   const game = readJson('game.json');
+  const apiClient = require('../src/services/api_client.js');
   check(project.appid === 'wx1e7ac815548c561c', '正式 AppID 与 project.config.json 不一致');
   check(privateConfig.appid === project.appid, '两个项目配置的 AppID 不一致');
   check(project.compileType === 'game' && privateConfig.compileType === 'game', '项目不是微信小游戏类型');
   check(game.deviceOrientation === 'portrait', '小游戏必须保持竖屏配置');
   check(fs.existsSync(path.join(ROOT, 'game.js')), '缺少游戏入口 game.js');
   check(fs.existsSync(path.join(SRC, 'app.js')), '缺少前端主逻辑 src/app.js');
-  if (!/^https:\/\//i.test(String(require('../src/services/api_client.js').API_BASE_URL || ''))) {
-    warnings.push('正式后端地址尚未配置为 HTTPS，当前仍是本地体验模式');
-  }
+  check(apiClient.API_BASE_URL === 'https://calc-api.pdurl.cn', '正式 API 地址与线上域名不一致');
+  check(apiClient.isConfigured(), '正式 API 地址未启用');
+  ['project', 'privateConfig'].forEach((name) => {
+    const config = name === 'project' ? project : privateConfig;
+    const setting = config.setting || {};
+    check(setting.urlCheck === true, `${name} 必须开启合法域名校验`);
+    check(setting.minified === true, `${name} 必须开启代码压缩`);
+  });
+  check(project.setting.uploadWithSourceMap === false, '正式包不应上传源码映射');
+  const apiSource = fs.readFileSync(path.join(SRC, 'services', 'api_client.js'), 'utf8');
+  check(/const\s+ALLOW_LOCAL_BACKEND\s*=\s*false/.test(apiSource), '正式包不能开启本地后端兜底');
+  const platformSource = fs.readFileSync(path.join(SRC, 'services', 'platform.js'), 'utf8');
+  if (platformSource.includes('adunit-placeholder')) warnings.push('广告位仍是占位符，正式发布前必须替换真实广告位 ID');
 }
 
 function testAssets() {
   const audioDirectory = path.join(ROOT, 'assets', 'audio');
   const expected = [
-    'music_morning.wav', 'music_rainbow.wav', 'music_stars.wav',
-    'previews/preview_home_childlike_v2.wav', 'previews/preview_level_childlike_v2.wav',
+    'music_home_childlike.wav', 'music_level_childlike.wav',
     'click.wav', 'card.wav', 'operator.wav', 'merge.wav', 'success.wav', 'error.wav',
     'countdown_tick.wav', 'countdown_urgent.wav',
   ];
@@ -85,6 +100,12 @@ function testStorageAndLeaderboard() {
   check(entries.length === 2 && entries.every((entry) => Number.isFinite(entry.score) && Number.isFinite(entry.rank)), '排行榜异常数据未被清洗');
   const mine = leaderboard.personalSummary(progress, leaderboard.MODE_ENDLESS, remote, 0);
   check(mine.score === 240 && mine.rank === 6 && mine.source === 'server', '排行榜个人成绩没有优先使用服务端数据');
+}
+
+function testServerAuthoritativeSettlement() {
+  const appSource = fs.readFileSync(path.join(SRC, 'app', 'game_app.js'), 'utf8');
+  const settlementSource = appSource.slice(appSource.indexOf('const localProgressAllowed'));
+  check(/if\s*\(localProgressAllowed\)\s*storage\.saveLevel\s*\(/.test(settlementSource), '正式闯关结算必须只在本地模式保存解锁');
 }
 
 function testCoreContracts() {
@@ -132,9 +153,13 @@ async function main() {
   testProjectConfig();
   testAssets();
   testStorageAndLeaderboard();
+  testServerAuthoritativeSettlement();
   testCoreContracts();
   await testAppGuards();
   testSourceSyntax();
+  if (strictRelease && warnings.length) {
+    throw new Error(`PRELAUNCH_AUDIT_BLOCKED warnings=${warnings.length}: ${warnings.join('; ')}`);
+  }
   console.log(`PRELAUNCH_AUDIT_OK warnings=${warnings.length}`);
   warnings.forEach((warning) => console.log(`WARNING ${warning}`));
 }

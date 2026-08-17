@@ -5,31 +5,33 @@
       {
         "value": "node_modules",
         "type": "folder"
+      },
+      {
+        "value": "assets/audio/previews",
+        "type": "folder"
       }
     ],
     "include": []
   },
   "compileType": "game",
   "isGameTourist": false,
-  "projectArchitecture": "miniProgram",
   "simulatorType": "wechat",
   "libVersion": "3.17.1",
   "appid": "wx1e7ac815548c561c",
   "projectname": "sanhuo-arithmetic-practice",
-  "miniprogramRoot": "./",
   "setting": {
-    "urlCheck": false,
+    "urlCheck": true,
     "es6": true,
     "enhance": true,
     "postcss": true,
-    "minified": false,
+    "minified": true,
     "newFeature": true,
     "coverView": true,
     "showShadowRootInWxmlPanel": true,
     "useCompilerPlugins": false,
     "compileWorklet": false,
     "uglifyFileName": false,
-    "uploadWithSourceMap": true,
+    "uploadWithSourceMap": false,
     "packNpmManually": false,
     "packNpmRelationList": [],
     "minifyWXSS": true,

@@ -1,11 +1,11 @@
 // 生成两首儿童益智小游戏风格的试听音乐。
-// 试听资源独立放在 assets/audio/previews，不会改变游戏当前使用的音乐。
+// 生成游戏正式使用的儿童益智音乐资源。
 const fs = require('fs');
 const path = require('path');
 
 const SAMPLE_RATE = 22050;
 const TAU = Math.PI * 2;
-const OUTPUT_DIR = path.resolve(__dirname, '../assets/audio/previews');
+const OUTPUT_DIR = path.resolve(__dirname, '../assets/audio');
 
 function midiToFrequency(midi) {
   return 440 * Math.pow(2, (midi - 69) / 12);
@@ -228,6 +228,6 @@ function makeLevelMusic() {
 }
 
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-writeWav('preview_home_childlike_v2.wav', makeHomeMusic());
-writeWav('preview_level_childlike_v2.wav', makeLevelMusic());
-console.log(`Generated childlike music previews in ${OUTPUT_DIR}`);
+writeWav('music_home_childlike.wav', makeHomeMusic());
+writeWav('music_level_childlike.wav', makeLevelMusic());
+console.log(`Generated childlike game music in ${OUTPUT_DIR}`);

@@ -149,6 +149,20 @@ function testCampaignStaticFlow() {
   check(app.puzzles.every((record) => app.questionService.isVerified(record)), '统一题目服务返回了未验证闯关题目');
   check(!app.campaignPuzzleBuilder, '运行时不应启动全量题库构建器');
 
+  const pendingLogin = Object.create(GameApp.prototype);
+  Object.assign(pendingLogin, {
+    levels: levelCatalog.all(),
+    progress: storage.normalize({ unlocked_level: 0 }),
+    campaignPuzzleBank: null,
+    backendAuth: { status: 'pending' },
+    mode: 'campaign', currentLevel: 0, hintPopup: null, resultHelpPopup: false,
+    dailyChallenge: null, popup: '', status: '', screen: 'levels', puzzles: [],
+  });
+  pendingLogin.isCampaignLevelUnlocked = () => true;
+  pendingLogin.beginSession = function beginSessionForPendingLoginTest() { this.screen = 'game'; };
+  pendingLogin.startCampaign(0);
+  check(pendingLogin.screen === 'game', '登录尚未完成时点击第一关不应被后端状态阻塞');
+
   const fallback = Object.create(GameApp.prototype);
   Object.assign(fallback, {
     levels: levelCatalog.all(),

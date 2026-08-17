@@ -81,6 +81,20 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("log.level must not be empty")
 	}
 	if strings.EqualFold(cfg.App.Env, "production") {
+		productionSecrets := map[string]string{
+			"database.password":      cfg.Database.Password,
+			"wechat.app_secret":      cfg.WeChat.AppSecret,
+			"jwt.secret":             cfg.JWT.Secret,
+			"game.daily_seed_secret": cfg.Game.DailySeedSecret,
+		}
+		for name, value := range productionSecrets {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s must be provided in production", name)
+			}
+			if isPlaceholderSecret(value) {
+				return fmt.Errorf("%s must contain a real production secret", name)
+			}
+		}
 		for _, origin := range cfg.Server.CORSAllowedOrigins {
 			if strings.TrimSpace(origin) == "*" {
 				return fmt.Errorf("wildcard CORS is not allowed in production")
@@ -89,4 +103,21 @@ func Validate(cfg *Config) error {
 	}
 
 	return nil
+}
+
+func isPlaceholderSecret(value string) bool {
+	s := strings.ToLower(strings.TrimSpace(value))
+	if s == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"replace-with-", "replace_with_", "change-me", "change_me", "changeme",
+		"your-secret", "your_secret", "your-password", "your_password",
+		"your-app-secret", "your_app_secret", "<secret>", "<password>",
+	} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
 }

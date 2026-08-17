@@ -12,6 +12,7 @@
 # Go build output and local runtime files
 **/bin/
 **/tmp/
+**/tmp-release/
 **/*.exe
 **/*.test
 **/*.log
