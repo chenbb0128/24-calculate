@@ -170,12 +170,14 @@ function applyServerResult(current, payload, outcome = '') {
   if (!source) return null;
   const before = normalize(current, source.season_id || source.seasonId || new Date());
   const rawRating = source.rating ?? source.mmr;
+  const nextRating = rawRating !== undefined ? rawRating : before.rating;
+  const visible = deriveVisibleRank(nextRating);
   const next = normalize(Object.assign({}, before, {
     season_id: source.season_id || source.seasonId || before.season_id,
-    rating: rawRating !== undefined ? rawRating : before.rating,
-    tier: source.tier || source.rank_tier || before.tier,
-    division: source.division || source.rank_division || before.division,
-    stars: source.stars !== undefined ? source.stars : before.stars,
+    rating: nextRating,
+    tier: source.tier || source.rank_tier || visible.tier,
+    division: source.division ?? source.rank_division ?? visible.division,
+    stars: source.stars !== undefined ? source.stars : visible.stars,
     placement_matches: source.placement_matches ?? source.placementMatches ?? before.placement_matches,
     ranked_matches: source.ranked_matches ?? source.rankedMatches ?? before.ranked_matches,
     wins: source.wins !== undefined ? source.wins : before.wins,
