@@ -7,19 +7,23 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // FriendPuzzleContract is the server-owned part of a friend match. The client
 // may render these numbers, but it cannot replace the puzzle id or number set
 // when submitting a result.
 type FriendPuzzleContract struct {
-	PuzzleID      string            `json:"puzzle_id"`
-	Numbers       []int             `json:"numbers"`
-	Rules         FriendPuzzleRules `json:"rules"`
-	SolutionCount int               `json:"solution_count,omitempty"`
-	ShortestSteps int               `json:"shortest_steps,omitempty"`
-	QuestionHash  string            `json:"question_hash,omitempty"`
-	SourceSeed    string            `json:"source_seed,omitempty"`
+	PuzzleID           string                    `json:"puzzle_id"`
+	Numbers            []int                     `json:"numbers"`
+	Rules              FriendPuzzleRules         `json:"rules"`
+	SolutionCount      int                       `json:"solution_count,omitempty"`
+	ShortestSteps      int                       `json:"shortest_steps,omitempty"`
+	QuestionHash       string                    `json:"question_hash,omitempty"`
+	SourceSeed         string                    `json:"source_seed,omitempty"`
+	Difficulty         string                    `json:"difficulty"`
+	TimeLimitMS        int                       `json:"time_limit_ms"`
+	FirstSolutionSteps []FriendMatchSolutionStep `json:"-"`
 }
 
 type FriendPuzzleRules struct {
@@ -191,16 +195,48 @@ func shortestSolutionSteps(solutions []friendSolution) int {
 	return shortest
 }
 
+type friendCandidate struct {
+	numbers     []int
+	solutions   []friendSolution
+	difficulty  string
+	timeLimitMS int
+}
+
+var friendCandidateCache struct {
+	sync.Once
+	values []friendCandidate
+}
+
+// friendCandidatePool enumerates every sorted four-number multiset from 1 to
+// 9 once and keeps only questions with at least one server-verified integer
+// solution. This is much larger and more honest than a hand-written list: the
+// finite pool is still bounded by the mathematics of four digits.
 func friendCandidatePool() [][]int {
-	return [][]int{
-		{1, 1, 1, 8}, {1, 1, 2, 6}, {1, 1, 2, 7}, {1, 1, 2, 9},
-		{1, 1, 3, 4}, {1, 1, 3, 5}, {1, 1, 4, 4}, {1, 1, 4, 9},
-		{1, 1, 5, 7}, {1, 1, 5, 8}, {1, 2, 2, 4}, {1, 2, 2, 5},
-		{1, 2, 2, 7}, {1, 2, 2, 8}, {1, 2, 2, 9}, {1, 2, 3, 3},
-		{1, 2, 4, 5}, {1, 2, 5, 5}, {1, 3, 3, 3}, {1, 3, 5, 6},
-		{2, 2, 3, 8}, {2, 3, 4, 6}, {2, 3, 4, 9}, {2, 3, 6, 8},
-		{3, 3, 4, 6}, {3, 4, 6, 9}, {4, 4, 6, 8}, {5, 5, 5, 5},
+	friendCandidateCache.Do(func() {
+		for first := 1; first <= 9; first++ {
+			for second := first; second <= 9; second++ {
+				for third := second; third <= 9; third++ {
+					for fourth := third; fourth <= 9; fourth++ {
+						numbers := []int{first, second, third, fourth}
+						rules := friendPuzzleRules()
+						solutions := verifiedFriendSolutions(numbers, rules, 200)
+						if len(solutions) == 0 {
+							continue
+						}
+						friendCandidateCache.values = append(friendCandidateCache.values, friendCandidate{
+							numbers: append([]int(nil), numbers...), solutions: solutions,
+							difficulty: friendPuzzleDifficulty(solutions), timeLimitMS: friendPuzzleTimeLimit(solutions),
+						})
+					}
+				}
+			}
+		}
+	})
+	result := make([][]int, len(friendCandidateCache.values))
+	for index, candidate := range friendCandidateCache.values {
+		result[index] = append([]int(nil), candidate.numbers...)
 	}
+	return result
 }
 
 func friendPuzzleRules() FriendPuzzleRules {
@@ -208,56 +244,122 @@ func friendPuzzleRules() FriendPuzzleRules {
 		UseEachNumberOnce:          true,
 		IntegerIntermediateResults: true,
 		AllowedOperators:           []string{"+", "-", "×", "÷"},
-		AllowNegativeIntermediate:  true,
+		AllowNegativeIntermediate:  false,
 	}
 }
 
+func verifiedFriendSolutions(numbers []int, rules FriendPuzzleRules, maxSolutions int) []friendSolution {
+	raw := friendSolveDetailed(numbers, maxSolutions)
+	verified := make([]friendSolution, 0, len(raw))
+	for _, solution := range raw {
+		if replayFriendSolution(numbers, solution.steps, rules) {
+			verified = append(verified, solution)
+		}
+	}
+	return verified
+}
+
 func generateFriendPuzzleContract(roomSeed int64, count int) []FriendPuzzleContract {
+	return generateFriendPuzzleContractExcluding(roomSeed, count, nil)
+}
+
+func generateFriendPuzzleContractExcluding(roomSeed int64, count int, excluded map[string]struct{}) []FriendPuzzleContract {
 	if count <= 0 {
 		count = 8
 	}
-	seed := roomSeed
-	if seed < 0 {
-		seed = -seed
+	if roomSeed < 0 {
+		roomSeed = -roomSeed
 	}
-	levelIndex := int(seed % 97)
-	candidates := friendCandidatePool()
-	start := (levelIndex * 7) % len(candidates)
+	friendCandidatePool()
+	seed := roomSeed
+	random := newFriendSeededRandom(seed + 0x9e3779b9)
+	candidates := append([]friendCandidate(nil), friendCandidateCache.values...)
+	for index := len(candidates) - 1; index > 0; index-- {
+		swap := random.int(0, index)
+		candidates[index], candidates[swap] = candidates[swap], candidates[index]
+	}
 	used := make(map[string]struct{})
 	result := make([]FriendPuzzleContract, 0, count)
-	tryNumbers := func(numbers []int) {
+	tryCandidate := func(candidate friendCandidate, allowExcluded bool) {
 		if len(result) >= count {
 			return
 		}
+		numbers := candidate.numbers
 		key := friendNumberKey(numbers)
 		if _, exists := used[key]; exists {
 			return
 		}
-		solutions := friendSolveDetailed(numbers, 40)
-		if len(solutions) < 1 || len(solutions) > 12 {
+		solutions := candidate.solutions
+		if len(solutions) < 1 {
 			return
 		}
+		rules := friendPuzzleRules()
+		questionHash := friendPuzzleContentHash(numbers, rules)
+		if !allowExcluded {
+			// Recent history stores question_hash values. Keep accepting the
+			// normalized-number key as a compatibility fallback for any old
+			// Redis data written by an earlier build.
+			if _, exists := excluded[questionHash]; exists {
+				return
+			}
+			if _, exists := excluded[key]; exists {
+				return
+			}
+		}
 		used[key] = struct{}{}
+		firstSteps := append([]FriendMatchSolutionStep(nil), solutions[0].steps...)
 		result = append(result, FriendPuzzleContract{
-			PuzzleID: fmt.Sprintf("L%03d-Q%d", levelIndex+1, len(result)+1),
-			Numbers:  append([]int(nil), numbers...),
-			Rules:    friendPuzzleRules(),
+			PuzzleID:      fmt.Sprintf("fp_%s", questionHash[:16]),
+			Numbers:       append([]int(nil), numbers...),
+			Rules:         rules,
+			SolutionCount: len(solutions), ShortestSteps: shortestSolutionSteps(solutions),
+			QuestionHash: questionHash, Difficulty: candidate.difficulty, TimeLimitMS: candidate.timeLimitMS,
+			FirstSolutionSteps: firstSteps,
 		})
 	}
-	for offset := 0; offset < len(candidates) && len(result) < count; offset++ {
-		tryNumbers(append([]int(nil), candidates[(start+offset)%len(candidates)]...))
+	for _, candidate := range candidates {
+		tryCandidate(candidate, false)
 	}
+	// Recent-history avoidance is best effort. If it would make a short pool
+	// unable to fill a room, reuse the oldest candidates rather than failing a
+	// match entirely.
 	if len(result) < count {
-		random := newFriendSeededRandom(seed + int64(levelIndex)*7919)
-		for attempts := 0; len(result) < count && attempts < 800; attempts++ {
-			numbers := make([]int, 4)
-			for index := range numbers {
-				numbers[index] = random.int(1, 9)
-			}
-			tryNumbers(numbers)
+		for _, candidate := range candidates {
+			tryCandidate(candidate, true)
 		}
 	}
 	return result
+}
+
+func friendPuzzleContentHash(numbers []int, rules FriendPuzzleRules) string {
+	payload, _ := json.Marshal(struct {
+		PoolVersion int               `json:"pool_version"`
+		Numbers     []int             `json:"numbers"`
+		Rules       FriendPuzzleRules `json:"rules"`
+	}{PoolVersion: 2, Numbers: numbers, Rules: rules})
+	digest := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func friendPuzzleDifficulty(solutions []friendSolution) string {
+	if len(solutions) <= 2 {
+		return "hard"
+	}
+	if len(solutions) >= 12 {
+		return "easy"
+	}
+	return "standard"
+}
+
+func friendPuzzleTimeLimit(solutions []friendSolution) int {
+	switch friendPuzzleDifficulty(solutions) {
+	case "easy":
+		return 12000
+	case "hard":
+		return 22000
+	default:
+		return 17000
+	}
 }
 
 type friendQuestionFingerprint struct {
@@ -291,15 +393,47 @@ func friendQuestionHash(roomSeed int64, rules FriendRoomRules, puzzles []FriendP
 }
 
 func friendRoomContract(room FriendRoom) (string, []string, []FriendPuzzleContract) {
+	return friendRoomContractExcluding(room, nil)
+}
+
+func friendRoomContractExcluding(room FriendRoom, excluded map[string]struct{}) (string, []string, []FriendPuzzleContract) {
 	puzzles := room.Puzzles
 	if len(puzzles) == 0 {
-		puzzles = generateFriendPuzzleContract(room.RoomSeed, room.Rules.QuestionCount)
+		puzzles = generateFriendPuzzleContractExcluding(room.RoomSeed, room.Rules.QuestionCount, excluded)
 	}
 	questionIDs := make([]string, len(puzzles))
 	for index, puzzle := range puzzles {
 		questionIDs[index] = puzzle.PuzzleID
 	}
 	return friendQuestionHash(room.RoomSeed, room.Rules, puzzles), questionIDs, puzzles
+}
+
+func friendPuzzleHashes(puzzles []FriendPuzzleContract) []string {
+	hashes := make([]string, 0, len(puzzles))
+	seen := make(map[string]struct{}, len(puzzles))
+	for _, puzzle := range puzzles {
+		if puzzle.QuestionHash == "" {
+			puzzle.QuestionHash = friendPuzzleContentHash(puzzle.Numbers, puzzle.Rules)
+		}
+		if _, exists := seen[puzzle.QuestionHash]; exists {
+			continue
+		}
+		seen[puzzle.QuestionHash] = struct{}{}
+		hashes = append(hashes, puzzle.QuestionHash)
+	}
+	return hashes
+}
+
+func friendPuzzleContractOverlapsRecentHistory(puzzles []FriendPuzzleContract, recent map[string]struct{}) bool {
+	if len(puzzles) == 0 || len(recent) == 0 {
+		return false
+	}
+	for _, hash := range friendPuzzleHashes(puzzles) {
+		if _, exists := recent[hash]; exists {
+			return true
+		}
+	}
+	return false
 }
 
 func replayFriendSolution(numbers []int, steps []FriendMatchSolutionStep, rules FriendPuzzleRules) bool {

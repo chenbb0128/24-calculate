@@ -179,6 +179,9 @@ func TestFriendRoomRequiresBothPlayersReadyAndStartIsIdempotent(t *testing.T) {
 	if _, err := service.ReadyFriendRoom(context.Background(), 4, rooms.room.RoomCode, true); err != nil {
 		t.Fatalf("opponent ready error = %v", err)
 	}
+	if rooms.room.Status != FriendRoomCountdown {
+		t.Fatalf("room status after both ready = %q, want countdown", rooms.room.Status)
+	}
 	first, err := service.StartFriendRoom(context.Background(), 4, rooms.room.RoomCode)
 	if err != nil {
 		t.Fatalf("first start error = %v", err)
@@ -213,6 +216,30 @@ func TestFriendMatchProgressRejectsDuplicateEventID(t *testing.T) {
 	}
 }
 
+func TestFriendMatchProgressFinishesRoomAndBlocksOpponent(t *testing.T) {
+	room := newFriendLifecycleRoom()
+	room.Status = FriendRoomRunning
+	room.MatchID = room.RoomID
+	rooms := &friendLifecycleStoreFake{room: room}
+	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, &leaderboardStore{}, rooms)
+	finishedInput := FriendMatchProgressInput{
+		QuestionIndex: 7, Solved: 8, Score: 800, ElapsedMS: 20000, Finished: true,
+		MatchID: room.MatchID, QuestionHash: room.QuestionHash, EventID: "finished-1",
+	}
+	if _, err := service.UpdateFriendMatchProgress(context.Background(), 3, room.RoomCode, finishedInput); err != nil {
+		t.Fatalf("finished progress error = %v", err)
+	}
+	if rooms.room.Status != FriendRoomFinished {
+		t.Fatalf("room status = %q, want finished", rooms.room.Status)
+	}
+	if _, err := service.UpdateFriendMatchProgress(context.Background(), 4, room.RoomCode, FriendMatchProgressInput{
+		QuestionIndex: 0, Solved: 0, Score: 0, ElapsedMS: 1000,
+		MatchID: room.MatchID, QuestionHash: room.QuestionHash, EventID: "blocked-1",
+	}); err == nil {
+		t.Fatal("opponent progress error = nil after room finished")
+	}
+}
+
 func TestFriendMatchSubmissionIsIdempotentAndFinishesRoomOnce(t *testing.T) {
 	room := testFriendMatchRoom()
 	room.ExpiresAt = time.Now().UTC().Add(time.Hour)
@@ -241,5 +268,40 @@ func TestFriendMatchSubmissionIsIdempotentAndFinishesRoomOnce(t *testing.T) {
 	}
 	if !replayed.IdempotencyReplayed || replayed.MatchResult == nil || replayed.Score != first.Score {
 		t.Fatalf("replayed submission = %#v, want stable first result", replayed)
+	}
+}
+
+func TestFriendMatchSubmissionCanSettleAfterOpponentFinishedFirst(t *testing.T) {
+	room := testFriendMatchRoom()
+	room.ExpiresAt = time.Now().UTC().Add(time.Hour)
+	rooms := &friendLifecycleStoreFake{room: room}
+	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, &leaderboardStore{}, rooms)
+
+	if _, err := service.UpdateFriendMatchProgress(context.Background(), 3, room.RoomCode, FriendMatchProgressInput{
+		QuestionIndex: 7, Solved: 8, Score: 800, ElapsedMS: 20000, Finished: true,
+		MatchID: room.MatchID, QuestionHash: room.QuestionHash, EventID: "finished-first",
+	}); err != nil {
+		t.Fatalf("finished progress error = %v", err)
+	}
+	if rooms.room.Status != FriendRoomFinished {
+		t.Fatalf("room status = %q, want finished", rooms.room.Status)
+	}
+
+	first, err := service.SubmitFriendMatch(context.Background(), 3, room.RoomCode, validFriendMatchSubmission())
+	if err != nil {
+		t.Fatalf("first final submission error = %v", err)
+	}
+	if !first.Pending {
+		t.Fatalf("first final submission = %#v, want pending", first)
+	}
+
+	secondInput := validFriendMatchSubmission()
+	secondInput.IdempotencyKey = "friend-match-after-finish"
+	second, err := service.SubmitFriendMatch(context.Background(), 4, room.RoomCode, secondInput)
+	if err != nil {
+		t.Fatalf("second final submission after room finished error = %v", err)
+	}
+	if second.MatchResult == nil || second.Outcome == "" {
+		t.Fatalf("second final submission = %#v, want server-settled result", second)
 	}
 }

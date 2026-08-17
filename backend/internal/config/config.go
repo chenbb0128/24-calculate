@@ -15,6 +15,7 @@ type Config struct {
 	JWT      JWTConfig      `mapstructure:"jwt"`
 	Queue    QueueConfig    `mapstructure:"queue"`
 	Game     GameConfig     `mapstructure:"game"`
+	Avatar   AvatarConfig   `mapstructure:"avatar"`
 	Log      LogConfig      `mapstructure:"log"`
 }
 
@@ -88,6 +89,14 @@ type QueueConfig struct {
 type GameConfig struct {
 	DailySeedSecret        string `mapstructure:"daily_seed_secret"`
 	MatchmakingWaitSeconds int    `mapstructure:"matchmaking_wait_seconds"`
+}
+
+type AvatarConfig struct {
+	StorageDir            string `mapstructure:"storage_dir"`
+	PublicBaseURL         string `mapstructure:"public_base_url"`
+	MaxBytes              int64  `mapstructure:"max_bytes"`
+	MaxDimension          int    `mapstructure:"max_dimension"`
+	UploadCooldownSeconds int    `mapstructure:"upload_cooldown_seconds"`
 }
 
 type LogConfig struct {

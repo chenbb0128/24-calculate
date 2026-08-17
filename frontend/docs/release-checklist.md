@@ -11,6 +11,7 @@
 ## 真机冒烟
 
 - 冷启动并完成真实微信登录；
+- 确认每次正式包冷启动都会重新执行 `wx.login`，切换微信账号后不会复用旧账号令牌；
 - 首页能正常显示服务端 bootstrap 的用户和进度；
 - 闯关、每日挑战、无尽模式均能创建服务端 run；
 - 完成后结果页显示“服务端已校验”；
@@ -21,7 +22,7 @@
 
 ## 发布阻塞项
 
-- `frontend/wechat_game/src/services/platform.js` 中的广告位目前仍是占位 ID，替换真实广告位前不要宣称广告功能已上线。
+- 当前正式包未配置广告位，激励广告安全关闭，不会创建广告实例、消耗次数或发放奖励。若要上线广告，必须先在公众平台创建真实广告位，并将 ID 写入 `frontend/wechat_game/src/services/platform.js` 后重新做真机验收。
 - 隐私协议、用户协议、备案和平台类目材料必须与实际上载版本一致。
 - 生产数据库备份必须先完成一次恢复演练。
 
@@ -32,6 +33,7 @@ cd D:\微信小游戏\frontend\wechat_game
 node tools/prelaunch_audit.js
 node tools/prelaunch_audit.js --strict
 node tools/account_storage_audit.js
+node tools/auth_session_audit.js
 node tools/smoke_test.js
 node tools/friend_match_audit.js
 node tools/matchmaking_audit.js

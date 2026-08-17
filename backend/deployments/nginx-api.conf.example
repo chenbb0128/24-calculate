@@ -14,7 +14,16 @@ server {
     ssl_certificate     /etc/nginx/certs/calc-api.pdurl.cn/fullchain.pem;
     ssl_certificate_key /etc/nginx/certs/calc-api.pdurl.cn/privkey.pem;
 
-    client_max_body_size 2m;
+    # The avatar file limit is 2 MiB; multipart headers add a small amount of
+    # overhead, so the reverse proxy must allow the 4 MiB API request limit.
+    client_max_body_size 4m;
+
+    # Must match GO_SERVICE_AVATAR_STORAGE_DIR=/var/lib/24-calculate/avatars.
+    # Keep this directory read-only from the public web server's perspective.
+    location /avatars/ {
+        alias /var/lib/24-calculate/avatars/avatars/;
+        add_header Cache-Control "public, max-age=86400";
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8080;

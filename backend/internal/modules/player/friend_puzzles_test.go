@@ -1,6 +1,11 @@
 package player
 
-import "testing"
+import (
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func TestFriendPuzzleContractMatchesClientSeedProtocol(t *testing.T) {
 	room := FriendRoom{
@@ -16,14 +21,70 @@ func TestFriendPuzzleContractMatchesClientSeedProtocol(t *testing.T) {
 	}
 
 	hash, ids, puzzles := friendRoomContract(room)
-	if hash != "6d3066fd" {
-		t.Fatalf("question hash = %q, want client-compatible hash", hash)
+	if len(hash) != 8 || len(ids) != 8 || !strings.HasPrefix(ids[0], "fp_") || ids[0] == ids[7] {
+		t.Fatalf("question contract = hash %q, ids %#v", hash, ids)
 	}
-	if len(ids) != 8 || ids[0] != "L043-Q1" || ids[7] != "L043-Q8" {
-		t.Fatalf("puzzle ids = %#v, want L043-Q1 through L043-Q8", ids)
+	if len(puzzles) != 8 {
+		t.Fatalf("puzzles = %#v, want 8 deterministic puzzles", puzzles)
 	}
-	if len(puzzles) != 8 || friendNumberKey(puzzles[0].Numbers) != "1,2,2,9" {
-		t.Fatalf("puzzles = %#v, want deterministic first puzzle", puzzles)
+	seen := map[string]struct{}{}
+	for _, puzzle := range puzzles {
+		if len(puzzle.Numbers) != 4 || puzzle.SolutionCount < 1 || puzzle.QuestionHash == "" || puzzle.TimeLimitMS <= 0 {
+			t.Fatalf("invalid puzzle contract = %#v", puzzle)
+		}
+		key := friendNumberKey(puzzle.Numbers)
+		if _, exists := seen[key]; exists {
+			t.Fatalf("duplicate puzzle numbers = %q", key)
+		}
+		seen[key] = struct{}{}
+		for _, number := range puzzle.Numbers {
+			if number < 1 || number > 9 {
+				t.Fatalf("number %d is outside 1..9", number)
+			}
+		}
+	}
+	encoded, err := json.Marshal(puzzles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "first_solution_steps") || strings.Contains(string(encoded), "first_indices") {
+		t.Fatalf("serialized puzzle leaked solution steps: %s", encoded)
+	}
+}
+
+func TestFriendPuzzleGenerationIsReproducibleAndSeeded(t *testing.T) {
+	first := generateFriendPuzzleContract(12345, 8)
+	second := generateFriendPuzzleContract(12345, 8)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("same seed generated different contracts")
+	}
+	if reflect.DeepEqual(first, generateFriendPuzzleContract(12346, 8)) {
+		t.Fatalf("different seeds generated the same contract")
+	}
+}
+
+func TestFriendCandidatePoolIsExpanded(t *testing.T) {
+	pool := friendCandidatePool()
+	if len(pool) < 100 {
+		t.Fatalf("candidate pool size = %d, want at least 100 verified combinations", len(pool))
+	}
+	t.Logf("verified friend candidate pool size = %d", len(pool))
+}
+
+func TestRecentPuzzleHistoryUsesQuestionHashes(t *testing.T) {
+	base := generateFriendPuzzleContract(12345, 8)
+	if len(base) == 0 {
+		t.Fatal("generated puzzle contract is empty")
+	}
+	excluded := map[string]struct{}{base[0].QuestionHash: {}}
+	filtered := generateFriendPuzzleContractExcluding(12345, 8, excluded)
+	for _, puzzle := range filtered {
+		if _, exists := excluded[puzzle.QuestionHash]; exists {
+			t.Fatalf("recent question hash %q was not excluded", puzzle.QuestionHash)
+		}
+	}
+	if same := generateFriendPuzzleContract(12345, 8); len(same) == 0 || same[0].QuestionHash != base[0].QuestionHash {
+		t.Fatal("same room seed no longer produces the same deterministic contract")
 	}
 }
 

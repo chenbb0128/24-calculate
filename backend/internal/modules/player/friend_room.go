@@ -58,6 +58,11 @@ type FriendRoomPresenceStore interface {
 	TouchFriendRoomPlayer(ctx context.Context, roomCode string, userID uint64) error
 }
 
+type FriendPuzzleHistoryStore interface {
+	GetRecentFriendPuzzleHashes(ctx context.Context, userID uint64) (map[string]struct{}, error)
+	RecordFriendPuzzleHashes(ctx context.Context, userID uint64, hashes []string, ttl time.Duration) error
+}
+
 type FriendMatchResultStore interface {
 	SaveFriendMatchSubmission(context.Context, string, FriendMatchSubmissionRecord) error
 	GetFriendMatchSubmissions(context.Context, string) (map[uint64]FriendMatchSubmissionRecord, error)
@@ -100,8 +105,13 @@ type FriendRoomRules struct {
 	IntegerIntermediate bool `json:"integer_intermediate_results"`
 }
 
+type FriendRoomCreateInput struct {
+	QuestionCount    int `json:"question_count"`
+	TimeLimitSeconds int `json:"time_limit_seconds"`
+}
+
 type FriendRoomPlayer struct {
-	UserID       uint64    `json:"user_id"`
+	UserID       uint64    `json:"user_id,omitempty"`
 	Nickname     string    `json:"nickname"`
 	Avatar       string    `json:"avatar"`
 	Ready        bool      `json:"ready"`
@@ -159,7 +169,7 @@ type FriendMatchStartResponse struct {
 }
 
 type FriendMatchPlayerState struct {
-	UserID        uint64    `json:"user_id"`
+	UserID        uint64    `json:"user_id,omitempty"`
 	Nickname      string    `json:"nickname"`
 	Avatar        string    `json:"avatar"`
 	QuestionIndex int       `json:"question_index"`
@@ -208,6 +218,10 @@ func (s *Service) allowFriendRoomAction(ctx context.Context, userID uint64, acti
 }
 
 func (s *Service) CreateFriendRoom(ctx context.Context, userID uint64) (FriendRoom, error) {
+	return s.CreateFriendRoomWithRules(ctx, userID, FriendRoomCreateInput{})
+}
+
+func (s *Service) CreateFriendRoomWithRules(ctx context.Context, userID uint64, input FriendRoomCreateInput) (FriendRoom, error) {
 	if s.rooms == nil {
 		return FriendRoom{}, apperror.ServiceUnavailable("好友房间服务暂不可用", nil)
 	}
@@ -217,6 +231,20 @@ func (s *Service) CreateFriendRoom(ctx context.Context, userID uint64) (FriendRo
 	profile, err := s.profiles.GetProfile(ctx, userID)
 	if err != nil {
 		return FriendRoom{}, err
+	}
+	questionCount := input.QuestionCount
+	if questionCount == 0 {
+		questionCount = 8
+	}
+	if questionCount < 1 || questionCount > 16 {
+		return FriendRoom{}, apperror.BadRequest("question_count must be between 1 and 16", nil)
+	}
+	timeLimitSeconds := input.TimeLimitSeconds
+	if timeLimitSeconds == 0 {
+		timeLimitSeconds = 120
+	}
+	if timeLimitSeconds < 30 || timeLimitSeconds > 600 {
+		return FriendRoom{}, apperror.BadRequest("time_limit_seconds must be between 30 and 600", nil)
 	}
 
 	now := time.Now().UTC()
@@ -233,8 +261,8 @@ func (s *Service) CreateFriendRoom(ctx context.Context, userID uint64) (FriendRo
 			OwnerID:  userID,
 			Status:   FriendRoomWaiting,
 			Rules: FriendRoomRules{
-				QuestionCount:       8,
-				TimeLimitSeconds:    120,
+				QuestionCount:       questionCount,
+				TimeLimitSeconds:    timeLimitSeconds,
 				Target:              24,
 				NoHint:              true,
 				UseSameSeed:         true,
@@ -250,12 +278,33 @@ func (s *Service) CreateFriendRoom(ctx context.Context, userID uint64) (FriendRo
 			CreatedAt: now,
 			ExpiresAt: now.Add(friendRoomTTL),
 		}
+		excluded := map[string]struct{}(nil)
+		if history, ok := s.rooms.(FriendPuzzleHistoryStore); ok {
+			if recent, historyErr := history.GetRecentFriendPuzzleHashes(ctx, userID); historyErr == nil {
+				excluded = recent
+			}
+		}
+		// A room seed is the deterministic identity of its question contract.
+		// Avoid recent questions by choosing another seed, rather than changing
+		// the contract produced by an already chosen seed.
 		room.QuestionHash, room.PuzzleIDs, room.Puzzles = friendRoomContract(room)
+		for reroll := 0; reroll < 8 && friendPuzzleContractOverlapsRecentHistory(room.Puzzles, excluded); reroll++ {
+			_, nextSeed, seedErr := newFriendRoomIdentifiers()
+			if seedErr != nil {
+				return FriendRoom{}, seedErr
+			}
+			room.RoomSeed = nextSeed
+			room.QuestionHash, room.PuzzleIDs, room.Puzzles = friendRoomContract(room)
+		}
 		if err := s.rooms.CreateFriendRoom(ctx, room); err != nil {
 			if errors.Is(err, ErrFriendRoomCodeTaken) {
 				continue
 			}
 			return FriendRoom{}, err
+		}
+		if history, ok := s.rooms.(FriendPuzzleHistoryStore); ok {
+			hashes := friendPuzzleHashes(room.Puzzles)
+			_ = history.RecordFriendPuzzleHashes(ctx, userID, hashes, 14*24*time.Hour)
 		}
 		return room, nil
 	}
@@ -300,6 +349,9 @@ func (s *Service) JoinFriendRoom(ctx context.Context, userID uint64, roomCode st
 	if err := s.rooms.JoinFriendRoom(ctx, roomCode, player); err != nil {
 		return FriendRoom{}, mapFriendRoomError(err)
 	}
+	if history, ok := s.rooms.(FriendPuzzleHistoryStore); ok {
+		_ = history.RecordFriendPuzzleHashes(ctx, userID, friendPuzzleHashes(room.Puzzles), 14*24*time.Hour)
+	}
 	return s.GetFriendRoom(ctx, roomCode)
 }
 
@@ -320,7 +372,31 @@ func (s *Service) ReadyFriendRoom(ctx context.Context, userID uint64, roomCode s
 	}
 	updated, err := lifecycle.SetFriendRoomReady(ctx, room.RoomCode, userID, ready)
 	if err != nil {
+		// A concurrent second ready request may win the transition between the
+		// read and this Lua script. Returning the persisted countdown is
+		// idempotent and avoids making clients retry a successful action.
+		if errors.Is(err, ErrFriendRoomStarted) {
+			current, getErr := s.GetFriendRoom(ctx, room.RoomCode)
+			if getErr == nil && (current.Status == FriendRoomCountdown || current.Status == FriendRoomRunning || current.Status == FriendRoomFinished) {
+				return current, nil
+			}
+		}
 		return FriendRoom{}, mapFriendRoomError(err)
+	}
+	if ready && len(updated.Players) == 2 && friendRoomAllReady(updated) {
+		started, startErr := s.startFriendRoom(ctx, userID, updated.RoomCode)
+		if startErr == nil {
+			return started, nil
+		}
+		// Another request may have completed the same transition. Read the
+		// canonical room and return it instead of creating a second contract.
+		if errors.Is(startErr, ErrFriendRoomAlreadyStarted) || errors.Is(startErr, ErrFriendRoomNotReady) {
+			current, getErr := s.GetFriendRoom(ctx, updated.RoomCode)
+			if getErr == nil && (current.Status == FriendRoomCountdown || current.Status == FriendRoomRunning || current.Status == FriendRoomFinished) {
+				return current, nil
+			}
+		}
+		return FriendRoom{}, mapFriendRoomError(startErr)
 	}
 	return updated, nil
 }
@@ -329,28 +405,36 @@ func (s *Service) StartFriendRoom(ctx context.Context, userID uint64, roomCode s
 	if err := s.allowFriendRoomAction(ctx, userID, "start", 10, time.Minute); err != nil {
 		return FriendMatchStartResponse{}, err
 	}
+	room, err := s.startFriendRoom(ctx, userID, roomCode)
+	if err != nil {
+		return FriendMatchStartResponse{}, mapFriendRoomError(err)
+	}
+	return friendMatchStartResponse(room), nil
+}
+
+func (s *Service) startFriendRoom(ctx context.Context, userID uint64, roomCode string) (FriendRoom, error) {
 	lifecycle, ok := s.rooms.(FriendRoomLifecycleStore)
 	if !ok {
-		return FriendMatchStartResponse{}, apperror.ServiceUnavailable("好友房间状态服务暂不可用", nil)
+		return FriendRoom{}, apperror.ServiceUnavailable("好友房间状态服务暂不可用", nil)
 	}
 	room, err := s.GetFriendRoom(ctx, roomCode)
 	if err != nil {
-		return FriendMatchStartResponse{}, err
+		return FriendRoom{}, err
 	}
 	if !friendRoomHasPlayer(room, userID) {
-		return FriendMatchStartResponse{}, apperror.New(10004, 403, "当前用户不属于该好友房间", ErrFriendRoomNotMember)
+		return FriendRoom{}, apperror.New(10004, 403, "当前用户不属于该好友房间", ErrFriendRoomNotMember)
 	}
 	if friendRoomIsTerminal(room.Status) {
-		return FriendMatchStartResponse{}, mapFriendRoomError(errForFriendRoomStatus(room.Status))
+		return FriendRoom{}, mapFriendRoomError(errForFriendRoomStatus(room.Status))
 	}
 	if room.Status == FriendRoomCountdown || room.Status == FriendRoomRunning || room.Status == FriendRoomFinished {
 		if room.MatchID == "" {
 			room.MatchID = room.RoomID
 		}
-		return friendMatchStartResponse(room), nil
+		return room, nil
 	}
 	if len(room.Players) != 2 || !friendRoomAllReady(room) {
-		return FriendMatchStartResponse{}, apperror.New(10003, 409, "双方准备后才能开始对战", ErrFriendRoomNotReady)
+		return FriendRoom{}, apperror.New(10003, 409, "双方准备后才能开始对战", ErrFriendRoomNotReady)
 	}
 
 	questionHash, puzzleIDs, puzzles := friendRoomContract(room)
@@ -362,9 +446,9 @@ func (s *Service) StartFriendRoom(ctx context.Context, userID uint64, roomCode s
 	room.Status = FriendRoomCountdown
 	started, err := lifecycle.StartFriendRoom(ctx, room.RoomCode, userID, room)
 	if err != nil {
-		return FriendMatchStartResponse{}, mapFriendRoomError(err)
+		return FriendRoom{}, err
 	}
-	return friendMatchStartResponse(started), nil
+	return started, nil
 }
 
 func friendMatchStartResponse(room FriendRoom) FriendMatchStartResponse {
@@ -436,6 +520,19 @@ func (s *Service) GetFriendRoom(ctx context.Context, roomCode string) (FriendRoo
 	if room.QuestionHash == "" || len(room.PuzzleIDs) == 0 || len(room.Puzzles) == 0 {
 		room.QuestionHash, room.PuzzleIDs, room.Puzzles = friendRoomContract(room)
 	}
+	for index := range room.Players {
+		// Redis stores a room snapshot for fast polling, but profile edits must
+		// be visible immediately in room and match-result responses. AI players
+		// use user_id 0 and intentionally keep the neutral public display name.
+		if room.Players[index].UserID != 0 && s.profiles != nil {
+			if profile, profileErr := s.profiles.GetProfile(ctx, room.Players[index].UserID); profileErr == nil {
+				room.Players[index].Nickname = profile.Nickname
+				room.Players[index].Avatar = profile.Avatar
+			}
+		}
+		room.Players[index].Nickname = normalizePublicNickname(room.Players[index].Nickname)
+		room.Players[index].Avatar = normalizePublicAvatar(room.Players[index].Avatar)
+	}
 	return room, nil
 }
 
@@ -472,6 +569,13 @@ func (s *Service) UpdateFriendMatchProgress(ctx context.Context, userID uint64, 
 	}
 	if room.MatchID == "" || (room.Status != FriendRoomCountdown && room.Status != FriendRoomRunning) {
 		return FriendMatchProgressResponse{}, mapFriendRoomError(errForFriendRoomStatus(room.Status))
+	}
+	if existingProgress, progressErr := s.rooms.GetFriendMatchProgress(ctx, room.RoomCode); progressErr == nil {
+		for playerID, current := range existingProgress {
+			if playerID != userID && current.Finished {
+				return FriendMatchProgressResponse{}, apperror.New(10003, 409, "对手已完成本局，不能继续提交", ErrFriendRoomAlreadyStarted)
+			}
+		}
 	}
 	if !friendMatchContractMatches(room, input.MatchID, input.QuestionHash) {
 		return FriendMatchProgressResponse{}, apperror.BadRequest("friend match progress contract is invalid", nil)
@@ -550,6 +654,14 @@ func (s *Service) UpdateFriendMatchProgress(ctx context.Context, userID uint64, 
 			return FriendMatchProgressResponse{}, err
 		}
 	}
+	if input.Finished {
+		if lifecycle, ok := s.rooms.(FriendRoomLifecycleStore); ok {
+			if finishErr := lifecycle.FinishFriendRoom(ctx, room.RoomCode, room.MatchID); finishErr != nil && !errors.Is(finishErr, ErrFriendRoomStarted) {
+				return FriendMatchProgressResponse{}, finishErr
+			}
+			room.Status = FriendRoomFinished
+		}
+	}
 	return s.friendMatchProgressResponse(ctx, userID, room)
 }
 
@@ -587,6 +699,9 @@ func (s *Service) GetFriendMatchProgress(ctx context.Context, userID uint64, roo
 	}
 	if err := s.advanceFriendBot(ctx, room); err != nil {
 		return FriendMatchProgressResponse{}, err
+	}
+	if latest, refreshErr := s.GetFriendRoom(ctx, room.RoomCode); refreshErr == nil {
+		room = latest
 	}
 	result, err := s.friendMatchProgressResponse(ctx, userID, room)
 	if err != nil {

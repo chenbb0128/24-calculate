@@ -45,12 +45,14 @@ GO_SERVICE_WECHAT_APP_SECRET=<wechat-app-secret>
 GO_SERVICE_WECHAT_API_BASE_URL=https://api.weixin.qq.com
 GO_SERVICE_JWT_SECRET=<random-secret-at-least-32-bytes>
 GO_SERVICE_GAME_DAILY_SEED_SECRET=<separate-random-daily-secret>
+GO_SERVICE_AVATAR_STORAGE_DIR=/var/lib/24-calculate/avatars
+GO_SERVICE_AVATAR_PUBLIC_BASE_URL=https://<actual-image-domain>
 GO_SERVICE_QUEUE_NAME=twenty_four_calculate
 GO_SERVICE_LOG_LEVEL=info
 GO_SERVICE_LOG_FORMAT=json
 ```
 
-生产数据库名、Redis 地址和账号必须以服务器实际配置为准，不要直接照抄示例值。
+生产数据库名、Redis 地址和账号必须以服务器实际配置为准，不要直接照抄示例值。`actual-image-domain` 必须替换成真实的 HTTPS 图片下载域名；如果由同一台 Nginx 提供静态文件，可以使用 `https://calc-api.pdurl.cn`，并为 `/avatars/` 配置只读静态目录，否则使用实际对象存储/CDN 域名。
 
 ## 3. 数据库迁移
 
@@ -104,6 +106,16 @@ Nginx 的 HTTPS server 使用 `calc-api.pdurl.cn` 证书，并代理到：
 
 ```nginx
 proxy_pass http://127.0.0.1:8080;
+```
+
+如果头像使用本机文件存储，还要在同一个 HTTPS server 中增加静态下载位置，目录要与
+`GO_SERVICE_AVATAR_STORAGE_DIR` 对应（示例）：
+
+```nginx
+location /avatars/ {
+    alias /var/lib/24-calculate/avatars/avatars/;
+    add_header Cache-Control "public, max-age=86400";
+}
 ```
 
 执行：

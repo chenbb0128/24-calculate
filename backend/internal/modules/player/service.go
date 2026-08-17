@@ -49,15 +49,17 @@ type Service struct {
 	matchmakingWait time.Duration
 }
 
+const defaultMatchmakingWait = 15 * time.Second
+
 func NewService(profiles ProfileReader, store Store) *Service {
-	return &Service{profiles: profiles, store: store, matchmakingWait: 12 * time.Second}
+	return &Service{profiles: profiles, store: store, matchmakingWait: defaultMatchmakingWait}
 }
 
 func NewServiceWithRoomsAndEndless(profiles ProfileReader, store Store, rooms FriendRoomStore, endlessRuns EndlessRunStore) *Service {
 	service := &Service{
 		profiles: profiles, store: store, rooms: rooms, endlessRuns: endlessRuns,
 		campaignRuns: campaignRunStoreFrom(endlessRuns), dailyRuns: dailyRunStoreFrom(endlessRuns), matchmaking: matchmakingStoreFrom(endlessRuns),
-		matchmakingWait: 12 * time.Second,
+		matchmakingWait: defaultMatchmakingWait,
 	}
 	if locks, ok := rooms.(DistributedLockStore); ok {
 		service.locks = locks

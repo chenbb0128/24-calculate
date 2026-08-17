@@ -77,7 +77,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 	}
 	appendRow := func(id uint64, name, avatar string, score int64, createdAt time.Time) {
 		if include(id) && accept(createdAt) {
-			rows = append(rows, row{id: id, name: name, avatar: avatar, score: int64(clampLeaderboardScore(score)), createdAt: createdAt})
+			rows = append(rows, row{id: id, name: normalizePublicNickname(name), avatar: normalizePublicAvatar(avatar), score: int64(clampLeaderboardScore(score)), createdAt: createdAt})
 		}
 	}
 
@@ -88,7 +88,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 				return
 			}
 			current := combined[id]
-			current.id, current.name, current.avatar = id, name, avatar
+			current.id, current.name, current.avatar = id, normalizePublicNickname(name), normalizePublicAvatar(avatar)
 			current.score += maxInt64(0, score)
 			if createdAt.After(current.createdAt) {
 				current.createdAt = createdAt
@@ -173,7 +173,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 		}
 	}
 	if !seen {
-		rows = append(rows, row{id: profile.ID, name: profile.Nickname, avatar: profile.Avatar})
+		rows = append(rows, row{id: profile.ID, name: normalizePublicNickname(profile.Nickname), avatar: normalizePublicAvatar(profile.Avatar)})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].score != rows[j].score {

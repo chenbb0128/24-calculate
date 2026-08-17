@@ -5,6 +5,7 @@ const dailyChallenge = require('../core/daily_challenge.js');
 const friendMatch = require('../core/friend_match_service.js');
 const matchData = require('../core/match_data.js');
 const storage = require('../services/storage.js');
+const rankService = require('../services/rank_service.js');
 const apiClient = require('../services/api_client.js');
 const endlessMode = require('../core/endless_mode.js');
 const { safeNumber } = require('../app/app_utils.js');
@@ -14,6 +15,58 @@ function makeEndlessSeed() {
   const random = Math.floor(Math.random() * 0x100000000) >>> 0;
   const day = storage.todaySeed() >>> 0;
   return (now ^ random ^ ((day * 2654435761) >>> 0)) >>> 0 || 1;
+}
+
+// These are only bootstrap candidates. They are already known to have an
+// integer solution, so entering endless mode never has to wait for the full
+// random solver before the first frame can be shown.
+const FAST_ENDLESS_NUMBERS = [
+  [1, 2, 4, 5],
+  [3, 3, 4, 6],
+  [2, 3, 4, 6],
+  [2, 4, 7, 8],
+  [4, 4, 6, 8],
+];
+
+function endlessNumberKey(numbers) {
+  if (puzzle && typeof puzzle.numberKey === 'function') return puzzle.numberKey(numbers);
+  return numbers.slice().sort((left, right) => left - right).join(',');
+}
+
+function makeFastEndlessRecord(questionIndex, runSeed, usedKeys) {
+  const config = puzzle.endlessConfig(questionIndex);
+  const start = Math.abs(Number(runSeed) || 1) % FAST_ENDLESS_NUMBERS.length;
+  for (let offset = 0; offset < FAST_ENDLESS_NUMBERS.length; offset += 1) {
+    const numbers = FAST_ENDLESS_NUMBERS[(start + offset) % FAST_ENDLESS_NUMBERS.length];
+    const key = endlessNumberKey(numbers);
+    if (usedKeys && usedKeys[key]) continue;
+    const record = puzzle.makeVerifiedRecord(
+      numbers,
+      2000 + Number(questionIndex),
+      Number(questionIndex),
+      config.minSolutions,
+      config.maxSolutions,
+    );
+    if (!record || !Array.isArray(record.numbers) || !Array.isArray(record.solutionSteps)) continue;
+    record.puzzleId = `ENDLESS-Q${String(Number(questionIndex) + 1).padStart(4, '0')}`;
+    record.puzzle_id = record.puzzleId;
+    record.endless_stage = config.stage;
+    record.generation = {
+      source: 'verified_endless_bootstrap',
+      validated: true,
+      validator: 'PuzzleGenerator.solve',
+      candidate_attempts: offset + 1,
+      number_key: key,
+    };
+    if (usedKeys) usedKeys[key] = true;
+    return record;
+  }
+  return null;
+}
+
+function samePuzzleNumbers(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== 4 || right.length !== 4) return false;
+  return endlessNumberKey(left) === endlessNumberKey(right);
 }
 
 class ModeController {
@@ -232,7 +285,6 @@ class ModeController {
 
   startEndless() {
     const requestToken = ++this.gameRequestToken;
-    if (!this.ensureBackendReady('endless', 'home')) return;
     this.mode = 'endless';
     this.hintPopup = null;
     this.resultHelpPopup = false;
@@ -251,27 +303,42 @@ class ModeController {
     this.endlessAttempts = [];
     this.endlessServerResult = null;
     this.endlessRunLoading = false;
+    // 先使用本地已验证首题进入游戏，服务端合同在后台同步。
+    this.endlessLocalFallback = true;
     this.puzzles = [];
+
+    // 不让登录或网络请求阻塞首帧；首题生成只使用很小的已验证候选池。
+    this.beginEndlessQuestion({ fastStart: true });
 
     if (this.backendAuth && this.backendAuth.status === 'ready' && apiClient.createEndlessRun) {
       this.endlessRunLoading = true;
-      this.status = '正在向服务端领取无尽模式题目…';
       apiClient.createEndlessRun().then((run) => {
-        if (requestToken !== this.gameRequestToken || this.mode !== 'endless') return;
+        if (requestToken !== this.gameRequestToken) return;
+        this.endlessRunLoading = false;
+        if (this.mode !== 'endless' || this.screen !== 'game' || this.transitioning) return;
         if (!run || !run.run_id || !Array.isArray(run.puzzles) || !run.puzzles.length) throw new Error('服务端无尽题目合同为空');
+        const serverPuzzle = run.puzzles[0];
+        const localPuzzle = this.currentPuzzle;
+        // 题目不一致时绝不替换玩家正在玩的题，继续安全的本地验证流程。
+        if (!serverPuzzle || !samePuzzleNumbers(localPuzzle && localPuzzle.numbers, serverPuzzle.numbers)) {
+          this.endlessLocalFallback = true;
+          return;
+        }
         this.endlessRun = run;
         this.endlessRunId = String(run.run_id);
         this.endlessSeed = Number(run.run_seed || this.endlessSeed);
-        this.endlessRunLoading = false;
-        this.beginEndlessQuestion();
+        if (localPuzzle) {
+          localPuzzle.puzzleId = serverPuzzle.puzzleId || serverPuzzle.puzzle_id || localPuzzle.puzzleId;
+          localPuzzle.puzzle_id = serverPuzzle.puzzle_id || serverPuzzle.puzzleId || localPuzzle.puzzle_id;
+        }
+        this.endlessLocalFallback = false;
       }).catch((error) => {
         if (requestToken !== this.gameRequestToken || this.mode !== 'endless') return;
-        this.markBackendModeUnavailable('服务器无尽模式暂不可用，请重试', 'home');
+        this.endlessRunLoading = false;
+        this.endlessLocalFallback = true;
         try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-endless-start]', error); } catch (logError) { /* start failure is shown in the UI */ }
       });
-      return;
     }
-    this.beginEndlessQuestion();
   }
 
   startFriend() {
@@ -349,6 +416,11 @@ class ModeController {
     }
     this.friendMatch = friendMatch.createMatch(this.friendRoom, this.puzzles);
     this.friendMatchContract = matchData.createMatchContract(this.friendRoom, this.puzzles);
+    this.friendMatchContract.ranked = Boolean(this.friendRanked && !localMode);
+    if (this.friendMatchContract.ranked) {
+      const rank = rankService.normalize(this.progress && this.progress.rank);
+      this.friendMatchContract.season_id = rank.season_id;
+    }
     if (this.friendRoom.question_hash) this.friendMatchContract.question_hash = String(this.friendRoom.question_hash);
     if (Array.isArray(this.friendRoom.puzzle_ids) && this.friendRoom.puzzle_ids.length === questionCount) {
       this.friendMatchContract.puzzle_ids = this.friendRoom.puzzle_ids.map((id) => String(id));
@@ -376,6 +448,7 @@ class ModeController {
     this.friendRoomFromInvite = false;
     this.friendLobbyView = 'entry';
     this.friendLocalFallback = false;
+    this.friendRanked = false;
     this.friendRoomBackendStatus = 'idle';
     this.friendRoomBackendLoading = false;
     this.friendRoomLastPollAt = 0;
@@ -432,9 +505,9 @@ class ModeController {
     this.screen = 'game';
   }
 
-  beginEndlessQuestion() {
+  beginEndlessQuestion(options = {}) {
     try {
-      return this.beginEndlessQuestionInternal();
+      return this.beginEndlessQuestionInternal(options);
     } catch (error) {
       try { if (typeof console !== 'undefined' && console.error) console.error('[24点挑战][endless-fallback]', error); } catch (logError) { /* 静默降级 */ }
       const config = puzzle.endlessConfig(this.currentQuestion);
@@ -462,7 +535,7 @@ class ModeController {
     }
   }
 
-  beginEndlessQuestionInternal() {
+  beginEndlessQuestionInternal(options = {}) {
     this.renderRecovery = false;
     this.transitioning = false;
     this.autoNextAt = 0;
@@ -471,6 +544,19 @@ class ModeController {
     const runSeed = safeNumber(this.endlessSeed, makeEndlessSeed()) || 1;
     this.endlessSeed = runSeed;
     const usedKeys = this.endlessUsedKeys || (this.endlessUsedKeys = {});
+
+    // 首题使用小型已验证候选池，后续题目仍走完整的统一题目服务。
+    if (options.fastStart && this.currentQuestion === 0) {
+      const fastRecord = makeFastEndlessRecord(this.currentQuestion, runSeed, usedKeys);
+      if (fastRecord) {
+        this.puzzles = [fastRecord];
+        this.timerLimit = config.timeLimit;
+        this.timeLeft = config.timeLimit;
+        this.setupPuzzle(fastRecord);
+        this.screen = 'game';
+        return;
+      }
+    }
 
     const serverPuzzle = this.endlessRun && Array.isArray(this.endlessRun.puzzles)
       ? this.endlessRun.puzzles[this.currentQuestion]

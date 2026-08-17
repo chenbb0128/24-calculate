@@ -136,6 +136,8 @@ function createResultSubmission(match, attempts, summary = {}) {
     match_id: String(contract.match_id || ''),
     room_id: String(contract.room_id || ''),
     room_seed: Math.abs(safeInteger(contract.room_seed)),
+    ranked: Boolean(contract.ranked),
+    season_id: String(contract.season_id || ''),
     question_count: Math.max(0, safeInteger(contract.question_count)),
     question_hash: String(contract.question_hash || ''),
     puzzle_ids: clone(contract.puzzle_ids || []),

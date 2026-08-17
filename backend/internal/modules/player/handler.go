@@ -1,6 +1,7 @@
 package player
 
 import (
+	"io"
 	"net/http"
 	"strconv"
 
@@ -257,7 +258,12 @@ func (h *Handler) CreateFriendRoom(c *gin.Context) {
 		response.WriteError(c, err)
 		return
 	}
-	result, err := h.service.CreateFriendRoom(c.Request.Context(), userID)
+	var input FriendRoomCreateInput
+	if err := c.ShouldBindJSON(&input); err != nil && err != io.EOF {
+		response.WriteError(c, apperror.BadRequest("request body is invalid", err))
+		return
+	}
+	result, err := h.service.CreateFriendRoomWithRules(c.Request.Context(), userID, input)
 	if err != nil {
 		response.WriteError(c, err)
 		return

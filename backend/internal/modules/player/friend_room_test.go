@@ -105,6 +105,38 @@ func TestJoinFriendRoomRejectsInvalidCode(t *testing.T) {
 	}
 }
 
+type latestProfileReader struct {
+	profiles map[uint64]user.ProfileResponse
+}
+
+func (r latestProfileReader) GetProfile(_ context.Context, id uint64) (user.ProfileResponse, error) {
+	profile, ok := r.profiles[id]
+	if !ok {
+		return user.ProfileResponse{}, user.NotFound(nil)
+	}
+	return profile, nil
+}
+
+func TestGetFriendRoomUsesLatestPlayerProfile(t *testing.T) {
+	room := FriendRoom{
+		RoomID: "friend-135790", RoomCode: "135790", OwnerID: 3, Status: FriendRoomWaiting,
+		Rules:   FriendRoomRules{QuestionCount: 8, TimeLimitSeconds: 120},
+		Players: []FriendRoomPlayer{{UserID: 3, Nickname: "旧昵称", Avatar: "sun"}},
+	}
+	store := &friendRoomStoreFake{room: room}
+	service := NewServiceWithRooms(latestProfileReader{profiles: map[uint64]user.ProfileResponse{
+		3: {ID: 3, Nickname: "新昵称", Avatar: "https://cdn.example/avatar.webp"},
+	}}, &leaderboardStore{}, store)
+
+	result, err := service.GetFriendRoom(context.Background(), "135790")
+	if err != nil {
+		t.Fatalf("GetFriendRoom() error = %v", err)
+	}
+	if result.Players[0].Nickname != "新昵称" || result.Players[0].Avatar != "https://cdn.example/avatar.webp" {
+		t.Fatalf("room player profile = %#v, want latest nickname and avatar", result.Players[0])
+	}
+}
+
 func TestFriendMatchProgressIsScopedToRoomPlayers(t *testing.T) {
 	room := FriendRoom{
 		RoomID:   "friend-123456",

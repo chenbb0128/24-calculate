@@ -45,6 +45,36 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/Success'}
         '401': {$ref: '#/components/responses/Error'}
+  /api/v1/users/me:
+    get:
+      tags: [auth]
+      security: [{bearerAuth: []}]
+      summary: Read the current profile
+      responses: {'200': {$ref: '#/components/responses/Success'}, '401': {$ref: '#/components/responses/Error'}}
+    patch:
+      tags: [auth]
+      security: [{bearerAuth: []}]
+      summary: Update profile after explicit user authorization
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/ProfileUpdateInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '400': {$ref: '#/components/responses/Error'}}
+  /api/v1/users/me/avatar:
+    post:
+      tags: [auth]
+      security: [{bearerAuth: []}]
+      summary: Upload and process a custom avatar
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: {type: string, format: binary, description: JPG, PNG, or WEBP up to 2 MiB}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '400': {$ref: '#/components/responses/Error'}, '429': {$ref: '#/components/responses/Error'}}
   /api/v1/player/bootstrap:
     get:
       tags: [player]
@@ -135,6 +165,10 @@ paths:
       tags: [player]
       security: [{bearerAuth: []}]
       summary: Create a friend room
+      requestBody:
+        required: false
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/FriendRoomCreateInput'}}
       responses: {'201': {$ref: '#/components/responses/Success'}}
   /api/v1/player/friend/rooms/{room_code}/join:
     post:
@@ -324,8 +358,19 @@ components:
       required: [code]
       properties:
         code: {type: string, maxLength: 512}
-        nickname: {type: string, maxLength: 100}
+        nickname: {type: string, maxLength: 12}
         avatar: {type: string, maxLength: 500}
+    ProfileUpdateInput:
+      type: object
+      minProperties: 1
+      properties:
+        nickname: {type: string, maxLength: 12, description: Empty resets to the default nickname}
+        avatar: {type: string, maxLength: 500, description: Built-in avatar ID or HTTPS image URL}
+    FriendRoomCreateInput:
+      type: object
+      properties:
+        question_count: {type: integer, minimum: 1, maximum: 16, default: 8}
+        time_limit_seconds: {type: integer, minimum: 30, maximum: 600, default: 120}
     RefreshInput:
       type: object
       required: [refresh_token]

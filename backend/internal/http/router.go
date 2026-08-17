@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -26,8 +27,9 @@ func (f ReadinessCheckerFunc) Check(ctx context.Context) error {
 }
 
 type RouterOptions struct {
-	Readiness ReadinessChecker
-	APIRoutes func(*gin.RouterGroup)
+	Readiness        ReadinessChecker
+	APIRoutes        func(*gin.RouterGroup)
+	AvatarStorageDir string
 }
 
 func NewRouter(cfg *config.Config, logger *slog.Logger, options RouterOptions) (*gin.Engine, error) {
@@ -84,6 +86,9 @@ func NewRouter(cfg *config.Config, logger *slog.Logger, options RouterOptions) (
 		})
 		router.StaticFile("/swagger/index.html", "docs/swagger.html")
 		router.StaticFile("/swagger/openapi.yaml", "docs/openapi.yaml")
+	}
+	if strings.TrimSpace(options.AvatarStorageDir) != "" {
+		router.Static("/avatars", filepath.Join(options.AvatarStorageDir, "avatars"))
 	}
 
 	router.NoRoute(func(c *gin.Context) {

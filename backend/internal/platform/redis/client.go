@@ -86,6 +86,23 @@ func (c *Client) AllowLogin(ctx context.Context, ip string, limit int64, window 
 	return count <= limit, nil
 }
 
+func (c *Client) AllowAvatarUpload(ctx context.Context, userID uint64, limit int64, window time.Duration) (bool, error) {
+	if c == nil || c.Client == nil || userID == 0 || limit <= 0 || window <= 0 {
+		return false, fmt.Errorf("avatar upload rate limit configuration is invalid")
+	}
+	key := AvatarUploadRateKey(userID)
+	count, err := c.Incr(ctx, key).Result()
+	if err != nil {
+		return false, err
+	}
+	if count == 1 {
+		if err := c.Expire(ctx, key, window).Err(); err != nil {
+			return false, err
+		}
+	}
+	return count <= limit, nil
+}
+
 // AcquireDistributedLock uses a short-lived token so a late release cannot
 // delete a lock acquired by another request after the original lock expired.
 // The scope is hashed by DistributedLockKey and never appears verbatim in a

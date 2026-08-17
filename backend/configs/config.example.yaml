@@ -11,7 +11,8 @@ server:
   idle_timeout: 60s
   shutdown_timeout: 10s
   max_header_bytes: 1048576
-  max_request_body_bytes: 2097152
+  # Includes multipart overhead; avatar files themselves remain limited to 2 MiB.
+  max_request_body_bytes: 4194304
   trusted_proxies: []
   cors_allowed_origins:
     - http://localhost:3000
@@ -52,7 +53,16 @@ queue:
 game:
   # Keep the daily seed secret outside the repository in production.
   daily_seed_secret: ""
-  matchmaking_wait_seconds: 12
+  matchmaking_wait_seconds: 15
+
+avatar:
+  # Files are written below this directory as avatars/{user_id}/{uuid}.webp.
+  storage_dir: var/avatars
+  # Leave empty for a relative development URL. Production must use HTTPS.
+  public_base_url: ""
+  max_bytes: 2097152
+  max_dimension: 4096
+  upload_cooldown_seconds: 30
 
 log:
   level: info

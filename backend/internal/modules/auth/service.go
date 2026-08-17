@@ -307,10 +307,13 @@ func (s *Service) LoginWithWeChat(ctx context.Context, input WeChatLoginInput, i
 const wechatProvider = "wechat"
 
 func (s *Service) createWeChatUser(ctx context.Context, users WeChatUserStore, openID string, input WeChatLoginInput) (db.User, error) {
-	nickname := strings.TrimSpace(input.Nickname)
-	avatar := strings.TrimSpace(input.Avatar)
-	if len([]rune(nickname)) > 100 || len([]rune(avatar)) > 500 {
-		return db.User{}, apperror.BadRequest("用户资料长度超出限制", nil)
+	nickname, err := user.NormalizeNickname(input.Nickname)
+	if err != nil {
+		return db.User{}, apperror.BadRequest(err.Error(), err)
+	}
+	avatar, err := user.NormalizeAvatar(input.Avatar)
+	if err != nil {
+		return db.User{}, apperror.BadRequest(err.Error(), err)
 	}
 	passwordBytes := make([]byte, 32)
 	if _, err := rand.Read(passwordBytes); err != nil {
@@ -410,16 +413,19 @@ func (s *Service) Logout(ctx context.Context, input LogoutInput) error {
 func validateRegisterInput(input RegisterInput) (string, string, string, string, error) {
 	username := strings.TrimSpace(input.Username)
 	password := input.Password
-	nickname := strings.TrimSpace(input.Nickname)
-	avatar := strings.TrimSpace(input.Avatar)
+	nickname, nicknameErr := user.NormalizeNickname(input.Nickname)
+	if nicknameErr != nil {
+		return "", "", "", "", apperror.BadRequest(nicknameErr.Error(), nicknameErr)
+	}
+	avatar, avatarErr := user.NormalizeAvatar(input.Avatar)
+	if avatarErr != nil {
+		return "", "", "", "", apperror.BadRequest(avatarErr.Error(), avatarErr)
+	}
 	if len([]rune(username)) < 3 || len([]rune(username)) > 64 {
 		return "", "", "", "", apperror.BadRequest("用户名长度必须为 3 到 64 个字符", nil)
 	}
 	if len([]byte(password)) < 8 || len([]byte(password)) > 72 {
 		return "", "", "", "", apperror.BadRequest("密码长度必须为 8 到 72 个字节", nil)
-	}
-	if len([]rune(nickname)) > 100 || len([]rune(avatar)) > 500 {
-		return "", "", "", "", apperror.BadRequest("用户资料长度超出限制", nil)
 	}
 	return username, password, nickname, avatar, nil
 }

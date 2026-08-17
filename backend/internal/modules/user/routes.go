@@ -12,4 +12,5 @@ func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatfo
 	routes.Use(middleware.RequireAuth(manager))
 	routes.GET("/me", handler.GetMe)
 	routes.PATCH("/me", handler.UpdateMe)
+	routes.POST("/me/avatar", handler.UploadAvatar)
 }

@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"testing"
 	"time"
@@ -37,6 +38,82 @@ func (s *bootstrapProgressStore) MutatePlayerProgress(_ context.Context, _ uint6
 		return nil, err
 	}
 	return json.Marshal(s.state)
+}
+
+type isolatedProgressStore struct {
+	*leaderboardStore
+	states map[uint64]map[string]any
+}
+
+func newIsolatedProgressStore(t *testing.T) *isolatedProgressStore {
+	t.Helper()
+	return &isolatedProgressStore{leaderboardStore: &leaderboardStore{}, states: map[uint64]map[string]any{}}
+}
+
+func (s *isolatedProgressStore) GetPlayerProfile(_ context.Context, userID uint64) (db.PlayerProfile, error) {
+	state, ok := s.states[userID]
+	if !ok {
+		return db.PlayerProfile{}, sql.ErrNoRows
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return db.PlayerProfile{}, err
+	}
+	return db.PlayerProfile{UserID: userID, ProgressJSON: string(encoded)}, nil
+}
+
+func (s *isolatedProgressStore) CreatePlayerProfile(_ context.Context, arg db.CreatePlayerProfileParams) error {
+	if _, exists := s.states[arg.UserID]; exists {
+		return sql.ErrNoRows
+	}
+	state := map[string]any{}
+	if err := json.Unmarshal([]byte(arg.ProgressJSON), &state); err != nil {
+		return err
+	}
+	s.states[arg.UserID] = state
+	return nil
+}
+
+func (s *isolatedProgressStore) MutatePlayerProgress(_ context.Context, userID uint64, mutate ProgressMutation) (json.RawMessage, error) {
+	state, ok := s.states[userID]
+	if !ok {
+		state = map[string]any{}
+		if err := json.Unmarshal([]byte(DefaultProgressJSON), &state); err != nil {
+			return nil, err
+		}
+		s.states[userID] = state
+	}
+	if err := mutate(state); err != nil {
+		return nil, err
+	}
+	return json.Marshal(state)
+}
+
+func TestPlayerProgressIsolatedByBackendUserID(t *testing.T) {
+	store := newIsolatedProgressStore(t)
+	service := NewService(leaderboardProfileReader{profile: user.ProfileResponse{Nickname: "玩家"}}, store)
+
+	if _, err := service.Bootstrap(context.Background(), 3); err != nil {
+		t.Fatalf("Bootstrap(user 3) error = %v", err)
+	}
+	if _, err := store.MutatePlayerProgress(context.Background(), 3, func(state map[string]any) error {
+		state["coins"] = 777
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate user 3 error = %v", err)
+	}
+	if _, err := service.Bootstrap(context.Background(), 4); err != nil {
+		t.Fatalf("Bootstrap(user 4) error = %v", err)
+	}
+
+	user3, _ := store.GetPlayerProfile(context.Background(), 3)
+	user4, _ := store.GetPlayerProfile(context.Background(), 4)
+	if progressCoins(user3.ProgressJSON) != 777 {
+		t.Fatalf("user 3 coins = %d, want 777", progressCoins(user3.ProgressJSON))
+	}
+	if progressCoins(user4.ProgressJSON) == 777 {
+		t.Fatalf("user 4 inherited user 3 progress: %s", user4.ProgressJSON)
+	}
 }
 
 func TestBootstrapAwardsLoginRewardOnlyOncePerShanghaiDate(t *testing.T) {

@@ -35,29 +35,36 @@ function modalTop(app, modalHeight, preferred = null) {
 function gameLayout(app) {
   const headerY = pageTop(app);
   const statsY = headerY + 76;
-  const infoY = statsY + 94;
+  const infoY = headerY + 170;
   const hasInfo = app.mode === 'friend' || app.mode === 'daily';
-  const baseContentY = hasInfo ? infoY + 82 : statsY + 94;
+  const baseContentY = headerY + 86;
   const compact = app.visibleHeight < 1500;
-  const ultraCompact = app.visibleHeight < 1320;
-  const cardWidth = compact ? 318 : 326;
-  const cardHeight = ultraCompact ? 100 : compact ? 112 : 126;
-  const gapX = compact ? 16 : 18;
-  const gapY = ultraCompact ? 10 : compact ? 12 : 16;
-  const cardOffset = ultraCompact ? 226 : compact ? (hasInfo ? 226 : 230) : 244;
-  const operatorHeight = ultraCompact ? 58 : compact ? 64 : 72;
-  const actionHeight = ultraCompact ? 54 : compact ? 56 : 62;
-  const bottomButtonHeight = compact ? 58 : 64;
+  // 320px-class devices have a shorter logical viewport because the canvas is
+  // scaled from 750px. Use a compact board there too, otherwise the footer
+  // can sit below the safe area even though every button is technically valid.
+  const tiny = safeNumber(app.viewportWidth, 0) > 0
+    ? app.viewportWidth <= 360
+    : app.renderScale < 0.46;
+  const ultraCompact = app.visibleHeight < 1320 || tiny;
+  // Reserve a stable breathing space below the question panel. This keeps
+  // the card hitboxes away from the progress panel on small phones.
+  const cardWidth = compact ? 326 : 338;
+  const cardHeight = tiny ? 190 : compact ? (hasInfo ? 190 : 240) : (hasInfo ? 220 : 260);
+  const gapX = compact ? 14 : 16;
+  const gapY = tiny ? 12 : compact ? 16 : 18;
+  const cardOffset = 226;
+  const operatorHeight = tiny ? 54 : compact ? (hasInfo ? 70 : 76) : (hasInfo ? 76 : 88);
+  const actionHeight = tiny ? 50 : compact ? 52 : 58;
+  const bottomButtonHeight = compact ? 54 : 58;
   const cardStartY = baseContentY + cardOffset;
   const cardRows = Math.max(1, Math.ceil(Math.max(1, app.cards ? app.cards.length : 4) / 2));
-  const opTitleY = cardStartY + cardHeight * cardRows + gapY + (ultraCompact ? 22 : compact ? 24 : 30);
-  const actionY = opTitleY + (ultraCompact ? 84 : compact ? 88 : 110);
+  const opTitleY = cardStartY + cardHeight * cardRows + gapY + 22;
+  const actionY = opTitleY + operatorHeight + 18;
   const actionButtonTop = actionY + 22;
-  const bottomGap = ultraCompact ? 22 : compact ? 26 : 34;
+  const bottomGap = tiny ? 10 : compact ? 14 : 18;
   const bottomY = actionButtonTop + actionHeight + bottomGap;
-  const footerGap = ultraCompact ? 16 : compact ? 20 : 26;
-  const footerHeight = compact ? 52 : 62;
-  const footerY = bottomY + bottomButtonHeight + footerGap;
+  const footerY = bottomY + bottomButtonHeight;
+  const footerHeight = 0;
   return {
     headerY, statsY, infoY, contentY: baseContentY, bottomY, footerY,
     footerHeight, cardWidth, cardHeight, gapX, gapY, cardStartY, cardRows,

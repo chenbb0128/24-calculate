@@ -220,6 +220,24 @@ func (s *Service) GetMatchmakingStatus(ctx context.Context, userID uint64, ticke
 		}
 		ticket = matched
 	}
+	if ticket.Status == "matched" && ticket.Room != nil && ticket.Room.RoomCode != "" {
+		// The ticket contains a snapshot for atomic matchmaking writes. Refresh
+		// the room before returning it so profile edits made after matching are
+		// visible in the opponent card and the room player list.
+		latestRoom, roomErr := s.GetFriendRoom(ctx, ticket.Room.RoomCode)
+		if roomErr != nil {
+			return MatchmakingResponse{}, roomErr
+		}
+		ticket.Room = &latestRoom
+		ticket.Opponent = nil
+		for index := range latestRoom.Players {
+			if latestRoom.Players[index].UserID != userID {
+				opponent := latestRoom.Players[index]
+				ticket.Opponent = &opponent
+				break
+			}
+		}
+	}
 	return publicMatchmakingResponse(ticket), nil
 }
 
@@ -264,7 +282,7 @@ func (s *Service) CancelMatchmaking(ctx context.Context, userID uint64, ticketID
 func (s *Service) matchmakingWaitElapsed(ticket MatchmakingTicket) bool {
 	wait := s.matchmakingWait
 	if wait <= 0 {
-		wait = 12 * time.Second
+		wait = defaultMatchmakingWait
 	}
 	return !ticket.CreatedAt.IsZero() && time.Since(ticket.CreatedAt) >= wait
 }
@@ -273,6 +291,24 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 	if s.rooms == nil {
 		return MatchmakingTicket{}, apperror.ServiceUnavailable("match room service is unavailable", nil)
 	}
+	// Status polling is allowed from multiple devices and multiple API
+	// instances. Only one request may create the fallback room and bot; the
+	// other requests should observe the persisted ticket after the winner
+	// finishes instead of creating duplicate rooms.
+	release, lockErr := s.acquireSettlementLock(ctx, "matchmaking:bot:"+ticket.Mode+":"+ticket.TicketID)
+	if lockErr != nil {
+		var appErr *apperror.AppError
+		if errors.As(lockErr, &appErr) && appErr.HTTPStatus == 409 {
+			latest, getErr := s.matchmaking.GetMatchmakingTicket(ctx, ticket.Mode, ticket.TicketID)
+			if getErr == nil {
+				return latest, nil
+			}
+			return MatchmakingTicket{}, getErr
+		}
+		return MatchmakingTicket{}, lockErr
+	}
+	defer release()
+
 	current, err := s.matchmaking.GetMatchmakingTicket(ctx, ticket.Mode, ticket.TicketID)
 	if err != nil {
 		return MatchmakingTicket{}, err
@@ -284,7 +320,7 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 	if err != nil {
 		return MatchmakingTicket{}, err
 	}
-	bot := FriendRoomPlayer{UserID: 0, Nickname: botDisplayName(ticket.TicketID), Ready: true}
+	bot := FriendRoomPlayer{UserID: 0, Nickname: "对手", Ready: true}
 	if err := s.rooms.JoinFriendRoom(ctx, room.RoomCode, bot); err != nil {
 		return MatchmakingTicket{}, err
 	}
@@ -310,7 +346,7 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 		}
 		room = started
 	}
-	difficulties := []string{"easy", "normal", "hard"}
+	difficulties := []string{"easy", "standard", "hard"}
 	difficulty := difficulties[int(absMatchmakingInt64(room.RoomSeed))%len(difficulties)]
 	botTicket := MatchmakingTicket{
 		TicketID: "bot_" + ticket.TicketID, UserID: 0, Mode: ticket.Mode, RulesVersion: ticket.RulesVersion,

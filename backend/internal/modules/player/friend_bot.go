@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -78,6 +79,11 @@ func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
 				UserID: 0, Solved: solved, Score: progress.Score, ElapsedMS: progress.ElapsedMS,
 				CreatedAt: time.Now().UTC(),
 			})
+		}
+		if lifecycle, ok := s.rooms.(FriendRoomLifecycleStore); ok {
+			if err := lifecycle.FinishFriendRoom(ctx, room.RoomCode, room.MatchID); err != nil && !errors.Is(err, ErrFriendRoomStarted) {
+				return err
+			}
 		}
 	}
 	return nil

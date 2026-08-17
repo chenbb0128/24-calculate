@@ -61,6 +61,14 @@ func FriendRoomRateKey(action string, userID uint64) string {
 	return fmt.Sprintf("%s:rate:friend:%s:%d", keyPrefix, action, userID)
 }
 
+func FriendRecentPuzzleKey(userID uint64) string {
+	return fmt.Sprintf("%s:friend:recent-puzzles:%d", keyPrefix, userID)
+}
+
+func AvatarUploadRateKey(userID uint64) string {
+	return fmt.Sprintf("%s:rate:avatar-upload:%d", keyPrefix, userID)
+}
+
 func EndlessRunKey(runID string) string {
 	return fmt.Sprintf("%s:endless:run:%s", keyPrefix, runID)
 }

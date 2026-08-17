@@ -97,6 +97,10 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 	if room.MatchID == "" || (room.Status != FriendRoomRunning && room.Status != FriendRoomFinished) {
 		return FriendMatchSubmissionResponse{}, mapFriendRoomError(errForFriendRoomStatus(room.Status))
 	}
+	// A finished room rejects further live progress updates, but the other
+	// player still needs to submit their already-recorded final attempt. That
+	// submission is read-only with respect to room progress and is required to
+	// produce the server-side result when one player finishes first.
 	calculated, err := validateFriendMatchSubmission(room, input)
 	if err != nil {
 		return FriendMatchSubmissionResponse{}, err

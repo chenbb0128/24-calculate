@@ -26,6 +26,9 @@ $env:GO_SERVICE_JWT_SECRET = "至少 32 个字符的本地 JWT 密钥"
 $env:GO_SERVICE_WECHAT_APP_ID = "wx1e7ac815548c561c"
 $env:GO_SERVICE_WECHAT_APP_SECRET = "对应的微信 AppSecret"
 $env:GO_SERVICE_GAME_DAILY_SEED_SECRET = "生产环境单独的每日题目密钥"
+# 本机可留空；生产必须配置实际 HTTPS 图片域名和可写目录。
+$env:GO_SERVICE_AVATAR_STORAGE_DIR = "var/avatars"
+$env:GO_SERVICE_AVATAR_PUBLIC_BASE_URL = ""
 
 D:\bin\go.exe run ./cmd/api
 ```
@@ -46,6 +49,7 @@ cd D:\微信小游戏\backend
 ## 主要接口
 
 - `POST /api/v1/auth/wechat-login`、`POST /api/v1/auth/refresh`
+- `GET/PATCH /api/v1/users/me`、`POST /api/v1/users/me/avatar`
 - `GET /api/v1/player/bootstrap`
 - `POST/GET /api/v1/player/campaign/runs...`
 - `POST/GET /api/v1/player/daily/runs...`
@@ -55,7 +59,7 @@ cd D:\微信小游戏\backend
 - 商城：skins、cosmetics、preferences
 - `GET /health`、`GET /ready`
 
-所有受保护接口从 JWT 获取用户身份，不信任请求体中的 `user_id`、`score`、`coins`、`winner` 或 `reward`。错误响应保留数字 `code`，并增加 `request_id` 和 `data: null`。
+所有受保护接口从 JWT 获取用户身份，不信任请求体中的 `user_id`、`score`、`coins`、`winner` 或 `reward`。错误响应保留数字 `code`，并增加 `request_id` 和 `data: null`。头像上传只接受 JPG/PNG/WEBP，服务端会裁剪为 256×256 WEBP；生产环境的 `GO_SERVICE_AVATAR_PUBLIC_BASE_URL` 必须是 HTTPS 图片域名。
 
 ## 测试与构建
 

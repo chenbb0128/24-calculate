@@ -62,7 +62,7 @@ func setDefaults(v *viper.Viper) {
 		"server.idle_timeout":           "60s",
 		"server.shutdown_timeout":       "10s",
 		"server.max_header_bytes":       1 << 20,
-		"server.max_request_body_bytes": 2 << 20,
+		"server.max_request_body_bytes": 4 << 20,
 		"server.trusted_proxies":        []string{},
 		"server.cors_allowed_origins":   []string{},
 
@@ -97,7 +97,13 @@ func setDefaults(v *viper.Viper) {
 		"queue.task_timeout": "30s",
 		"queue.max_retry":    5,
 
-		"game.matchmaking_wait_seconds": 12,
+		"game.matchmaking_wait_seconds": 15,
+
+		"avatar.storage_dir":             "var/avatars",
+		"avatar.public_base_url":         "",
+		"avatar.max_bytes":               2 << 20,
+		"avatar.max_dimension":           4096,
+		"avatar.upload_cooldown_seconds": 30,
 
 		"log.level":  "info",
 		"log.format": "json",
@@ -124,6 +130,8 @@ func bindEnvironment(v *viper.Viper) {
 		"jwt.secret", "jwt.algorithm", "jwt.issuer", "jwt.access_ttl", "jwt.refresh_ttl",
 		"queue.name", "queue.concurrency", "queue.task_timeout", "queue.max_retry",
 		"game.daily_seed_secret", "game.matchmaking_wait_seconds",
+		"avatar.storage_dir", "avatar.public_base_url", "avatar.max_bytes", "avatar.max_dimension",
+		"avatar.upload_cooldown_seconds",
 		"log.level", "log.format",
 	}
 

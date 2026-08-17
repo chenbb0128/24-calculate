@@ -86,7 +86,9 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 	userRepository := user.NewRepository(queries, txManager)
 	authService := auth.NewServiceWithWeChat(userRepository, redisClient, manager, cfg.JWT.AccessTTL, cfg.JWT.RefreshTTL, queueClient, logger, wechatplatform.NewClient(cfg.WeChat))
 	authHandler := auth.NewHandler(authService)
-	userService := user.NewService(userRepository)
+	avatarStorage := user.NewFileAvatarStorage(cfg.Avatar.StorageDir, cfg.Avatar.PublicBaseURL)
+	userService := user.NewServiceWithAvatarStorage(userRepository, avatarStorage, cfg.Avatar.MaxBytes, cfg.Avatar.MaxDimension, time.Duration(cfg.Avatar.UploadCooldownSeconds)*time.Second)
+	userService.SetAvatarRateLimiter(redisClient)
 	userHandler := user.NewHandler(userService)
 	playerRepository := player.NewRepository(queries, txManager)
 	friendRoomRepository := player.NewFriendRoomRepository(redisClient)
@@ -100,6 +102,7 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 	playerHandler := player.NewHandler(playerService)
 
 	router, err := httpapi.NewRouter(cfg, logger, httpapi.RouterOptions{
+		AvatarStorageDir: cfg.Avatar.StorageDir,
 		Readiness: dependencyReadiness{
 			MySQL: store.MySQLReadiness{DB: database, Timeout: 2 * time.Second},
 			Redis: redisplatform.Readiness{Client: redisClient, Timeout: 2 * time.Second},
@@ -107,7 +110,7 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 		APIRoutes: func(group *gin.RouterGroup) {
 			auth.RegisterRoutes(group, authHandler, !strings.EqualFold(strings.TrimSpace(cfg.App.Env), "production"))
 			user.RegisterRoutes(group, userHandler, manager)
-			player.RegisterRoutes(group, playerHandler, manager, !strings.EqualFold(strings.TrimSpace(cfg.App.Env), "production"))
+			player.RegisterRoutes(group, playerHandler, manager)
 		},
 	})
 	if err != nil {

@@ -71,6 +71,7 @@ jobs:
         run: |
           node tools/smoke_test.js
           node tools/account_storage_audit.js
+          node tools/auth_session_audit.js
           node tools/stability_audit.js
           node tools/module_audit.js
           node tools/button_audit.js

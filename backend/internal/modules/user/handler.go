@@ -1,6 +1,7 @@
 package user
 
 import (
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -56,4 +57,50 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, profile)
+}
+
+func (h *Handler) UploadAvatar(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	file, err := c.FormFile("file")
+	if err != nil {
+		response.WriteError(c, apperror.BadRequest("请上传名为 file 的图片文件", err))
+		return
+	}
+	if file.Size <= 0 {
+		response.WriteError(c, apperror.BadRequest("头像文件不能为空", nil))
+		return
+	}
+	maxBytes := h.service.avatarMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = 2 << 20
+	}
+	if file.Size > maxBytes {
+		response.WriteError(c, apperror.BadRequest("头像文件不能超过 2 MB", nil))
+		return
+	}
+	opened, err := file.Open()
+	if err != nil {
+		response.WriteError(c, apperror.BadRequest("无法读取头像文件", err))
+		return
+	}
+	defer opened.Close()
+	data, err := io.ReadAll(io.LimitReader(opened, maxBytes+1))
+	if err != nil {
+		response.WriteError(c, apperror.BadRequest("无法读取头像文件", err))
+		return
+	}
+	if int64(len(data)) > maxBytes {
+		response.WriteError(c, apperror.BadRequest("头像文件不能超过 2 MB", nil))
+		return
+	}
+	result, err := h.service.UploadAvatar(c.Request.Context(), userID, data, h.service.avatarMaxDimension)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
 }

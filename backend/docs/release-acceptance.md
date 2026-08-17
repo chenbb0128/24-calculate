@@ -27,6 +27,7 @@
 | `POST /api/v1/player/daily/complete` | 当前仍返回 HTTP 401，线上疑似仍为旧版二进制，待部署最新版本 |
 | `POST /api/v1/player/leaderboards/overall/submit` | 当前仍返回 HTTP 401，线上疑似仍为旧版二进制，待部署最新版本 |
 | `/swagger/index.html` | HTTP 404，生产未暴露 Swagger |
+| 前端正式冷启动登录审计 | 本地通过 `AUTH_SESSION_OK`，每次冷启动重新绑定 `wx.login`，同一会话不重复登录 |
 | DNS A 记录 | `116.62.159.237` |
 | 443 端口 | 可连接 |
 

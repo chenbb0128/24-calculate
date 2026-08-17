@@ -20,9 +20,9 @@ check(memory[storage.KEY] && memory[storage.KEY].coins === 11, '匿名旧存档�
 
 const accountA = storage.setAccount('wechat-account-a');
 check(storage.getActiveAccountID() === 'wechat-account-a', '账号 A 没有激活');
-check(accountA.coins === 11 && accountA.unlocked_level === 2, '旧存档没有只迁移给第一个账号');
+check(accountA.coins === 0 && accountA.unlocked_level === 0, '匿名旧存档被错误迁移给账号 A');
 const keysA = storage.accountStorageKeys('wechat-account-a');
-check(memory[keysA.primary] && memory[keysA.primary].coins === 11, '账号 A 存档没有使用专属键');
+check(memory[keysA.primary] && memory[keysA.primary].coins === 0, '账号 A 存档没有使用专属键');
 
 accountA.coins = 99;
 storage.save(accountA);
@@ -52,11 +52,10 @@ check(Array.isArray(memory[keysB.errorLog]) && memory[keysB.errorLog].length ===
 storage.setAccount('wechat-account-a');
 check(storage.getErrorLogs().length === 0, '账号 A 读取了账号 B 的错误日志');
 
-// Once the legacy global record has been claimed, a later account must not
-// inherit a newly written shared record.
+// Anonymous records must never be assigned to an authenticated account.
 storage.clearAccount();
 memory[storage.KEY] = storage.normalize({ coins: 123 });
-check(storage.setAccount('wechat-account-c').coins === 0, '后续账号错误继承了共享旧存档');
+check(storage.setAccount('wechat-account-c').coins === 0, '账号 C 错误继承了匿名共享存档');
 
 const storagePath = require.resolve('../src/services/storage.js');
 delete require.cache[storagePath];

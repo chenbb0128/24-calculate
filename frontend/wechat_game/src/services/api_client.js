@@ -15,6 +15,8 @@ const REQUEST_TIMEOUTS = {
 const AUTH_STORAGE_KEY = 'twenty_four_auth';
 const DEV_LOGIN_SLOT_KEY = 'twenty_four_dev_login_slot';
 let refreshPromise = null;
+let freshSessionLoginPromise = null;
+let freshSessionLoginCompleted = false;
 
 function isConfigured() {
   const url = String(API_BASE_URL || '').trim();
@@ -194,6 +196,30 @@ function canUseDevLogin() {
   return ALLOW_LOCAL_BACKEND && /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.31\.132)(:\d+)?$/i.test(url);
 }
 
+function requiresFreshWechatLogin() {
+  // A production cold start must bind this app session to the wx.login code
+  // issued for the currently active WeChat account. Reusing a token left by a
+  // previous account would let account switching leak the old account's data.
+  return /^https:\/\//i.test(String(API_BASE_URL || '').trim()) && !canUseDevLogin();
+}
+
+function freshSessionLogin(profile = {}) {
+  if (freshSessionLoginPromise) return freshSessionLoginPromise;
+  // Do not leave a previous account token available while the new account is
+  // being established. A failed login therefore cannot silently fall back to
+  // the old account.
+  clearAuth();
+  freshSessionLoginPromise = login(profile).then((data) => {
+    freshSessionLoginCompleted = true;
+    freshSessionLoginPromise = null;
+    return data;
+  }, (error) => {
+    freshSessionLoginPromise = null;
+    throw error;
+  });
+  return freshSessionLoginPromise;
+}
+
 function refresh() {
   if (refreshPromise) return refreshPromise;
   const auth = readAuth();
@@ -236,6 +262,7 @@ function ensureLogin(profile = {}) {
   if (!isConfigured()) return Promise.reject(makeError('后端地址尚未配置，当前使用本地模式', 0, 0));
   const devSlot = readDevLoginSlot();
   if (devSlot > 0 && canUseDevLogin()) return devLogin(devSlot);
+  if (requiresFreshWechatLogin() && !freshSessionLoginCompleted) return freshSessionLogin(profile);
   const auth = readAuth();
   if (!auth || !auth.access_token) return login(profile);
   return authenticatedRequest('/api/v1/users/me').catch(() => login(profile));
@@ -424,6 +451,13 @@ function joinMatchmaking(data = {}) {
       rules_version: 1,
       client_ticket: String(data.client_ticket || ''),
       region: String(data.region || ''),
+      // The server uses these public rank fields to choose a search bucket.
+      // Hidden rating is intentionally never sent by the client.
+      ranked: Boolean(data.ranked),
+      season_id: String(data.season_id || ''),
+      rank_tier: String(data.rank_tier || ''),
+      rank_division: Number(data.rank_division || 0),
+      rank_stars: Number(data.rank_stars || 0),
     },
   });
 }
@@ -448,6 +482,7 @@ module.exports = {
   isConfigured,
   AUTH_STORAGE_KEY,
   DEV_LOGIN_SLOT_KEY,
+  requiresFreshWechatLogin,
   readAuth,
   clearAuth,
   request,

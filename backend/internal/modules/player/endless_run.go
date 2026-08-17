@@ -352,15 +352,18 @@ func generateEndlessRunQuestions(seed int64, count int) []EndlessPuzzle {
 		if _, exists := used[key]; exists {
 			continue
 		}
-		solutions := friendSolveDetailed(numbers, 1)
-		allSolutions := friendSolveDetailed(numbers, 40)
-		if len(solutions) == 0 {
+		rules := friendPuzzleRules()
+		// The raw solver may find a mathematically valid expression that uses a
+		// negative intermediate result. Endless mode disallows those results, so
+		// select the answer proof from the same verified set that is exposed by
+		// the friend-match generator.
+		allSolutions := verifiedFriendSolutions(numbers, rules, 40)
+		if len(allSolutions) == 0 {
 			continue
 		}
 		used[key] = struct{}{}
 		stage := index / 3
 		timeLimit := maxInt(18000, 45000-stage*1000)
-		rules := friendPuzzleRules()
 		result = append(result, EndlessPuzzle{
 			PuzzleID:      fmt.Sprintf("ENDLESS-Q%04d", index+1),
 			Numbers:       append([]int(nil), numbers...),
@@ -370,7 +373,7 @@ func generateEndlessRunQuestions(seed int64, count int) []EndlessPuzzle {
 			SolutionCount: len(allSolutions),
 			ShortestSteps: shortestSolutionSteps(allSolutions),
 			TimeLimitMS:   timeLimit,
-			SolutionSteps: append([]FriendMatchSolutionStep(nil), solutions[0].steps...),
+			SolutionSteps: append([]FriendMatchSolutionStep(nil), allSolutions[0].steps...),
 		})
 		index++
 	}

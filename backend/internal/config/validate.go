@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -76,6 +77,31 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Game.MatchmakingWaitSeconds < 1 || cfg.Game.MatchmakingWaitSeconds > 60 {
 		return fmt.Errorf("game.matchmaking_wait_seconds must be between 1 and 60")
+	}
+	if strings.TrimSpace(cfg.Avatar.StorageDir) == "" {
+		return fmt.Errorf("avatar.storage_dir must not be empty")
+	}
+	if cfg.Avatar.MaxBytes < 1 || cfg.Avatar.MaxBytes > 2<<20 {
+		return fmt.Errorf("avatar.max_bytes must be between 1 byte and 2 MiB")
+	}
+	if cfg.Avatar.MaxDimension < 256 || cfg.Avatar.MaxDimension > 8192 {
+		return fmt.Errorf("avatar.max_dimension must be between 256 and 8192")
+	}
+	if cfg.Avatar.UploadCooldownSeconds < 1 || cfg.Avatar.UploadCooldownSeconds > 86400 {
+		return fmt.Errorf("avatar.upload_cooldown_seconds must be between 1 and 86400")
+	}
+	if base := strings.TrimSpace(cfg.Avatar.PublicBaseURL); base != "" {
+		parsed, err := url.Parse(base)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
+			return fmt.Errorf("avatar.public_base_url must be an absolute URL")
+		}
+	}
+	if strings.EqualFold(cfg.App.Env, "production") {
+		base := strings.TrimSpace(cfg.Avatar.PublicBaseURL)
+		parsed, err := url.Parse(base)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+			return fmt.Errorf("avatar.public_base_url must be an HTTPS URL in production")
+		}
 	}
 	if cfg.Log.Level == "" {
 		return fmt.Errorf("log.level must not be empty")

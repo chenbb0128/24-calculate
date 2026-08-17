@@ -37,13 +37,14 @@ function requestWechatProfile() {
   });
 }
 
-// 正式广告 ID 只在这里配置。占位 ID 保持静默，不会在开发者工具中反复报错。
-const AD_UNIT_IDS = {
-  hint: 'adunit-placeholder',
-  undo: 'adunit-placeholder',
-  continue: 'adunit-placeholder',
-  double_reward: 'adunit-placeholder',
-};
+// 正式广告位尚未配置时保持安全关闭。空值不会创建广告实例，也不会
+// 消耗次数或发放奖励；拿到公众平台真实广告位 ID 后只需在这里替换。
+const AD_UNIT_IDS = Object.freeze({
+  hint: '',
+  undo: '',
+  continue: '',
+  double_reward: '',
+});
 
 function share(payload = {}) {
   if (!hasWx() || !wx.shareAppMessage) return Promise.resolve(false);
@@ -75,7 +76,7 @@ function share(payload = {}) {
 function showRewardedAd(rewardType) {
   return new Promise((resolve) => {
     const adUnitId = AD_UNIT_IDS[String(rewardType || '')] || AD_UNIT_IDS.hint;
-    if (adUnitId === 'adunit-placeholder' || !hasWx() || !wx.createRewardedVideoAd) {
+    if (!adUnitId || !hasWx() || !wx.createRewardedVideoAd) {
       resolve(false);
       return;
     }

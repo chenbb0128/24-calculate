@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/example/go-service/internal/modules/user"
 )
@@ -76,6 +77,23 @@ func (f *matchmakingStoreFake) GetEndlessRun(context.Context, string) (EndlessRu
 
 type matchmakingRoomStoreFake struct {
 	room FriendRoom
+}
+
+type matchmakingLockFake struct {
+	deny  bool
+	calls int
+}
+
+func (f *matchmakingLockFake) AcquireDistributedLock(context.Context, string, time.Duration) (string, bool, error) {
+	f.calls++
+	if f.deny {
+		return "", false, nil
+	}
+	return "ticket-lock", true, nil
+}
+
+func (f *matchmakingLockFake) ReleaseDistributedLock(context.Context, string, string) error {
+	return nil
 }
 
 func (f *matchmakingRoomStoreFake) CreateFriendRoom(_ context.Context, room FriendRoom) error {
@@ -163,5 +181,37 @@ func TestMatchmakingTicketIsOwnedAndCanBeCancelled(t *testing.T) {
 	}
 	if _, err := service.GetMatchmakingStatus(context.Background(), 3, result.TicketID); err == nil {
 		t.Fatal("status after cancel error = nil, want not found")
+	}
+}
+
+func TestBotMatchCreationReturnsCurrentTicketWhenDistributedLockIsBusy(t *testing.T) {
+	matchmaking := &matchmakingStoreFake{}
+	rooms := &matchmakingRoomStoreFake{}
+	ticket := MatchmakingTicket{
+		TicketID: "mm-lock-test", UserID: 3, Mode: matchmakingModeFriend,
+		RulesVersion: matchmakingRulesV1, Status: "searching",
+		CreatedAt: time.Now().UTC().Add(-16 * time.Second), ExpiresAt: time.Now().UTC().Add(time.Minute),
+	}
+	matchmaking.tickets = map[string]MatchmakingTicket{ticket.TicketID: ticket}
+	lock := &matchmakingLockFake{deny: true}
+	service := NewServiceWithRoomsAndEndless(matchmakingProfileReader{}, &leaderboardStore{}, rooms, matchmaking)
+	service.locks = lock
+
+	result, err := service.createBotMatch(context.Background(), ticket)
+	if err != nil {
+		t.Fatalf("createBotMatch() error = %v", err)
+	}
+	if result.Status != "searching" || rooms.room.RoomCode != "" {
+		t.Fatalf("result = %#v, room = %#v, want current ticket without duplicate room", result, rooms.room)
+	}
+	if lock.calls != 1 {
+		t.Fatalf("distributed lock calls = %d, want 1", lock.calls)
+	}
+}
+
+func TestDefaultMatchmakingWaitIsFifteenSeconds(t *testing.T) {
+	service := NewServiceWithRoomsAndEndless(matchmakingProfileReader{}, &leaderboardStore{}, &matchmakingRoomStoreFake{}, &matchmakingStoreFake{})
+	if service.matchmakingWait != 15*time.Second {
+		t.Fatalf("default matchmaking wait = %s, want 15s", service.matchmakingWait)
 	}
 }

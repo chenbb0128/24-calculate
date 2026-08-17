@@ -168,6 +168,46 @@ func (r *FriendRoomRepository) AllowFriendRoomAction(ctx context.Context, userID
 	return count <= limit, nil
 }
 
+func (r *FriendRoomRepository) GetRecentFriendPuzzleHashes(ctx context.Context, userID uint64) (map[string]struct{}, error) {
+	if r == nil || r.redis == nil || r.redis.Client == nil {
+		return nil, fmt.Errorf("friend room redis repository is not initialized")
+	}
+	values, err := r.redis.SMembers(ctx, redisplatform.FriendRecentPuzzleKey(userID)).Result()
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if len(value) == 64 {
+			result[value] = struct{}{}
+		}
+	}
+	return result, nil
+}
+
+func (r *FriendRoomRepository) RecordFriendPuzzleHashes(ctx context.Context, userID uint64, hashes []string, ttl time.Duration) error {
+	if r == nil || r.redis == nil || r.redis.Client == nil {
+		return fmt.Errorf("friend room redis repository is not initialized")
+	}
+	if len(hashes) == 0 || ttl <= 0 {
+		return nil
+	}
+	values := make([]interface{}, 0, len(hashes))
+	for _, hash := range hashes {
+		if len(hash) == 64 {
+			values = append(values, hash)
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	key := redisplatform.FriendRecentPuzzleKey(userID)
+	if err := r.redis.SAdd(ctx, key, values...).Err(); err != nil {
+		return err
+	}
+	return r.redis.Expire(ctx, key, ttl).Err()
+}
+
 func (r *FriendRoomRepository) TouchFriendRoomPlayer(ctx context.Context, roomCode string, userID uint64) error {
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return fmt.Errorf("friend room redis repository is not initialized")

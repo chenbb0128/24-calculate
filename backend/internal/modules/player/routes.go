@@ -7,10 +7,11 @@ import (
 	jwtplatform "github.com/example/go-service/internal/platform/jwt"
 )
 
-// RegisterRoutes registers player endpoints. The legacy completion endpoints
-// accept client-provided scores and are only suitable for local development
-// and compatibility testing; production must keep them disabled.
-func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatform.Manager, allowLegacyCompletions bool) {
+// RegisterRoutes registers only server-authoritative player endpoints. The
+// former levels/{id}/complete and daily/complete endpoints accepted
+// client-controlled completion metrics and are intentionally not registered
+// in any environment.
+func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatform.Manager) {
 	routes := group.Group("/player")
 	routes.Use(middleware.RequireAuth(manager))
 	routes.GET("/bootstrap", handler.Bootstrap)
@@ -36,10 +37,6 @@ func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatfo
 	routes.POST("/friend/rooms/:room_code/match/progress", handler.UpdateFriendMatchProgress)
 	routes.GET("/friend/rooms/:room_code/match/progress", handler.GetFriendMatchProgress)
 	routes.POST("/friend/rooms/:room_code/match/submit", handler.SubmitFriendMatch)
-	if allowLegacyCompletions {
-		routes.POST("/levels/:level_id/complete", handler.CompleteLevel)
-		routes.POST("/daily/complete", handler.CompleteDaily)
-	}
 	routes.POST("/skins/:skin_id/purchase", handler.PurchaseSkin)
 	routes.POST("/skins/:skin_id/equip", handler.EquipSkin)
 	routes.POST("/cosmetics/:cosmetic_id/purchase", handler.PurchaseCosmetic)

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example/go-service/internal/modules/user"
 	wechatplatform "github.com/example/go-service/internal/platform/wechat"
 	db "github.com/example/go-service/internal/store/sqlc"
 )
@@ -39,6 +40,19 @@ func TestLoginWithWeChatRejectsInvalidCode(t *testing.T) {
 	_, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "bad-code"}, "127.0.0.1")
 	if err == nil || err.Error() != "微信登录凭证无效" {
 		t.Fatalf("err = %v, want invalid WeChat code", err)
+	}
+}
+
+func TestLoginWithWeChatUsesDefaultProfileWhenAuthorizationWasDeclined(t *testing.T) {
+	users := &fakeWeChatUserStore{}
+	client := &fakeWeChatClient{result: wechatplatform.LoginResult{OpenID: "openid-default"}}
+	service := NewServiceWithWeChat(users, &fakeTokenStore{}, newTestJWTManager(t), time.Minute, time.Hour, nil, nil, client)
+
+	if _, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code"}, "127.0.0.1"); err != nil {
+		t.Fatalf("LoginWithWeChat() error = %v", err)
+	}
+	if users.byIdentity.Nickname != user.DefaultNickname || users.byIdentity.Avatar != user.DefaultAvatar {
+		t.Fatalf("created profile = %+v", users.byIdentity)
 	}
 }
 

@@ -14,3 +14,11 @@ type UpdateProfileInput struct {
 	Nickname *string `json:"nickname"`
 	Avatar   *string `json:"avatar"`
 }
+
+type AvatarUploadResponse struct {
+	AvatarURL string `json:"avatar_url"`
+	AvatarKey string `json:"avatar_key"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	Format    string `json:"format"`
+}

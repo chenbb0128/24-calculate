@@ -5,6 +5,7 @@ const friendMatch = require('../core/friend_match_service.js');
 const matchData = require('../core/match_data.js');
 const skinCatalog = require('../core/skin_catalog.js');
 const storage = require('../services/storage.js');
+const rankService = require('../services/rank_service.js');
 const diagnostics = require('../services/diagnostics.js');
 const apiClient = require('../services/api_client.js');
 const platform = require('../services/platform.js');
@@ -117,6 +118,7 @@ class GameApp {
     this.friendAttempts = [];
     this.friendRules = friendMatch.rules();
     this.friendLocalFallback = false;
+    this.friendRanked = false;
     this.friendServerResult = null;
     this.friendStartRequestInFlight = false;
     this.friendMatchProgress = null;
@@ -209,6 +211,7 @@ class GameApp {
     this.endlessAttempts = [];
     this.endlessServerResult = null;
     this.endlessRunLoading = false;
+    this.endlessLocalFallback = false;
     this.endlessUsedKeys = {};
     this.campaignRun = null;
     this.campaignAttempts = [];
@@ -793,9 +796,20 @@ class GameApp {
     if (payload && payload.progress) this.progress = storage.mergeServerProgress(this.progress, payload.progress, { authoritative: true });
     if (payload && Number.isFinite(Number(payload.coins))) this.progress.coins = Math.max(0, Math.floor(Number(payload.coins)));
     else if (reward > 0) storage.addCoins(this.progress, reward);
+    this.result.rankChange = this.friendRanked
+      ? this.applyServerRankResult(payload, matchResult.outcome)
+      : rankService.ineligibleChange('本局为休闲对战，不计入段位');
     this.friendMatchResolutionApplied = true;
     storage.save(this.progress);
     return true;
+  }
+
+  applyServerRankResult(payload, outcome = '') {
+    const applied = rankService.applyServerResult(this.progress && this.progress.rank, payload, outcome);
+    if (!applied) return null;
+    this.progress.rank = applied.profile;
+    storage.save(this.progress);
+    return applied.change;
   }
 
   resolvePendingFriendMatch() {
@@ -1023,6 +1037,10 @@ class GameApp {
 
   submitEndlessLeaderboard(score, questions, elapsedMs) {
     const runID = String(this.endlessRunId || `endless-${Date.now()}`);
+    // The player may finish the locally bootstrapped run before the optional
+    // server contract arrives. Do not show a false submission error or send a
+    // run whose puzzle IDs do not match the server contract.
+    if (this.endlessLocalFallback && !this.endlessRun) return;
     if (this.endlessRun && !this.endlessRunLoading && apiClient.submitEndlessRun) {
       const attempts = Array.isArray(this.endlessAttempts) ? this.endlessAttempts.map((attempt) => ({
         puzzle_id: String(attempt.puzzle_id || ''),
@@ -1327,15 +1345,15 @@ class GameApp {
     try {
       const ctx = this.ctx;
       if (ctx.setTransform) ctx.setTransform(this.dpr || 1, 0, 0, this.dpr || 1, 0, 0);
-      ctx.fillStyle = '#090735';
+      ctx.fillStyle = GAME_UI.bgTop;
       ctx.fillRect(0, 0, width, height);
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = GAME_UI.text;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.font = 'bold 34px sans-serif';
       ctx.fillText('本局可以继续', width / 2, height * 0.34);
       ctx.font = '20px sans-serif';
-      ctx.fillStyle = '#8cf6ff';
+      ctx.fillStyle = GAME_UI.cyanDark;
       ctx.fillText('点击“重新开始”恢复游戏', width / 2, height * 0.42);
     } catch (drawError) {
       try { if (typeof console !== 'undefined' && console.error) console.error('[24点挑战][recovery-draw]', drawError); } catch (logError) { /* 静默降级 */ }
@@ -1433,22 +1451,25 @@ class GameApp {
     this.applyRenderTransform();
     const theme = skinCatalog.getSkin(this.activeSkinId()).theme || {};
     const gradient = this.ctx.createLinearGradient(0, 0, 0, this.height);
-    gradient.addColorStop(0, this.screen === 'home' ? (theme.bg || '#070637') : (theme.bg || GAME_UI.bgTop));
-    gradient.addColorStop(0.35, theme.surface_2 || GAME_UI.bgMid);
-    gradient.addColorStop(0.65, theme.surface || '#15125D');
-    gradient.addColorStop(1, theme.bg || GAME_UI.bgBottom);
+    // The new visual language is intentionally bright and spacious. Existing
+    // skin data remains available to the shop, but the default composition
+    // uses the shared light canvas so pages do not jump between dark themes.
+    gradient.addColorStop(0, GAME_UI.bgTop);
+    gradient.addColorStop(0.42, GAME_UI.bgMid);
+    gradient.addColorStop(0.72, '#FFFFFF');
+    gradient.addColorStop(1, GAME_UI.bgBottom);
     this.ctx.fillStyle = gradient;
     this.ctx.fillRect(0, 0, this.width, this.height);
     const centerGlow = this.ctx.createRadialGradient(this.width * 0.5, this.height * 0.30, 18, this.width * 0.5, this.height * 0.30, 560);
-    centerGlow.addColorStop(0, 'rgba(38,60,195,0.30)');
-    centerGlow.addColorStop(0.46, 'rgba(25,30,145,0.16)');
-    centerGlow.addColorStop(1, 'rgba(10,8,64,0)');
+    centerGlow.addColorStop(0, 'rgba(92,224,220,0.16)');
+    centerGlow.addColorStop(0.46, 'rgba(184,223,255,0.12)');
+    centerGlow.addColorStop(1, 'rgba(255,255,255,0)');
     this.ctx.fillStyle = centerGlow;
     this.ctx.fillRect(0, 0, this.width, this.height);
     const lowerGlow = this.ctx.createRadialGradient(this.width * 0.56, this.height * 0.82, 40, this.width * 0.56, this.height * 0.82, 520);
-    lowerGlow.addColorStop(0, 'rgba(87,42,190,0.20)');
-    lowerGlow.addColorStop(0.62, 'rgba(17,13,92,0.05)');
-    lowerGlow.addColorStop(1, 'rgba(10,8,64,0)');
+    lowerGlow.addColorStop(0, 'rgba(255,218,145,0.16)');
+    lowerGlow.addColorStop(0.62, 'rgba(246,208,255,0.06)');
+    lowerGlow.addColorStop(1, 'rgba(255,255,255,0)');
     this.ctx.fillStyle = lowerGlow;
     this.ctx.fillRect(0, 0, this.width, this.height);
   }
@@ -1499,7 +1520,7 @@ class GameApp {
     const x = (this.width - width) / 2;
     const y = this.modalTop(height);
     this.ctx.save();
-    this.ctx.fillStyle = 'rgba(2,3,24,0.82)';
+    this.ctx.fillStyle = 'rgba(30,41,66,0.24)';
     this.ctx.fillRect(0, 0, this.width, this.height);
     this.drawGamePanel(x, y, width, height, expired ? 'violet' : 'cyan', {
       radius: 30,
@@ -1540,7 +1561,7 @@ class GameApp {
     const remainingMs = Math.max(0, Number(this.friendCountdownUntil || 0) - Date.now());
     const number = Math.min(3, Math.max(1, Math.ceil(remainingMs / 1000)));
     this.ctx.save();
-    this.ctx.fillStyle = 'rgba(4,3,32,0.72)';
+     this.ctx.fillStyle = 'rgba(30,41,66,0.22)';
     this.ctx.fillRect(0, 0, this.width, this.height);
     const width = Math.min(560, this.width - 96);
     const x = (this.width - width) / 2;
@@ -1569,7 +1590,7 @@ class GameApp {
     this.ctx.save();
     this.ctx.globalAlpha = remaining;
     const toastY = this.visibleBottom(106);
-    this.drawPanel(148, toastY, 424, 58, 'rgba(13,11,43,0.94)', `${color}bb`, 22, { shadowColor: `${color}55`, shadowBlur: 16 });
+    this.drawPanel(148, toastY, 424, 58, 'rgba(255,255,255,0.98)', `${color}bb`, 22, { shadowColor: `${color}38`, shadowBlur: 12 });
     this.drawFitText(this.feedback.text, this.width / 2, toastY + 29, 382, uiFont(17, 800), color);
     this.ctx.restore();
   }
@@ -1578,7 +1599,7 @@ class GameApp {
     const hint = this.hintPopup;
     if (!hint) return;
     this.ctx.save();
-    this.ctx.fillStyle = 'rgba(2,3,24,0.78)';
+     this.ctx.fillStyle = 'rgba(30,41,66,0.22)';
     this.ctx.fillRect(0, 0, this.width, this.height);
     const width = Math.min(610, this.width - 72);
     const height = 360;
@@ -1603,7 +1624,7 @@ class GameApp {
   drawResultHelpPopup() {
     this.addHitArea(0, 0, this.width, this.height, () => { this.resultHelpPopup = false; }, { key: 'result-help-overlay' });
     this.ctx.save();
-    this.ctx.fillStyle = 'rgba(2,3,24,0.78)';
+     this.ctx.fillStyle = 'rgba(30,41,66,0.22)';
     this.ctx.fillRect(0, 0, this.width, this.height);
     const width = Math.min(610, this.width - 72);
     const height = 432;
@@ -1742,8 +1763,8 @@ class GameApp {
       const alpha = (star.alpha || 0.45) * (0.60 + 0.30 * Math.abs(Math.sin(time * star.speed + star.phase)));
       ctx.save();
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = '#d9edff';
-      ctx.shadowColor = 'rgba(120,160,255,0.45)';
+      ctx.fillStyle = '#D6EEF2';
+      ctx.shadowColor = 'rgba(96,210,211,0.28)';
       ctx.shadowBlur = 4;
       ctx.beginPath();
       ctx.arc(star.x * this.width, star.y * this.height, Math.max(0.8, star.r * 0.78), 0, Math.PI * 2);
@@ -1773,8 +1794,8 @@ class GameApp {
       const y = star.y * this.height;
       ctx.save();
       ctx.globalAlpha = star.alpha * twinkle;
-      ctx.fillStyle = index % 7 === 0 ? '#fff8ff' : '#dce9ff';
-      ctx.shadowColor = index % 7 === 0 ? 'rgba(255,255,255,0.85)' : 'rgba(90,180,255,0.55)';
+       ctx.fillStyle = index % 7 === 0 ? '#FFF1C7' : '#DDF4F4';
+       ctx.shadowColor = index % 7 === 0 ? 'rgba(255,206,110,0.45)' : 'rgba(90,200,205,0.28)';
       ctx.shadowBlur = index % 9 === 0 ? 8 : 3;
       if (index % 11 === 0) {
         this.drawSparkle(x, y, 4 + star.r * 2, '#ffffff', ctx.globalAlpha);
@@ -1795,7 +1816,7 @@ class GameApp {
       ctx.translate(x, y);
       ctx.rotate(item.rotate + Math.sin(time * 0.35 + item.phase) * 0.02);
       ctx.globalAlpha = 0.12;
-      ctx.fillStyle = 'rgba(115,110,235,0.62)';
+       ctx.fillStyle = 'rgba(120,150,220,0.12)';
       ctx.font = scaleFont(uiFont(item.size, 900));
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -1832,9 +1853,9 @@ class GameApp {
   drawPanel(x, y, width, height, fill, stroke = 'rgba(255,255,255,0.16)', radius = 24, options = {}) {
     this.ctx.save();
     if (options.shadow !== false) {
-      this.ctx.shadowColor = options.shadowColor || 'rgba(4, 2, 25, 0.34)';
-      this.ctx.shadowBlur = options.shadowBlur || 14;
-      this.ctx.shadowOffsetY = options.shadowOffsetY || 4;
+      this.ctx.shadowColor = options.shadowColor || 'rgba(72, 96, 128, 0.16)';
+      this.ctx.shadowBlur = options.shadowBlur || 12;
+      this.ctx.shadowOffsetY = options.shadowOffsetY || 3;
     }
     this.roundRect(x, y, width, height, radius, fill, stroke, options.lineWidth || 2);
     this.ctx.restore();
@@ -1954,13 +1975,13 @@ class GameApp {
     const ctx = this.ctx;
     const fill = ctx.createLinearGradient(x, y, x + width, y + height);
     const variants = {
-      cyan: ['rgba(18,86,145,0.66)', 'rgba(13,28,91,0.58)'],
-      magenta: ['rgba(119,21,108,0.62)', 'rgba(39,18,83,0.60)'],
+      cyan: ['#E2FAF8', '#BCEEEA'],
+      magenta: ['#FFEAF1', '#F9CBD9'],
       violet: [GAME_UI.panelA, GAME_UI.panelB],
-      gold: ['rgba(106,75,29,0.58)', 'rgba(39,24,71,0.58)'],
-      dark: ['rgba(16,15,58,0.82)', 'rgba(8,8,36,0.74)'],
+      gold: ['#FFF4D5', '#FFE3A2'],
+      dark: ['#F5F8FC', '#EAF0F7'],
       modal: [GAME_UI.modalA, GAME_UI.modalB],
-      white: ['#FFFFFF', '#EEF4FF'],
+      white: ['#FFFFFF', '#F1FAFB'],
     };
     const colors = variants[variant] || variants.violet;
     fill.addColorStop(0, colors[0]);
@@ -1981,11 +2002,11 @@ class GameApp {
 
   drawGamePanel(x, y, width, height, variant = 'violet', options = {}) {
     const accent = options.stroke || this.accentColor(variant);
-    const strokeAlpha = variant === 'dark' ? 'rgba(150,150,255,0.28)' : accent;
+    const strokeAlpha = variant === 'dark' ? 'rgba(132,155,178,0.34)' : `${accent}88`;
     this.drawGlassCard(x, y, width, height, options.radius || GAME_UI.radiusMd, options.fill || this.glassFill(x, y, width, height, variant), strokeAlpha, {
       lineWidth: options.lineWidth || (variant === 'dark' ? 1.2 : 1.6),
       shadow: options.shadow,
-      shadowColor: options.shadowColor || (variant === 'cyan' ? 'rgba(0,220,255,0.20)' : variant === 'magenta' ? 'rgba(255,45,190,0.18)' : variant === 'gold' ? 'rgba(255,190,40,0.18)' : 'rgba(130,65,255,0.15)'),
+       shadowColor: options.shadowColor || (variant === 'cyan' ? 'rgba(49,201,209,0.20)' : variant === 'magenta' ? 'rgba(241,125,155,0.18)' : variant === 'gold' ? 'rgba(244,185,64,0.20)' : 'rgba(141,120,230,0.16)'),
       shadowBlur: options.shadowBlur || 14,
       shadowOffsetY: options.shadowOffsetY === undefined ? 3 : options.shadowOffsetY,
       innerAlpha: options.innerAlpha || 0.10,
@@ -2008,32 +2029,56 @@ class GameApp {
     const accent = this.accentColor(variant);
     const fill = ctx.createLinearGradient(x, y, x + width, y + height);
     if (variant === 'cyan') {
-      fill.addColorStop(0, 'rgba(20,150,190,0.76)');
-      fill.addColorStop(1, 'rgba(17,68,145,0.68)');
+      fill.addColorStop(0, '#E0FBF8');
+      fill.addColorStop(1, '#B7EDE8');
     } else if (variant === 'magenta') {
-      fill.addColorStop(0, 'rgba(184,46,148,0.76)');
-      fill.addColorStop(1, 'rgba(96,31,124,0.72)');
+      fill.addColorStop(0, '#FFE9F0');
+      fill.addColorStop(1, '#F7C9D8');
     } else if (variant === 'gold') {
-      fill.addColorStop(0, 'rgba(255,190,44,0.92)');
-      fill.addColorStop(1, 'rgba(198,123,26,0.82)');
+      fill.addColorStop(0, '#FFF4D1');
+      fill.addColorStop(1, '#FFE09A');
     } else {
-      fill.addColorStop(0, 'rgba(104,77,199,0.76)');
-      fill.addColorStop(1, 'rgba(57,42,132,0.76)');
+      fill.addColorStop(0, '#EEE9FF');
+      fill.addColorStop(1, '#D5CCFA');
     }
-    this.drawGlassCard(x, y, width, height, options.radius || Math.min(26, height / 2), fill, disabled ? 'rgba(170,160,220,0.26)' : `${accent}bb`, {
+    this.drawGlassCard(x, y, width, height, options.radius || Math.min(26, height / 2), fill, disabled ? 'rgba(135,151,170,0.24)' : `${accent}bb`, {
       lineWidth: options.lineWidth || 1.6,
-      shadowColor: disabled ? 'rgba(0,0,0,0.12)' : `${accent}55`,
-      shadowBlur: options.shadowBlur || 13,
+      shadowColor: disabled ? 'rgba(80,100,130,0.08)' : `${accent}44`,
+      shadowBlur: options.shadowBlur || 10,
       shadowOffsetY: 0,
-      innerAlpha: 0.07,
+      innerAlpha: 0.22,
     });
     if (options.icon) {
-      this.drawText(options.icon, x + 32, y + height / 2 + 1, uiFont(options.fontSize || 25, 900), options.textColor || GAME_UI.text);
-      this.drawFitText(label, x + width / 2 + 14, y + height / 2 + 1, width - 72, uiFont(options.fontSize || 25, 800), options.textColor || GAME_UI.text);
+       this.drawText(options.icon, x + 32, y + height / 2 + 1, uiFont(options.fontSize || 25, 900), options.textColor || GAME_UI.text);
+       this.drawFitText(label, x + width / 2 + 14, y + height / 2 + 1, width - 72, uiFont(options.fontSize || 25, 800), options.textColor || GAME_UI.text);
     } else {
-      this.drawFitText(label, x + width / 2, y + height / 2 + 1, width - 24, uiFont(options.fontSize || 25, 800), options.textColor || (variant === 'gold' ? '#fffaf0' : GAME_UI.text));
+      this.drawFitText(label, x + width / 2, y + height / 2 + 1, width - 24, uiFont(options.fontSize || 25, 800), options.textColor || GAME_UI.text);
     }
     ctx.restore();
+  }
+
+  drawGameUtilityButton(x, y, width, height, label, action, variant = 'violet', options = {}) {
+    const disabled = Boolean(options.disabled);
+    const accent = this.accentColor(variant);
+    this.addButtonHit(x, y, width, height, action, { disabled, key: options.key || label });
+    const fills = {
+      cyan: '#F0FBFA',
+      magenta: '#FFF4F7',
+      violet: '#F7F4FF',
+      gold: '#FFFAEC',
+    };
+    const fill = fills[variant] || '#F7F8FC';
+    this.ctx.save();
+    this.ctx.globalAlpha = disabled ? 0.48 : 1;
+    this.drawGlassCard(x, y, width, height, options.radius || 16, fill, `${accent}88`, {
+      lineWidth: 1.2,
+      shadowColor: `${accent}22`,
+      shadowBlur: 5,
+      shadowOffsetY: 1,
+      innerAlpha: 0.32,
+    });
+    this.drawFitText(label, x + width / 2, y + height / 2 + 1, width - 18, uiFont(options.fontSize || 16, 800), disabled ? GAME_UI.muted : GAME_UI.text);
+    this.ctx.restore();
   }
 
   addButtonHit(x, y, width, height, action, options = {}) {
@@ -2075,33 +2120,33 @@ class GameApp {
   gameLayout() {
     const headerY = this.pageTop();
     const statsY = headerY + 76;
-    const infoY = statsY + 94;
+    const infoY = headerY + 170;
     const hasInfo = this.mode === 'friend' || this.mode === 'daily';
-    const baseContentY = hasInfo ? infoY + 82 : statsY + 94;
+    const baseContentY = headerY + 86;
     // 375×667 等常见手机在 750 逻辑宽度下可见高度约为 1334，采用紧凑卡片
     // 才能让“运算符/操作按钮/底部导航”依次排列，避免底部按钮压住运算区。
     const compact = this.visibleHeight < 1500;
-    const ultraCompact = this.visibleHeight < 1320;
-    const cardWidth = compact ? 318 : 326;
-    const cardHeight = ultraCompact ? 100 : compact ? 112 : 126;
+    const tiny = (this.viewportWidth && this.viewportWidth <= 360) || this.renderScale < 0.46;
+    const ultraCompact = this.visibleHeight < 1320 || tiny;
+    const cardWidth = compact ? 326 : 338;
+    const cardHeight = tiny ? 190 : compact ? (hasInfo ? 190 : 240) : (hasInfo ? 220 : 260);
     const gapX = compact ? 16 : 18;
-    const gapY = ultraCompact ? 10 : compact ? 12 : 16;
+    const gapY = tiny ? 12 : compact ? 16 : 18;
     // 每日/好友模式上方多一条规则或对战信息，适当上移数字区，
     // 把省出的空间留给更大的卡片和更容易点击的按钮。
-    const cardOffset = ultraCompact ? 226 : compact ? (hasInfo ? 226 : 230) : 244;
-    const operatorHeight = ultraCompact ? 58 : compact ? 64 : 72;
-    const actionHeight = ultraCompact ? 54 : compact ? 56 : 62;
+    const cardOffset = 226;
+    const operatorHeight = tiny ? 54 : compact ? (hasInfo ? 70 : 76) : (hasInfo ? 76 : 88);
+    const actionHeight = tiny ? 50 : compact ? 52 : 58;
     const bottomButtonHeight = compact ? 58 : 64;
     const cardStartY = baseContentY + cardOffset;
     const cardRows = Math.max(1, Math.ceil(Math.max(1, this.cards ? this.cards.length : 4) / 2));
-    const opTitleY = cardStartY + cardHeight * cardRows + gapY + (ultraCompact ? 22 : compact ? 24 : 30);
-    const actionY = opTitleY + (ultraCompact ? 84 : compact ? 88 : 110);
+    const opTitleY = cardStartY + cardHeight * cardRows + gapY + 22;
+    const actionY = opTitleY + operatorHeight + 18;
     const actionButtonTop = actionY + 22;
-    const bottomGap = ultraCompact ? 22 : compact ? 26 : 34;
+    const bottomGap = tiny ? 10 : compact ? 14 : 18;
     const bottomY = actionButtonTop + actionHeight + bottomGap;
-    const footerGap = ultraCompact ? 16 : compact ? 20 : 26;
-    const footerHeight = compact ? 52 : 62;
-    const footerY = bottomY + bottomButtonHeight + footerGap;
+    const footerY = bottomY + bottomButtonHeight;
+    const footerHeight = 0;
     const contentY = baseContentY;
     return {
       headerY,
@@ -2150,24 +2195,25 @@ class GameApp {
     });
   }
 
-  drawGameTimer(y, value, danger = false) {
-    const x = (this.width - 330) / 2;
-    this.drawGamePanel(x, y, 330, 72, 'cyan', {
+  drawGameTimer(y, value, danger = false, customX = null, customWidth = 330) {
+    const width = Math.max(180, customWidth || 330);
+    const x = customX === null ? (this.width - width) / 2 : customX;
+    this.drawGamePanel(x, y, width, 72, 'cyan', {
       radius: 33,
-      fill: danger ? 'rgba(105,42,76,0.64)' : 'rgba(7,100,165,0.58)',
+      fill: danger ? '#FFE3E6' : '#E0F8F5',
       stroke: danger ? GAME_UI.magenta : GAME_UI.cyan,
-      shadowColor: danger ? 'rgba(255,80,205,0.40)' : 'rgba(25,220,255,0.40)',
-      shadowBlur: 18,
+      shadowColor: danger ? 'rgba(241,125,155,0.28)' : 'rgba(49,201,209,0.26)',
+      shadowBlur: 12,
       shadowOffsetY: 0,
     });
-    this.drawText(value, this.width / 2, y + 37, uiFont(39, 900), danger ? GAME_UI.gold : GAME_UI.cyanLight);
+    this.drawText(value, x + width / 2, y + 37, uiFont(39, 900), danger ? GAME_UI.magentaLight : GAME_UI.cyanDark);
   }
 
   drawProgressLine(x, y, width, ratio, variant = 'gold', height = 13) {
     this.drawGamePanel(x, y, width, height, 'dark', {
       radius: 999,
-      fill: 'rgba(255,255,255,0.10)',
-      stroke: 'rgba(255,255,255,0.13)',
+      fill: 'rgba(104,139,158,0.12)',
+      stroke: 'rgba(104,139,158,0.18)',
       shadow: false,
       innerAlpha: 0.01,
     });
@@ -2176,13 +2222,13 @@ class GameApp {
     const gradient = this.ctx.createLinearGradient(x, y, x + fillWidth, y);
     if (variant === 'cyan') {
       gradient.addColorStop(0, GAME_UI.cyan);
-      gradient.addColorStop(1, '#5EC5FF');
+      gradient.addColorStop(1, '#75D6D8');
     } else {
-      gradient.addColorStop(0, '#FFD64C');
-      gradient.addColorStop(1, '#FFB932');
+      gradient.addColorStop(0, '#F7C84E');
+      gradient.addColorStop(1, '#F09F43');
     }
     this.ctx.save();
-    this.ctx.shadowColor = variant === 'cyan' ? 'rgba(0,220,255,0.65)' : 'rgba(255,205,90,0.62)';
+    this.ctx.shadowColor = variant === 'cyan' ? 'rgba(49,201,209,0.42)' : 'rgba(244,185,64,0.42)';
     this.ctx.shadowBlur = 7;
     this.roundRect(x, y, Math.max(height, fillWidth), height, 999, gradient, null, 0);
     this.ctx.restore();
@@ -2191,8 +2237,8 @@ class GameApp {
   drawQuestionPanel(y, title, progressRatio, hint, detail) {
     const x = GAME_UI.edge;
     const width = this.width - GAME_UI.edge * 2;
-    this.drawGamePanel(x, y, width, 138, 'violet', { radius: 24, shadowBlur: 10, shadowOffsetY: 0 });
-    this.drawFitText(title, x + 28, y + 33, width - 170, uiFont(24, 900), GAME_UI.text, 'left');
+    this.drawGamePanel(x, y, width, 86, 'violet', { radius: 22, shadowBlur: 8, shadowOffsetY: 0 });
+    this.drawFitText(title, x + 26, y + 28, width - 170, uiFont(22, 900), GAME_UI.text, 'left');
     this.drawGamePanel(x + width - 118, y + 18, 104, 38, 'gold', {
       radius: 19,
       fill: this.glassFill(x + width - 118, y + 18, 104, 38, 'gold'),
@@ -2201,10 +2247,9 @@ class GameApp {
       shadowBlur: 8,
       shadowOffsetY: 0,
     });
-    this.drawText('目标 24', x + width - 66, y + 38, uiFont(16, 900), '#fffaf0');
-    this.drawProgressLine(x + 32, y + 65, width - 64, progressRatio, 'gold', 13);
-    this.drawFitText(hint, x + 28, y + 98, width - 56, uiFont(15, 500), GAME_UI.secondary, 'left');
-    this.drawFitText(detail, x + 28, y + 121, width - 56, uiFont(14, 500), GAME_UI.muted, 'left');
+    this.drawText('目标 24', x + width - 66, y + 38, uiFont(15, 900), GAME_UI.goldDark);
+    this.drawProgressLine(x + 28, y + 57, width - 56, progressRatio, 'gold', 10);
+    this.drawFitText(hint || detail, x + 28, y + 76, width - 56, uiFont(12, 600), GAME_UI.secondary, 'left');
   }
 
   drawNumberTile(x, y, width, height, value, selected = false) {
@@ -2213,31 +2258,37 @@ class GameApp {
     const cardStyle = this.equippedCosmetic('card');
     const styleName = cardStyle && cardStyle.preview || 'classic';
     let cardFill = ctx.createLinearGradient(x, y, x + width, y + height);
-    cardFill.addColorStop(0, 'rgba(239,250,255,0.98)');
-    cardFill.addColorStop(0.52, 'rgba(207,237,255,0.97)');
-    cardFill.addColorStop(1, 'rgba(178,202,255,0.96)');
-    let cardStroke = '#8de7ff';
-    let shadowColor = 'rgba(0,0,40,0.24)';
+    const pastel = [
+      ['#DDF5FF', '#BFE8F7'],
+      ['#E1FAF2', '#BDEEDF'],
+      ['#FFF4D1', '#FFE5A4'],
+      ['#F5EBFF', '#DED2FA'],
+    ][Math.abs(Math.floor(Number(value) || 0)) % 4];
+    cardFill.addColorStop(0, pastel[0]);
+    cardFill.addColorStop(0.52, '#F9FDFF');
+    cardFill.addColorStop(1, pastel[1]);
+    let cardStroke = '#A9DDE8';
+    let shadowColor = 'rgba(76,111,138,0.18)';
     if (styleName === 'neon') {
       cardFill = ctx.createLinearGradient(x, y, x + width, y + height);
       cardFill.addColorStop(0, 'rgba(220,255,255,0.98)');
       cardFill.addColorStop(0.52, 'rgba(188,239,255,0.96)');
       cardFill.addColorStop(1, 'rgba(111,180,255,0.94)');
-      cardStroke = '#42f3ff';
-      shadowColor = 'rgba(40,233,255,0.42)';
+      cardStroke = '#35C9D1';
+      shadowColor = 'rgba(49,201,209,0.28)';
     } else if (styleName === 'candy') {
       cardFill = ctx.createLinearGradient(x, y, x + width, y + height);
       cardFill.addColorStop(0, 'rgba(255,244,255,0.98)');
       cardFill.addColorStop(0.55, 'rgba(255,221,248,0.96)');
       cardFill.addColorStop(1, 'rgba(191,220,255,0.96)');
-      cardStroke = '#ff9edb';
-      shadowColor = 'rgba(255,105,220,0.32)';
+      cardStroke = '#F17D9B';
+      shadowColor = 'rgba(241,125,155,0.26)';
     }
     ctx.save();
-    ctx.shadowColor = selected ? 'rgba(40,233,255,0.62)' : shadowColor;
-    ctx.shadowBlur = selected ? 20 : 14;
-    ctx.shadowOffsetY = selected ? 0 : 5;
-    this.roundRect(x - pulse / 2, y - pulse / 2, width + pulse, height + pulse, 28, cardFill, selected ? GAME_UI.cyan : cardStroke, selected ? 4 : 2);
+    ctx.shadowColor = selected ? 'rgba(49,201,209,0.48)' : shadowColor;
+    ctx.shadowBlur = selected ? 18 : 12;
+    ctx.shadowOffsetY = selected ? 0 : 4;
+    this.roundRect(x - pulse / 2, y - pulse / 2, width + pulse, height + pulse, 30, cardFill, selected ? GAME_UI.cyan : cardStroke, selected ? 4 : 2);
     ctx.restore();
     const theme = skinCatalog.getSkin(this.activeSkinId()).theme || {};
     // 数字卡片始终使用浅色卡面。对旧存档或未来主题配置做兜底，
@@ -2245,12 +2296,12 @@ class GameApp {
     const configuredText = String(theme.card_text || '').trim().toLowerCase();
     const lightText = configuredText === '#fff' || configuredText === '#ffffff' || configuredText === 'white';
     const numberColor = !configuredText || lightText ? '#17163E' : theme.card_text;
-    this.drawText(String(value), x + width / 2, y + height / 2 + 6, uiFont(value >= 10 ? 52 : 64, 900), numberColor);
+    this.drawText(String(value), x + width / 2, y + height / 2 + 6, uiFont(value >= 10 ? 62 : 78, 900), numberColor);
     if (selected) {
-      this.drawGlassCard(x + 16, y + 13, 92, 30, 15, 'rgba(8,87,145,0.86)', 'rgba(140,247,255,0.90)', {
-        shadowColor: 'rgba(40,233,255,0.42)', shadowBlur: 8, shadowOffsetY: 0, innerAlpha: 0.02,
+      this.drawGlassCard(x + 16, y + 13, 112, 30, 15, '#D5F6F3', '#35C9D1', {
+        shadowColor: 'rgba(49,201,209,0.26)', shadowBlur: 8, shadowOffsetY: 0, innerAlpha: 0.18,
       });
-      this.drawText(this.selectedOperator ? '等待第二个' : '第一个数字', x + 62, y + 28, uiFont(13, 800), GAME_UI.cyanLight);
+      this.drawText(this.selectedOperator ? '等待第二个' : '第一个数字', x + 72, y + 28, uiFont(13, 800), GAME_UI.cyanDark);
     }
   }
 
@@ -2662,34 +2713,28 @@ class GameApp {
 
   drawHeroLogo(time) {
     const ctx = this.ctx;
-    const glow = 0.88 + Math.sin(time * 2.2) * 0.08;
+    const glow = 0.24 + Math.sin(time * 2.2) * 0.05;
     ctx.save();
-    ctx.shadowColor = `rgba(50,190,255,${glow})`;
-    ctx.shadowBlur = 26;
-    ctx.font = `900 260px Arial Black,${UI_FONT}`;
+    ctx.shadowColor = `rgba(49,201,209,${glow})`;
+    ctx.shadowBlur = 18;
+    ctx.font = `900 196px Arial Black,${UI_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
-    ctx.lineWidth = 8;
-    ctx.strokeStyle = 'rgba(33,168,255,0.95)';
-    ctx.strokeText('24', 333, 470);
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.strokeText('24', 375, 470);
     ctx.lineWidth = 3;
-    ctx.strokeStyle = '#ffffff';
-    ctx.strokeText('24', 333, 455);
-    const fill = ctx.createLinearGradient(0, 324, 0, 590);
-    fill.addColorStop(0, '#ffffff');
-    fill.addColorStop(0.45, '#ecf9ff');
-    fill.addColorStop(1, '#b8ecff');
+    ctx.strokeStyle = '#55C9D3';
+    ctx.strokeText('24', 375, 470);
+    const fill = ctx.createLinearGradient(0, 360, 0, 560);
+    fill.addColorStop(0, '#46C9D2');
+    fill.addColorStop(0.52, '#75CFE4');
+    fill.addColorStop(1, '#907FE6');
     ctx.fillStyle = fill;
-    ctx.fillText('24', 333, 455);
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = 'rgba(0,112,255,0.72)';
-    ctx.fillStyle = 'rgba(69,170,255,0.20)';
-    ctx.fillText('24', 333, 470);
+    ctx.fillText('24', 375, 470);
     ctx.restore();
-
-    this.drawGoldTitle(HOME_TITLE.slice(0, 2), 506, 457, uiFont(68, 900), 'left');
-    this.drawGoldTitle(HOME_TITLE.slice(2), 506, 529, uiFont(40, 900), 'left');
+    this.drawFitText(HOME_TITLE, this.width / 2, 550, this.width - 100, uiFont(36, 900), GAME_UI.text);
   }
 
   getPlayerProfile() {
@@ -2712,7 +2757,7 @@ class GameApp {
     this.ctx.shadowBlur = 16;
     this.ctx.beginPath();
     this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    this.ctx.fillStyle = 'rgba(18,18,74,0.96)';
+    this.ctx.fillStyle = '#E7F7F6';
     this.ctx.fill();
     this.ctx.strokeStyle = accent;
     this.ctx.lineWidth = 3;
@@ -2732,7 +2777,7 @@ class GameApp {
     }
     // 未授权或头像加载失败时只显示轮廓占位，不使用系统生成头像。
     this.ctx.save();
-    this.ctx.strokeStyle = 'rgba(176,218,255,0.92)';
+    this.ctx.strokeStyle = '#64AEB7';
     this.ctx.lineWidth = Math.max(2, radius * 0.09);
     this.ctx.lineCap = 'round';
     this.ctx.beginPath();
@@ -2778,29 +2823,29 @@ class GameApp {
     const profileWidth = 240;
     const profile = this.getPlayerProfile();
     this.withHomePressEffect('profile', profileX, settingY, profileWidth, settingHeight, () => {
-      this.drawGlassCard(profileX, settingY, profileWidth, settingHeight, 31, 'rgba(23,21,71,0.76)', 'rgba(80,227,255,0.48)', {
-        shadowColor: 'rgba(80,227,255,0.20)', shadowBlur: 10, shadowOffsetY: 0, innerAlpha: 0.08,
+      this.drawGlassCard(profileX, settingY, profileWidth, settingHeight, 31, '#FFFFFF', 'rgba(53,201,209,0.46)', {
+        shadowColor: 'rgba(53,201,209,0.14)', shadowBlur: 10, shadowOffsetY: 0, innerAlpha: 0.34,
       });
       this.drawProfileAvatar(profileX + 35, settingY + 35, 22, profile.avatar);
-      this.drawFitText(profile.nickname, profileX + 66, settingY + 28, profileWidth - 78, uiFont(19, 900), '#ffffff', 'left');
+      this.drawFitText(profile.nickname, profileX + 66, settingY + 28, profileWidth - 78, uiFont(19, 900), GAME_UI.text, 'left');
       this.drawFitText('\u6211\u7684\u8d44\u6599', profileX + 66, settingY + 51, profileWidth - 78, uiFont(13, 600), GAME_UI.secondary, 'left');
     });
     this.addHomeHitArea('profile', profileX, settingY, profileWidth, settingHeight, () => { this.popup = this.popup === 'profile' ? '' : 'profile'; this.profileNotice = ''; });
 
     const coinX = 326;
     const coinWidth = 190;
-    this.drawGlassCard(coinX, topY, coinWidth, 70, 36, 'rgba(30,24,75,0.75)', 'rgba(255,205,77,0.82)', {
-      shadowColor: 'rgba(255,190,50,0.34)', shadowBlur: 15, shadowOffsetY: 0, innerAlpha: 0.08,
+    this.drawGlassCard(coinX, topY, coinWidth, 70, 36, '#FFF7DC', 'rgba(244,185,64,0.68)', {
+      shadowColor: 'rgba(244,185,64,0.20)', shadowBlur: 12, shadowOffsetY: 0, innerAlpha: 0.30,
     });
     this.drawCoinIcon(coinX + 32, topY + 35, 24);
-    this.drawFitText(String(safeNumber(this.progress.coins)), coinX + 92, topY + 37, coinWidth - 108, uiFont(31, 900), '#ffffff');
+    this.drawFitText(String(safeNumber(this.progress.coins)), coinX + 92, topY + 37, coinWidth - 108, uiFont(31, 900), GAME_UI.goldDark);
 
     this.withHomePressEffect('settings', settingX, settingY, settingWidth, settingHeight, () => {
-      this.drawGlassCard(settingX, settingY, settingWidth, settingHeight, 31, 'rgba(23,21,71,0.76)', 'rgba(210,210,255,0.55)', {
-        shadowColor: 'rgba(120,125,255,0.18)', shadowBlur: 10, shadowOffsetY: 0, innerAlpha: 0.08,
+      this.drawGlassCard(settingX, settingY, settingWidth, settingHeight, 31, '#FFFFFF', 'rgba(141,120,230,0.44)', {
+        shadowColor: 'rgba(141,120,230,0.14)', shadowBlur: 10, shadowOffsetY: 0, innerAlpha: 0.34,
       });
-      this.drawGearIcon(settingX + 35, settingY + 31, 13, '#dce4ff');
-      this.drawText('设置', settingX + 101, settingY + 32, uiFont(26, 900), '#ffffff');
+      this.drawGearIcon(settingX + 35, settingY + 31, 13, GAME_UI.violet);
+      this.drawText('设置', settingX + 101, settingY + 32, uiFont(22, 900), GAME_UI.text);
     });
     this.addHomeHitArea('settings', settingX, settingY, settingWidth, settingHeight, () => { this.popup = this.popup === 'settings' ? '' : 'settings'; });
   }
@@ -2810,21 +2855,21 @@ class GameApp {
       const fill = this.ctx.createLinearGradient(x, y, x, y + height);
       fill.addColorStop(0, theme.top);
       fill.addColorStop(1, theme.bottom);
-      this.drawGlassCard(x, y, width, height, 29, fill, theme.stroke, {
-        lineWidth: 2.4,
+      this.drawGlassCard(x, y, width, height, 34, fill, theme.stroke, {
+        lineWidth: 1.8,
         shadowColor: theme.shadow,
-        shadowBlur: theme.shadowBlur || 22,
+        shadowBlur: theme.shadowBlur || 14,
         shadowOffsetY: 0,
-        hotspot: { x: x + width * 0.4, y: y + height * 0.17, r: width * 0.88, color: theme.hotspot || 'rgba(255,255,255,0.08)' },
+        hotspot: { x: x + width * 0.28, y: y + height * 0.18, r: width * 0.62, color: 'rgba(255,255,255,0.30)' },
       });
-      drawIcon(x + width / 2, y + 96);
-      this.drawFitText(title, x + width / 2, y + 207, width - 30, uiFont(36, 900), '#ffffff');
-      this.drawFitText(subtitle, x + width / 2, y + 253, width - 30, uiFont(23, 700), 'rgba(255,255,255,0.80)');
+      drawIcon(x + 72, y + height / 2);
+      this.drawFitText(title, x + 132, y + 43, width - 300, uiFont(26, 900), GAME_UI.text, 'left');
+      this.drawFitText(subtitle, x + 132, y + 82, width - 300, uiFont(15, 600), GAME_UI.secondary, 'left');
       if (footer) {
-        this.drawGlassCard(x + 20, y + height - 67, width - 40, 50, 20, 'rgba(15,59,90,0.42)', theme.footerStroke || theme.stroke, {
-          shadowColor: theme.shadow, shadowBlur: 9, shadowOffsetY: 0, innerAlpha: 0.06,
+        this.drawGlassCard(x + width - 188, y + 32, 150, 58, 24, 'rgba(255,255,255,0.56)', theme.stroke, {
+          shadowColor: theme.shadow, shadowBlur: 7, shadowOffsetY: 0, innerAlpha: 0.22,
         });
-        this.drawFitText(footer, x + width / 2, y + height - 42, width - 56, uiFont(23, 900), '#aaf7ff');
+        this.drawFitText(footer, x + width - 113, y + 61, 132, uiFont(15, 800), GAME_UI.text);
       }
     });
     this.addHomeHitArea(key, x, y, width, height, action);
@@ -2835,63 +2880,65 @@ class GameApp {
       const fill = this.ctx.createLinearGradient(x, y, x, y + height);
       fill.addColorStop(0, theme.top);
       fill.addColorStop(1, theme.bottom);
-      this.drawGlassCard(x, y, width, height, 25, fill, theme.stroke, {
+      this.drawGlassCard(x, y, width, height, 24, fill, theme.stroke, {
         lineWidth: 1.8,
         shadowColor: theme.shadow,
         shadowBlur: 18,
         shadowOffsetY: 0,
         hotspot: { x: x + width * 0.5, y: y + height * 0.2, r: width * 0.72, color: theme.hotspot || 'rgba(255,255,255,0.06)' },
       });
-      drawIcon(x + width / 2, y + 64);
+      drawIcon(x + 42, y + 48);
       if (badge === 'NEW') {
-        this.drawGlassCard(x + width - 72, y + 13, 69, 38, 18, '#ff673a', 'rgba(255,232,190,0.55)', {
+        // Keep the badge in a compact top row so it never covers the title
+        // on narrow phones or on cards whose title needs a little more width.
+        this.drawGlassCard(x + width - 64, y + 10, 54, 27, 14, '#ff673a', 'rgba(255,232,190,0.55)', {
           shadowColor: 'rgba(255,90,40,0.62)', shadowBlur: 9, shadowOffsetY: 0, innerAlpha: 0.05,
         });
-        this.drawText('NEW', x + width - 38, y + 32, uiFont(22, 900), '#ffffff');
+        this.drawText('NEW', x + width - 37, y + 24, uiFont(14, 900), '#ffffff');
       } else if (badge === 'DONE') {
-        this.drawGlassCard(x + width - 105, y + 13, 92, 38, 18, 'rgba(46,92,118,0.82)', 'rgba(135,239,220,0.72)', {
-          shadowColor: 'rgba(82,221,196,0.30)', shadowBlur: 9, shadowOffsetY: 0, innerAlpha: 0.05,
+        this.drawGlassCard(x + width - 82, y + 10, 69, 27, 14, '#E2FAF2', 'rgba(55,201,149,0.58)', {
+          shadowColor: 'rgba(55,201,149,0.20)', shadowBlur: 9, shadowOffsetY: 0, innerAlpha: 0.20,
         });
-        this.drawText('已完成', x + width - 59, y + 32, uiFont(18, 900), '#b7ffe9');
+        this.drawText('已完成', x + width - 47, y + 24, uiFont(13, 900), GAME_UI.success);
       } else if (badge === '+20') {
-        this.drawGlassCard(x + width - 86, y + 15, 72, 34, 17, 'rgba(48,38,112,0.82)', 'rgba(255,221,78,0.75)', {
-          shadowColor: 'rgba(255,203,40,0.35)', shadowBlur: 8, shadowOffsetY: 0, innerAlpha: 0.04,
+        this.drawGlassCard(x + width - 76, y + 10, 63, 27, 14, '#FFF4D1', 'rgba(244,185,64,0.66)', {
+          shadowColor: 'rgba(244,185,64,0.22)', shadowBlur: 8, shadowOffsetY: 0, innerAlpha: 0.16,
         });
-        this.drawCoinIcon(x + width - 70, y + 32, 13);
-        this.drawText('+20', x + width - 39, y + 33, uiFont(19, 900), '#ffde57');
+        this.drawCoinIcon(x + width - 63, y + 24, 10);
+        this.drawText('+20', x + width - 37, y + 25, uiFont(15, 900), GAME_UI.goldDark);
       }
-      this.drawFitText(title, x + width / 2, y + 127, width - 30, uiFont(29, 900), '#ffffff');
-      this.drawFitText(subtitle, x + width / 2, y + 166, width - 30, uiFont(20, 600), theme.subColor || 'rgba(255,255,255,0.72)');
+      this.drawFitText(title, x + 82, y + 51, width - 94, uiFont(17, 900), GAME_UI.text, 'left');
+      this.drawFitText(subtitle, x + 82, y + 83, width - 94, uiFont(12, 600), theme.subColor || GAME_UI.secondary, 'left');
     });
     this.addHomeHitArea(key, x, y, width, height, action, { disabled: Boolean(options.disabled) });
   }
 
   drawProgressPanel() {
     const x = 40;
-    const y = 1385;
+    const y = 1340;
     const width = 670;
-    const height = 160;
-    this.drawGlassCard(x, y, width, height, 29, 'rgba(30,30,110,0.38)', 'rgba(120,135,255,0.62)', {
-      shadowColor: 'rgba(65,75,220,0.28)', shadowBlur: 18, shadowOffsetY: 0, innerAlpha: 0.08,
+    const height = 126;
+    this.drawGlassCard(x, y, width, height, 28, '#FFFFFF', 'rgba(141,120,230,0.42)', {
+      shadowColor: 'rgba(141,120,230,0.14)', shadowBlur: 12, shadowOffsetY: 0, innerAlpha: 0.36,
     });
     const unlocked = this.highestPlayableLevelNumber();
-    this.drawFitText(`闯关进度 · 已解锁 1-${unlocked} 关`, this.width / 2, y + 50, width - 58, uiFont(30, 900), '#ffffff');
+    this.drawFitText(`闯关进度 · 已解锁 1-${unlocked} 关`, this.width / 2, y + 34, width - 58, uiFont(21, 900), GAME_UI.text);
     const barX = x + 57;
-    const barY = y + 96;
+    const barY = y + 72;
     const barWidth = width - 114;
-    const barHeight = 28;
-    this.drawGlassCard(barX, barY, barWidth, barHeight, 999, 'rgba(12,10,70,0.75)', 'rgba(190,190,255,0.60)', {
+    const barHeight = 20;
+    this.drawGlassCard(barX, barY, barWidth, barHeight, 999, '#E8EEF5', 'rgba(116,142,166,0.22)', {
       shadow: false, shadowBlur: 0, shadowOffsetY: 0, innerAlpha: 0.02,
     });
     const fillWidth = barWidth * clamp(unlocked / 200, 0.02, 1);
     const fill = this.ctx.createLinearGradient(barX, barY, barX + fillWidth, barY);
-    fill.addColorStop(0, '#10dfff');
-    fill.addColorStop(0.58, '#2fcbff');
-    fill.addColorStop(1, '#5ec5ff');
+    fill.addColorStop(0, '#54D9D2');
+    fill.addColorStop(0.58, '#6FC9EE');
+    fill.addColorStop(1, '#9A8CEB');
     this.ctx.save();
-    this.ctx.shadowColor = 'rgba(0,220,255,0.75)';
-    this.ctx.shadowBlur = 12;
-    this.roundRect(barX, barY, fillWidth, barHeight, 999, fill, 'rgba(145,250,255,0.8)', 1.5);
+    this.ctx.shadowColor = 'rgba(73,190,205,0.35)';
+    this.ctx.shadowBlur = 8;
+    this.roundRect(barX, barY, fillWidth, barHeight, 999, fill, 'rgba(255,255,255,0.76)', 1.2);
     this.ctx.restore();
     this.ctx.save();
     this.ctx.globalAlpha = 0.65;
@@ -2902,7 +2949,7 @@ class GameApp {
     this.ctx.lineTo(barX + fillWidth, barY + barHeight - 2);
     this.ctx.stroke();
     this.ctx.restore();
-    this.drawSparkle(barX + 19, barY + barHeight / 2, 21, '#baffff', 0.95);
+    this.drawSparkle(barX + 19, barY + barHeight / 2, 12, '#FFFFFF', 0.72);
   }
 
   drawModeCard(x, y, width, height, options, action) {
@@ -2929,7 +2976,7 @@ class GameApp {
   }
 
   drawStatChip(x, y, width, height, caption, value, accent) {
-    this.drawPanel(x, y, width, height, 'rgba(37,33,91,0.88)', `${accent}80`, 20, { shadowBlur: 8, shadowOffsetY: 2 });
+    this.drawPanel(x, y, width, height, '#F4F7FB', `${accent}80`, 20, { shadowColor: `${accent}22`, shadowBlur: 8, shadowOffsetY: 2 });
     this.drawText(caption, x + width / 2, y + 18, '13px sans-serif', COLORS.muted);
     this.drawText(value, x + width / 2, y + 46, 'bold 20px sans-serif', accent);
   }
@@ -2942,6 +2989,43 @@ class GameApp {
     ctx.save();
     ctx.scale(1, this.homeYScale);
     this.drawTopHud();
+
+    // Bright, spacious home composition. Keep the previous drawing below as
+    // a reference while the new layout is exercised; all hit areas still use
+    // the shared card helpers above.
+    this.drawHeroLogo(time);
+    this.drawFitText('4 个数字，算出 24', this.width / 2, 600, this.width - 120, uiFont(28, 900), GAME_UI.text);
+    this.drawFitText('每天一局，越算越快', this.width / 2, 642, this.width - 120, uiFont(17, 600), GAME_UI.secondary);
+
+    const primaryY = 700;
+    const primaryWidth = this.width - 96;
+    const primaryHeight = 124;
+    this.drawPrimaryModeCard('campaign', 48, primaryY, primaryWidth, primaryHeight, {
+      top: '#DDF8F5', bottom: '#BEECE7', stroke: '#70D6D1', shadow: 'rgba(49,201,209,0.22)', shadowBlur: 14,
+    }, (cx, cy) => this.drawFlagIcon(cx, cy, 0.46), '闯关模式', '固定关卡，逐步变难', () => this.showLevels(), `继续第 ${Math.min(unlocked, 200)} 关`);
+    this.drawPrimaryModeCard('friend', 48, primaryY + 142, primaryWidth, primaryHeight, {
+      top: '#FFEAF1', bottom: '#F9CBD9', stroke: '#F39BB3', shadow: 'rgba(241,125,155,0.20)', shadowBlur: 14,
+    }, (cx, cy) => this.drawVsStar(cx, cy, 0.46), '对战模式', '快速匹配或邀请好友', () => this.showFriendLobby());
+    this.drawPrimaryModeCard('endless', 48, primaryY + 284, primaryWidth, primaryHeight, {
+      top: '#F0EAFF', bottom: '#DCD2FA', stroke: '#B7A9F0', shadow: 'rgba(141,120,230,0.20)', shadowBlur: 14,
+    }, (cx, cy) => this.drawInfinityIcon(cx, cy, 0.48), '无尽模式', '题目不断，挑战连击', () => this.startEndless());
+
+    const secondaryY = 1140;
+    const secondaryWidth = 204;
+    const secondaryHeight = 142;
+    this.drawSecondaryCard('daily', 36, secondaryY, secondaryWidth, secondaryHeight, {
+      top: '#FFF5D8', bottom: '#FFE9B1', stroke: '#F4C968', shadow: 'rgba(244,185,64,0.18)', subColor: GAME_UI.goldDark,
+    }, (cx, cy) => this.drawCalendarIcon(cx, cy, 0.42), '每日挑战', dailyCompleted ? '今日已完成' : '每天更新', () => this.startDaily(), dailyCompleted ? 'DONE' : 'NEW', { disabled: dailyCompleted });
+    this.drawSecondaryCard('tasks', 273, secondaryY, secondaryWidth, secondaryHeight, {
+      top: '#E8F7FF', bottom: '#D1ECFA', stroke: '#8ACBE4', shadow: 'rgba(49,161,201,0.16)', subColor: GAME_UI.cyanDark,
+    }, (cx, cy) => this.drawClipboardIcon(cx, cy, 0.42), '每日任务', '完成领取奖励', () => { this.popup = 'tasks'; }, '+20');
+    this.drawSecondaryCard('more', 510, secondaryY, secondaryWidth, secondaryHeight, {
+      top: '#F1ECFF', bottom: '#E2D8FA', stroke: '#B7A9F0', shadow: 'rgba(141,120,230,0.16)', subColor: GAME_UI.violetLight,
+    }, (cx, cy) => this.drawBarsIcon(cx, cy, 0.44), '更多功能', '商城 · 排行榜 · 成就', () => { this.popup = this.popup === 'more' ? '' : 'more'; });
+
+    this.drawProgressPanel();
+    ctx.restore();
+    return;
 
     this.drawFloatingNumberCard('3', 54, 405, 73, 95, -0.36, 'rgba(22,135,255,0.86)', 'rgba(36,45,158,0.82)', 'rgba(69,205,255,0.92)');
     this.drawFloatingNumberCard('6', 483, 267, 77, 86, 0.42, 'rgba(223,91,255,0.86)', 'rgba(67,36,142,0.82)', 'rgba(242,87,255,0.85)');
@@ -3066,16 +3150,16 @@ class GameApp {
       const variant = current ? 'gold' : unlocked ? 'cyan' : (index % 5 === 4 ? 'magenta' : 'cyan');
       this.drawGamePanel(x, y, cardWidth, cardHeight, variant, {
         radius: 16,
-        fill: unlocked ? this.glassFill(x, y, cardWidth, cardHeight, current ? 'gold' : 'cyan') : 'rgba(13,25,72,0.58)',
-        stroke: current ? GAME_UI.gold : unlocked ? 'rgba(45,230,255,0.55)' : 'rgba(80,120,205,0.45)',
+        fill: unlocked ? this.glassFill(x, y, cardWidth, cardHeight, current ? 'gold' : 'cyan') : '#EEF2F7',
+        stroke: current ? GAME_UI.gold : unlocked ? 'rgba(53,201,209,0.55)' : 'rgba(132,155,178,0.34)',
         lineWidth: current ? 3 : 1.4,
-        shadowColor: current ? 'rgba(255,205,60,0.42)' : unlocked ? 'rgba(40,233,255,0.22)' : 'rgba(65,45,170,0.18)',
+          shadowColor: current ? 'rgba(244,185,64,0.28)' : unlocked ? 'rgba(53,201,209,0.16)' : 'rgba(132,155,178,0.10)',
         shadowBlur: current ? 16 : 9,
         shadowOffsetY: 0,
       });
       this.addHitArea(x, y, cardWidth, cardHeight, () => this.startCampaign(index), { disabled: !unlocked, key: `level-${index + 1}` });
       if (unlocked) {
-        this.drawText(String(index + 1), x + cardWidth / 2, y + 38, uiFont(34, 900), current ? GAME_UI.text : '#eef8ff');
+        this.drawText(String(index + 1), x + cardWidth / 2, y + 38, uiFont(34, 900), GAME_UI.text);
         const stars = Math.max(0, Math.min(3, Number(levelData.stars || 0)));
         for (let star = 0; star < 3; star += 1) {
           this.drawStarIcon(x + cardWidth / 2 - 24 + star * 24, y + 74, 0.21, star < stars ? GAME_UI.gold : 'rgba(255,211,77,0.32)');
@@ -3106,22 +3190,26 @@ class GameApp {
     const friend = this.mode === 'friend';
     const modeVariant = friend ? 'magenta' : this.mode === 'endless' ? 'violet' : this.mode === 'daily' ? 'gold' : 'cyan';
     this.drawGameHeader(title, '‹ 返回', () => this.backFromGame(), friend ? '同题竞速' : '');
-    this.drawStatsRow(layout.statsY, [
-      { label: friend ? '对战模式' : '当前关卡', value: friend ? '同题竞速' : title, variant: modeVariant },
-      { label: '本局得分', value: `得分 ${this.score}`, variant: 'violet' },
-      { label: '连续表现', value: `连击 ${this.combo}`, variant: 'gold' },
-    ]);
+    const progressRatio = this.mode === 'endless' ? ((this.currentQuestion % 3) + 1) / 3 : (this.currentQuestion + 1) / Math.max(1, this.puzzles.length);
+    const questionTitle = `第 ${this.currentQuestion + 1} / ${this.mode === 'endless' ? '∞' : this.puzzles.length} 题`;
+    const ratio = clamp(this.timeLeft / Math.max(1, this.timerLimit), 0, 1);
+    const timerY = layout.contentY;
+    const compact = this.visibleHeight < 1500;
+    const timerWidth = compact ? 300 : 330;
+    this.drawGameTimer(timerY, `${Math.ceil(Math.max(0, this.timeLeft))} 秒`, ratio < 0.22, 44, timerWidth);
+    this.drawGamePanel(368, timerY, 338, 72, 'violet', { radius: 28, shadowBlur: 8, shadowOffsetY: 0 });
+    this.drawFitText(questionTitle, 537, timerY + 27, 300, uiFont(22, 900), GAME_UI.text);
+    this.drawFitText(`得分 ${this.score} · 连击 ${this.combo}`, 537, timerY + 53, 300, uiFont(14, 700), GAME_UI.secondary);
 
     if (this.mode === 'daily' && this.dailyChallenge) {
       const ruleTitle = this.formatDailyRuleTitle(this.dailyChallenge.rule_title);
-      this.drawGamePanel(32, layout.infoY, this.width - 64, 72, 'gold', {
-        radius: 22,
-        shadowColor: 'rgba(255,198,65,0.26)',
-        shadowBlur: 10,
+      this.drawGamePanel(32, layout.infoY, this.width - 64, 58, 'gold', {
+        radius: 20,
+        shadowColor: 'rgba(255,198,65,0.20)',
+        shadowBlur: 8,
         shadowOffsetY: 0,
       });
-      this.drawFitText(`今日规则：${ruleTitle}`, this.width / 2, layout.infoY + 25, this.width - 86, uiFont(17, 900), GAME_UI.gold);
-      this.drawFitText(this.dailyChallenge.rule_text, this.width / 2, layout.infoY + 52, this.width - 86, uiFont(13, 500), GAME_UI.secondary);
+      this.drawFitText(`今日规则 · ${ruleTitle}`, this.width / 2, layout.infoY + 29, this.width - 86, uiFont(16, 800), GAME_UI.goldDark);
     }
 
     if (friend) {
@@ -3130,37 +3218,28 @@ class GameApp {
       const solvedCount = this.friendQuestionCount();
       const selfRatio = clamp(this.friendPlayerSolved / Math.max(1, solvedCount), 0, 1);
       const opponentRatio = clamp(opponent.solved / Math.max(1, solvedCount), 0, 1);
-      this.drawGamePanel(32, layout.infoY, this.width - 64, 122, 'magenta', {
-        radius: 22,
-        shadowColor: 'rgba(255,80,205,0.26)',
-        shadowBlur: 10,
+      this.drawGamePanel(32, layout.infoY, this.width - 64, 84, 'magenta', {
+        radius: 20,
+        shadowColor: 'rgba(255,80,205,0.20)',
+        shadowBlur: 8,
         shadowOffsetY: 0,
       });
       const opponentTitle = this.friendOpponentName();
-      this.drawFitText('我', 76, layout.infoY + 27, 90, uiFont(19, 900), GAME_UI.cyanLight, 'left');
-      this.drawFitText(opponentTitle, 392, layout.infoY + 27, 282, uiFont(18, 900), GAME_UI.magentaLight, 'left');
-      this.drawProgressLine(76, layout.infoY + 45, 260, selfRatio, 'cyan', 12);
-      this.drawProgressLine(392, layout.infoY + 45, 282, opponentRatio, 'magenta', 12);
-      this.drawFitText(`${this.friendPlayerSolved} / ${solvedCount} 题`, 76, layout.infoY + 83, 260, uiFont(22, 900), GAME_UI.text, 'left');
-      this.drawFitText(`${opponent.solved} / ${solvedCount} 题`, 392, layout.infoY + 83, 282, uiFont(22, 900), GAME_UI.text, 'left');
-      this.drawFitText('同一套题目 · 答错扣 5 秒 · 不允许提示', this.width / 2, layout.infoY + 108, this.width - 86, uiFont(13, 500), GAME_UI.secondary);
+      this.drawFitText(`我  ${this.friendPlayerSolved}/${solvedCount}`, 76, layout.infoY + 24, 260, uiFont(17, 900), GAME_UI.cyanDark, 'left');
+      this.drawFitText(`${opponentTitle}  ${opponent.solved}/${solvedCount}`, 392, layout.infoY + 24, 282, uiFont(17, 900), GAME_UI.magentaDark, 'left');
+      this.drawProgressLine(76, layout.infoY + 48, 260, selfRatio, 'cyan', 10);
+      this.drawProgressLine(392, layout.infoY + 48, 282, opponentRatio, 'gold', 10);
+      this.drawFitText('同题竞速 · 答错扣 5 秒', this.width / 2, layout.infoY + 72, this.width - 86, uiFont(12, 500), GAME_UI.secondary);
     }
 
-    const contentTop = layout.contentY;
-    const ratio = clamp(this.timeLeft / Math.max(1, this.timerLimit), 0, 1);
-    const timerY = contentTop;
-    this.drawGameTimer(timerY, `${Math.ceil(Math.max(0, this.timeLeft))} 秒`, ratio < 0.22);
-
-    const progressRatio = this.mode === 'endless' ? ((this.currentQuestion % 3) + 1) / 3 : (this.currentQuestion + 1) / Math.max(1, this.puzzles.length);
-    const questionTitle = `第 ${this.currentQuestion + 1} / ${this.mode === 'endless' ? '∞' : this.puzzles.length} 题`;
     const endlessConfig = this.mode === 'endless' ? puzzle.endlessConfig(this.currentQuestion) : null;
     const stageQuestion = this.currentQuestion % 3 + 1;
     const hint = this.mode === 'endless'
       ? `当前阶段：${endlessMode.stageName(endlessConfig.stage)} · 第 ${stageQuestion} / 3 题`
-      : '操作顺序：先点数字 → 再点运算符 → 最后点数字';
+      : '';
     const nextMilestone = this.mode === 'endless' ? endlessMode.nextMilestoneForQuestions(this.currentQuestion + 1) : null;
-    const detail = this.status || (nextMilestone ? `下一里程碑：连续答对 ${nextMilestone} 题` : '不显示计算过程，合并后继续寻找 24');
-    this.drawQuestionPanel(timerY + 88, questionTitle, progressRatio, hint, detail);
+    const detail = this.status || (nextMilestone ? `下一里程碑：连续答对 ${nextMilestone} 题` : '');
+    if (hint || detail) this.drawFitText(hint || detail, this.width / 2, layout.cardStartY - 18, this.width - 96, uiFont(13, 600), GAME_UI.secondary);
 
     const cardWidth = layout.cardWidth;
     const cardHeight = layout.cardHeight;
@@ -3179,29 +3258,41 @@ class GameApp {
 
     const operators = ['+', '−', '×', '÷'];
     const opTitleY = layout.opTitleY;
-    this.drawFitText('第二步 · 选择运算符', 48, opTitleY, this.width - 96, uiFont(15, 800), GAME_UI.gold, 'left');
     operators.forEach((operator, index) => {
       const x = 48 + index * ((this.width - 96 - 18 * 3) / 4 + 18);
       const width = (this.width - 96 - 18 * 3) / 4;
       const normalizedOperator = operator === '−' ? '-' : operator;
       const puzzleRules = (this.currentPuzzle && this.currentPuzzle.rules) || {};
       const forbiddenOperator = this.mode === 'campaign' ? '' : (puzzleRules.forbiddenOperator || puzzleRules.forbidden_operator || '');
-      this.drawOperatorButton(x, opTitleY + 22, width, layout.operatorHeight, operator, () => this.selectOperator(normalizedOperator), this.selectedOperator === normalizedOperator, Boolean(forbiddenOperator && normalizedOperator === forbiddenOperator));
+      this.drawOperatorButton(x, opTitleY, width, layout.operatorHeight, operator, () => this.selectOperator(normalizedOperator), this.selectedOperator === normalizedOperator, Boolean(forbiddenOperator && normalizedOperator === forbiddenOperator));
     });
 
     const actionY = layout.actionY;
-    this.drawFitText('第三步 · 点击第二个数字完成合成', 48, actionY, this.width - 96, uiFont(14, 500), GAME_UI.secondary, 'left');
-    const actionWidth = (this.width - 112) / 3;
+    const actionWidth = (this.width - 112 - 18 * 3) / 4;
     const undoDisabled = this.mode === 'daily' && this.dailyChallenge && this.dailyChallenge.rule_id === 'no_undo';
-    this.drawNeonButton(44, actionY + 22, actionWidth, layout.actionHeight, undoDisabled ? '撤销 · 禁用' : `撤销${this.freeUndo ? ' · 免费' : ''}`, () => this.undo(), 'cyan', { fontSize: 19, radius: 20, disabled: undoDisabled, key: 'game-undo' });
-    this.drawNeonButton(56 + actionWidth, actionY + 22, actionWidth, layout.actionHeight, friend ? '提示 · 禁用' : `提示${this.freeHint ? ' · 免费' : ''}`, () => this.hint(), 'magenta', { fontSize: 19, radius: 20, disabled: friend, key: 'game-hint' });
-    this.drawNeonButton(68 + actionWidth * 2, actionY + 22, actionWidth, layout.actionHeight, '重置本题', () => this.resetPuzzle(), 'violet', { fontSize: 19, radius: 20, key: 'game-reset' });
-
-    this.drawNeonButton(44, layout.bottomY, 300, layout.bottomButtonHeight, '重新开始本关', () => this.restartMode(), 'cyan', { fontSize: 19, radius: 20, key: 'game-restart' });
-    const leaveLabel = this.mode === 'campaign' ? '返回关卡' : friend ? '退出对战' : '返回首页';
-    this.drawNeonButton(376, layout.bottomY, 300, layout.bottomButtonHeight, leaveLabel, () => this.backFromGame(), 'violet', { fontSize: 19, radius: 20, key: 'game-leave' });
-    this.drawGamePanel(44, layout.footerY, this.width - 88, layout.footerHeight, 'dark', { radius: 20, shadow: false });
-    this.drawFitText(`目标 24   ·   已使用 ${4 - this.cards.length}/4 个数字`, this.width / 2, layout.footerY + layout.footerHeight / 2, this.width - 110, uiFont(14, 500), GAME_UI.secondary);
+    const utilityY = layout.bottomY;
+    const utilityLabels = [
+      undoDisabled ? '撤销' : `撤销${this.freeUndo ? '·免费' : ''}`,
+      friend ? '提示' : `提示${this.freeHint ? '·免费' : ''}`,
+      '重置',
+      '重开',
+    ];
+    const utilityActions = [
+      () => this.undo(),
+      () => this.hint(),
+      () => this.resetPuzzle(),
+      () => this.restartMode(),
+    ];
+    const utilityVariants = ['cyan', 'magenta', 'violet', 'gold'];
+    utilityLabels.forEach((label, index) => {
+      const x = 44 + index * (actionWidth + 18);
+      this.drawGameUtilityButton(x, utilityY, actionWidth, layout.bottomButtonHeight, label, utilityActions[index], utilityVariants[index], {
+        fontSize: compact ? 15 : 16,
+        radius: 16,
+        disabled: index === 0 ? undoDisabled : index === 1 && friend,
+        key: ['game-undo', 'game-hint', 'game-reset', 'game-restart'][index],
+      });
+    });
   }
 
   cardRect(index, startX, startY, cardWidth, cardHeight, gapX, gapY) {
@@ -3257,7 +3348,12 @@ class GameApp {
     this.drawFitText(outcomeTitle, this.width / 2, panelY + 52, panelWidth - 100, uiFont(34, 900), accent);
     this.drawFitText(result.serverVerified ? '服务端已校验' : pending ? '等待服务端确认' : '本地对战结果', this.width / 2, panelY + 88, panelWidth - 120, uiFont(14, 700), result.serverVerified ? GAME_UI.success : GAME_UI.secondary);
 
-    this.drawGamePanel(panelX + 24, panelY + 112, panelWidth - 48, 98, variant, { radius: 24, shadowBlur: 10, shadowOffsetY: 0, fill: 'rgba(7,8,48,0.55)' });
+    this.drawGamePanel(panelX + 24, panelY + 112, panelWidth - 48, 98, variant, {
+      radius: 24,
+      shadowBlur: 10,
+      shadowOffsetY: 0,
+      fill: this.glassFill(panelX + 24, panelY + 112, panelWidth - 48, 98, variant),
+    });
     this.drawFitText('本局得分', this.width / 2, panelY + 142, panelWidth - 100, uiFont(15, 600), GAME_UI.secondary);
     this.drawFitText(String(Math.max(0, Math.floor(Number(result.score ?? match.player_score) || 0))), this.width / 2, panelY + 180, panelWidth - 130, uiFont(48, 900), GAME_UI.text);
 
@@ -3265,7 +3361,12 @@ class GameApp {
     const cardWidth = (panelWidth - 48 - cardGap) / 2;
     const cardY = panelY + 232;
     const drawPlayerCard = (x, title, solved, score, mistakes, elapsed, cardVariant) => {
-      this.drawGamePanel(x, cardY, cardWidth, 164, cardVariant, { radius: 22, shadowBlur: 9, shadowOffsetY: 0, fill: 'rgba(7,8,48,0.52)' });
+      this.drawGamePanel(x, cardY, cardWidth, 164, cardVariant, {
+        radius: 22,
+        shadowBlur: 9,
+        shadowOffsetY: 0,
+        fill: this.glassFill(x, cardY, cardWidth, 164, cardVariant),
+      });
       this.drawFitText(title, x + cardWidth / 2, cardY + 28, cardWidth - 20, uiFont(18, 900), this.accentColor(cardVariant));
       this.drawFitText(`${Math.max(0, Math.floor(Number(solved) || 0))}/${this.friendQuestionCount()} 题`, x + cardWidth / 2, cardY + 68, cardWidth - 20, uiFont(27, 900), GAME_UI.text);
       this.drawFitText(`${Math.max(0, Math.floor(Number(score) || 0))} 分 · ${Math.max(0, Number(elapsed) || 0).toFixed(1)} 秒`, x + cardWidth / 2, cardY + 105, cardWidth - 20, uiFont(13, 600), GAME_UI.secondary);
@@ -3280,6 +3381,10 @@ class GameApp {
     } else {
       this.drawFitText(result.reason || '本局已结束', this.width / 2, panelY + 459, panelWidth - 100, uiFont(13, 600), GAME_UI.muted);
     }
+    const rankText = result.rankChange
+      ? rankService.changeLabel(result.rankChange)
+      : this.friendRanked ? '排位变化等待服务端确认' : '本局为休闲对战，不计入段位';
+    this.drawFitText(rankText, this.width / 2, panelY + 484, panelWidth - 100, uiFont(13, 700), this.friendRanked ? GAME_UI.goldLight : GAME_UI.muted);
 
     const primaryY = panelY + panelHeight + 30;
     this.drawNeonButton(48, primaryY, this.width - 96, primaryHeight, pending ? '等待服务端结算' : '再来一局', () => {
@@ -3354,6 +3459,8 @@ class GameApp {
           ? '等待服务端确认'
           : result.serverSubmitError
             ? '服务器未确认，进度未保存，请重试'
+            : this.mode === 'endless' && this.endlessLocalFallback
+              ? (this.isBackendRequired() ? '本地快速开始，成绩未上传' : '本地体验模式')
             : this.isBackendRequired()
               ? '服务器未确认，进度未保存'
               : '本地体验模式';
@@ -3430,9 +3537,9 @@ class GameApp {
     this.drawGamePanel(x, y, width, height, 'modal', {
       radius: 28,
       stroke: variant === 'cyan' ? 'rgba(45,230,255,0.70)' : variant === 'magenta' ? 'rgba(255,80,205,0.68)' : 'rgba(190,180,255,0.65)',
-      shadowColor: 'rgba(0,0,25,0.50)',
-      shadowBlur: 26,
-      shadowOffsetY: 10,
+      shadowColor: 'rgba(72,96,128,0.18)',
+      shadowBlur: 18,
+      shadowOffsetY: 6,
       hotspot: { x: x + width * 0.25, y: y + 42, r: width * 0.7, color: variant === 'cyan' ? 'rgba(40,233,255,0.08)' : variant === 'magenta' ? 'rgba(255,80,205,0.08)' : 'rgba(154,100,255,0.08)' },
     });
     const accent = this.accentColor(variant);
@@ -3450,19 +3557,19 @@ class GameApp {
 
   drawModalClose(x, y, action) {
     this.addButtonHit(x, y, 42, 42, action, { key: `modal-close-${x}-${y}` });
-    this.drawGlassCard(x, y, 42, 42, 21, this.glassFill(x, y, 42, 42, 'violet'), 'rgba(200,164,255,0.76)', {
+    this.drawGlassCard(x, y, 42, 42, 21, '#F0ECFF', 'rgba(141,120,230,0.56)', {
       lineWidth: 1.6,
-      shadowColor: 'rgba(154,100,255,0.48)',
-      shadowBlur: 10,
+      shadowColor: 'rgba(141,120,230,0.20)',
+      shadowBlur: 8,
       shadowOffsetY: 0,
       innerAlpha: 0.08,
     });
     const ctx = this.ctx;
     ctx.save();
-    ctx.strokeStyle = '#fff4ff';
+    ctx.strokeStyle = GAME_UI.violetDark;
     ctx.lineWidth = 3;
     ctx.lineCap = 'round';
-    ctx.shadowColor = 'rgba(255,255,255,0.45)';
+    ctx.shadowColor = 'rgba(141,120,230,0.24)';
     ctx.shadowBlur = 5;
     ctx.beginPath();
     ctx.moveTo(x + 15, y + 15);
@@ -3477,8 +3584,8 @@ class GameApp {
     const theme = (skin && skin.theme) || {};
     const accent = active ? GAME_UI.gold : (theme.accent || GAME_UI.cyan);
     const fill = this.ctx.createLinearGradient(x, y, x + size, y + size);
-    fill.addColorStop(0, theme.surface_2 || 'rgba(22,62,130,0.72)');
-    fill.addColorStop(1, theme.surface || 'rgba(38,22,116,0.72)');
+    fill.addColorStop(0, theme.surface_2 || '#EAF8FF');
+    fill.addColorStop(1, theme.surface || '#DCEEFF');
     this.drawGlassCard(x, y, size, size, 22, fill, accent, {
       lineWidth: active ? 3 : 2,
       shadowColor: `${accent}66`,
@@ -3554,7 +3661,7 @@ class GameApp {
 
   drawToggleSwitch(x, y, on, variant = 'cyan') {
     const accent = on ? this.accentColor(variant) : 'rgba(180,175,230,0.36)';
-    const fill = on ? this.glassFill(x, y, 80, 36, variant) : 'rgba(24,22,72,0.82)';
+    const fill = on ? this.glassFill(x, y, 80, 36, variant) : '#EEF2F7';
     this.drawGlassCard(x, y, 80, 36, 18, fill, accent, {
       lineWidth: 1.4,
       shadowColor: on ? `${accent}55` : 'rgba(0,0,0,0.20)',
@@ -3568,7 +3675,7 @@ class GameApp {
     this.ctx.shadowBlur = on ? 9 : 4;
     this.ctx.beginPath();
     this.ctx.arc(knobX, y + 18, 13, 0, Math.PI * 2);
-    this.ctx.fillStyle = on ? '#ffffff' : 'rgba(200,205,235,0.78)';
+    this.ctx.fillStyle = on ? '#ffffff' : '#AAB6C7';
     this.ctx.fill();
     this.ctx.restore();
   }
@@ -3578,9 +3685,9 @@ class GameApp {
     this.addButtonHit(x, y, width, height, action, { key });
     this.drawGamePanel(x, y, width, height, activeVariant, {
       radius: 20,
-      fill: on ? this.glassFill(x, y, width, height, activeVariant) : 'rgba(28,25,78,0.70)',
-      stroke: on ? `${this.accentColor(activeVariant)}aa` : 'rgba(180,170,255,0.28)',
-      shadowColor: on ? `${this.accentColor(activeVariant)}33` : 'rgba(0,0,0,0.16)',
+      fill: on ? this.glassFill(x, y, width, height, activeVariant) : '#F3F6FA',
+      stroke: on ? `${this.accentColor(activeVariant)}aa` : 'rgba(132,155,178,0.30)',
+      shadowColor: on ? `${this.accentColor(activeVariant)}33` : 'rgba(72,96,128,0.10)',
       shadowBlur: on ? 12 : 4,
       shadowOffsetY: 0,
     });
@@ -3601,8 +3708,8 @@ class GameApp {
     }
     this.drawGamePanel(x, y, width, 76, 'dark', {
       radius: 18,
-      fill: 'rgba(21,19,69,0.58)',
-      stroke: 'rgba(180,170,255,0.22)',
+      fill: '#F5F8FC',
+      stroke: 'rgba(132,155,178,0.24)',
       shadow: false,
     });
     this.drawText(label, x + 22, y + 25, uiFont(14, 700), GAME_UI.secondary, 'left');
@@ -3623,7 +3730,7 @@ class GameApp {
     });
     this.drawGamePanel(x + 18, y + 21, 62, 62, variant, {
       radius: 18,
-      fill: 'rgba(255,255,255,0.07)',
+      fill: '#F7FAFF',
       stroke: `${accent}88`,
       shadow: false,
       innerAlpha: 0.05,
@@ -3745,7 +3852,19 @@ class GameApp {
   drawFriendEntry() {
     this.buttons = [];
     this.drawGameHeader('\u5bf9\u6218\u6a21\u5f0f', '\u2039 \u8fd4\u56de', () => this.goHome());
-    const panelY = this.screenContentTop(96);
+    // Center the whole entry stack inside the usable viewport instead of
+    // pinning it directly below the header. This removes the large empty
+    // lower area on tall phones while preserving the bottom safe area.
+    const topCandidate = this.screenContentTop(96);
+    const stackHeight = 978;
+    const topGuard = this.pageTop() + 76;
+    const bottomGuard = this.visibleBottom(26);
+    const centeredTop = Math.round((topGuard + bottomGuard - stackHeight) / 2);
+    const panelY = Math.round(clamp(
+      Math.max(topCandidate, centeredTop),
+      topCandidate,
+      Math.max(topCandidate, bottomGuard - stackHeight),
+    ));
     const width = this.width - 116;
     const roomInput = friendMatch.sanitizeRoomCode(this.friendRoomInput || '');
     this.drawGamePanel(58, panelY, width, 220, 'magenta', {
@@ -3761,7 +3880,8 @@ class GameApp {
 
     // 快速匹配是主入口，好友房间作为下方的备用入口。
     const quickY = panelY + 238;
-    this.drawGamePanel(58, quickY, width, 178, 'violet', {
+    const rank = rankService.summary(this.progress && this.progress.rank);
+    this.drawGamePanel(58, quickY, width, 210, 'violet', {
       radius: 28,
       shadowColor: 'rgba(155,78,255,0.24)',
       shadowBlur: 18,
@@ -3769,9 +3889,10 @@ class GameApp {
     });
     this.drawFitText('快速匹配', this.width / 2, quickY + 38, width - 80, uiFont(24, 900), GAME_UI.violetLight);
     this.drawFitText('和正在等待的玩家自动组成一局', this.width / 2, quickY + 68, width - 90, uiFont(14, 500), GAME_UI.secondary);
-    this.drawNeonButton(82, quickY + 88, width - 48, 66, '开始快速匹配', () => this.startFriendMatchmaking(), 'violet', { fontSize: 21, radius: 24, key: 'friend-matchmaking' });
+    this.drawFitText(`${rank.label} · ${rank.stars_label}`, this.width / 2, quickY + 94, width - 90, uiFont(16, 800), GAME_UI.goldLight);
+    this.drawNeonButton(82, quickY + 112, width - 48, 66, '开始快速匹配', () => this.startFriendMatchmaking(), 'violet', { fontSize: 21, radius: 24, key: 'friend-matchmaking' });
 
-    const roomY = quickY + 204;
+    const roomY = quickY + 236;
     this.drawGamePanel(58, roomY, width, 326, 'magenta', {
       radius: 28,
       shadowColor: 'rgba(255,80,205,0.20)',
@@ -3784,7 +3905,7 @@ class GameApp {
     this.drawFitText('\u8f93\u5165\u623f\u95f4\u7801', 84, inputY - 12, 180, uiFont(16, 800), GAME_UI.text, 'left');
     this.drawGamePanel(58, inputY, 390, 72, 'dark', {
       radius: 22,
-      fill: 'rgba(8,8,48,0.82)',
+      fill: '#F8FBFF',
       stroke: roomInput.length === 6 ? GAME_UI.cyan : 'rgba(255,255,255,0.22)',
       shadowColor: roomInput.length === 6 ? 'rgba(40,233,255,0.22)' : 'rgba(0,0,0,0.18)',
       shadowBlur: 12,
@@ -3817,6 +3938,8 @@ class GameApp {
       hotspot: { x: this.width / 2, y: panelY + 82, r: 240, color: isBotReady ? 'rgba(255,204,82,0.10)' : 'rgba(154,100,255,0.12)' },
     });
     this.drawFitText(isBotReady ? '\u627e\u5230\u5bf9\u624b' : isMatched ? '\u5339\u914d\u6210\u529f' : '\u6b63\u5728\u5bfb\u627e\u5bf9\u624b', this.width / 2, panelY + 70, width - 70, uiFont(30, 900), isBotReady ? GAME_UI.goldLight : GAME_UI.violetLight);
+    const rank = rankService.summary(this.progress && this.progress.rank);
+    this.drawFitText(`${rank.label} · ${rank.stars_label}`, this.width / 2, panelY + 108, width - 90, uiFont(16, 800), GAME_UI.goldLight);
     this.ctx.save();
     this.ctx.strokeStyle = isBotReady ? GAME_UI.gold : GAME_UI.cyan;
     this.ctx.lineWidth = 8;
@@ -3841,7 +3964,7 @@ class GameApp {
       // updateFriendMatchmaking 会在短暂过渡后自动进入对局，不再绘制可点击的“开始对战”。
       this.drawGamePanel(58, panelY + 536, width, 72, 'gold', {
         radius: 28,
-        fill: 'rgba(94,70,150,0.58)',
+        fill: '#FFF4D1',
         stroke: 'rgba(255,211,77,0.62)',
         shadowColor: 'rgba(255,205,74,0.22)',
         shadowBlur: 12,
@@ -3907,6 +4030,7 @@ class GameApp {
     this.friendLobbyView = 'room';
     this.friendRoomFromInvite = kind === 'join';
     this.friendLocalFallback = !(apiClient.isConfigured && apiClient.isConfigured());
+    this.friendRanked = false;
     this.friendRoomBackendStatus = this.friendLocalFallback ? 'local' : 'idle';
     this.friendRoomBackendLoading = false;
     this.friendRoomLastPollAt = 0;
@@ -3938,6 +4062,9 @@ class GameApp {
     this.friendInputKeyboardActive = false;
     if (!this.ensureBackendReady('friend', 'friend_lobby')) return;
     const now = Date.now();
+    const rank = rankService.normalize(this.progress && this.progress.rank);
+    this.progress.rank = rank;
+    this.friendRanked = true;
     this.friendMatchmakingRunId += 1;
     this.friendMatchmaking = {
       status: 'searching',
@@ -3947,6 +4074,11 @@ class GameApp {
       apiStarted: false,
       matchedAt: 0,
       botReadyAt: 0,
+      ranked: true,
+      season_id: rank.season_id,
+      rank_tier: rank.tier,
+      rank_division: rank.division,
+      rank_stars: rank.stars,
     };
     this.friendMatchmakingLastPollAt = 0;
     this.friendMatchmakingRequestInFlight = false;
@@ -3974,7 +4106,14 @@ class GameApp {
     if (!this.friendMatchmakingLocal && !state.apiStarted && this.backendAuth && this.backendAuth.status === 'ready' && apiClient.joinMatchmaking) {
       state.apiStarted = true;
       this.friendMatchmakingRequestInFlight = true;
-      apiClient.joinMatchmaking({ client_ticket: state.ticketId }).then((payload) => {
+      apiClient.joinMatchmaking({
+        client_ticket: state.ticketId,
+        ranked: Boolean(state.ranked),
+        season_id: state.season_id,
+        rank_tier: state.rank_tier,
+        rank_division: state.rank_division,
+        rank_stars: state.rank_stars,
+      }).then((payload) => {
         if (runId !== this.friendMatchmakingRunId || !this.friendMatchmaking) return;
         if (payload && payload.ticket_id) {
           state.ticketId = String(payload.ticket_id);
@@ -4049,6 +4188,7 @@ class GameApp {
     this.friendLocalFallback = false;
     this.friendRoomBackendStatus = 'ready';
     this.friendRoomFromInvite = false;
+    this.friendRanked = Boolean(this.friendMatchmaking.ranked);
     this.friendLobbyView = 'room';
     this.friendSelfReady = true;
     this.friendMatchmaking.status = 'matched';
@@ -4075,6 +4215,7 @@ class GameApp {
     this.friendRoom = room;
     this.friendRules = friendMatch.rules();
     this.friendLocalFallback = true;
+    this.friendRanked = false;
     this.friendRoomBackendStatus = 'local';
     this.friendRoomFromInvite = false;
     this.friendLobbyView = 'room';
@@ -4107,6 +4248,7 @@ class GameApp {
     this.screen = 'friend_lobby';
     this.friendLobbyView = 'entry';
     this.friendRoom = null;
+    this.friendRanked = false;
     this.triggerFeedback('info', '\u5df2\u53d6\u6d88\u5339\u914d');
   }
 
@@ -4515,7 +4657,7 @@ class GameApp {
       ['+', '−', '×', '÷'].forEach((symbol, index) => {
         const col = index % 2;
         const row = Math.floor(index / 2);
-        this.drawGlassCard(x + 18 + col * (size - 54) / 1.65, y + 18 + row * 42, 38, 30, 11, 'rgba(255,255,255,0.12)', accent, { shadow: false });
+        this.drawGlassCard(x + 18 + col * (size - 54) / 1.65, y + 18 + row * 42, 38, 30, 11, '#F7FAFF', accent, { shadow: false });
         this.drawText(symbol, x + 37 + col * (size - 54) / 1.65, y + 34 + row * 42, uiFont(18, 900), GAME_UI.text);
       });
     } else {
@@ -4745,8 +4887,8 @@ class GameApp {
       const unlocked = achievementService.isUnlocked(this.progress, item.id);
       this.drawGamePanel(x, y, 326, 112, unlocked ? 'gold' : 'violet', {
         radius: 20,
-        fill: unlocked ? this.glassFill(x, y, 326, 112, 'gold') : 'rgba(35,30,92,0.54)',
-        stroke: unlocked ? 'rgba(255,211,77,0.72)' : 'rgba(170,135,255,0.38)',
+        fill: unlocked ? this.glassFill(x, y, 326, 112, 'gold') : '#F3F6FA',
+        stroke: unlocked ? 'rgba(255,211,77,0.72)' : 'rgba(132,155,178,0.30)',
         shadow: false,
       });
       this.drawAchievementBadge(x + 48, y + 52, unlocked, index);
@@ -4795,8 +4937,8 @@ class GameApp {
       const accent = entry.is_player || index === 0 ? GAME_UI.gold : index === 1 ? GAME_UI.cyan : index === 2 ? GAME_UI.magentaLight : GAME_UI.secondary;
       this.drawGamePanel(56, y, this.width - 112, 56, rankVariant, {
         radius: 16,
-        fill: entry.is_player ? this.glassFill(56, y, this.width - 112, 56, 'gold') : 'rgba(255,255,255,0.055)',
-        stroke: entry.is_player ? 'rgba(255,211,77,0.70)' : 'rgba(255,255,255,0.10)',
+        fill: entry.is_player ? this.glassFill(56, y, this.width - 112, 56, 'gold') : '#F5F8FC',
+        stroke: entry.is_player ? 'rgba(255,211,77,0.70)' : 'rgba(132,155,178,0.24)',
         shadow: false,
       });
       this.drawText(String(entry.rank), 86, y + 29, uiFont(21, 900), accent);
@@ -4817,8 +4959,8 @@ class GameApp {
       );
       this.drawGamePanel(132, listY + 348, this.width - 264, 88, 'gold', {
         radius: 20,
-        fill: 'rgba(255,211,77,0.08)',
-        stroke: 'rgba(255,211,77,0.34)',
+        fill: '#FFF8E2',
+        stroke: 'rgba(244,185,64,0.42)',
         shadow: false,
       });
       this.drawFitText('我的最好成绩', this.width / 2, listY + 378, this.width - 330, uiFont(14, 700), GAME_UI.secondary);
@@ -4888,7 +5030,7 @@ class GameApp {
 
   drawVolumeBar(x, y, width, ratio, color) {
     const safeRatio = clamp(ratio, 0, 1);
-    this.drawPanel(x, y, width, 10, 'rgba(255,255,255,0.10)', 'rgba(255,255,255,0.12)', 5, { shadow: false });
+    this.drawPanel(x, y, width, 10, 'rgba(104,139,158,0.14)', 'rgba(104,139,158,0.20)', 5, { shadow: false });
     this.drawPanel(x, y, width * safeRatio, 10, color, color, 5, { shadowColor: `${color}80`, shadowBlur: 7 });
     // 加大滑块的可视反馈，方便手机用户发现“这里可以拖动”。
     this.ctx.save();
@@ -4896,7 +5038,7 @@ class GameApp {
     this.ctx.shadowBlur = 8;
     this.ctx.beginPath();
     this.ctx.arc(x + width * safeRatio, y + 5, 10, 0, Math.PI * 2);
-    this.ctx.fillStyle = '#ffffff';
+    this.ctx.fillStyle = '#FFFFFF';
     this.ctx.fill();
     this.ctx.strokeStyle = color;
     this.ctx.lineWidth = 2;
@@ -5034,7 +5176,15 @@ class GameApp {
       // Resolve cards before generic controls across all coordinate candidates.
       // On some phones one fallback candidate can map a card tap into the
       // header area; the card hit must win over the back button in that case.
-      for (const point of pointCandidates) {
+      const controlButtons = this.buttons.filter((button) => !String(button.key || '').startsWith('game-card-'));
+      const primaryControl = hitTest.findButtonAtPoint(controlButtons, primary.x, primary.y);
+      const controlStealsFallback = primaryControl && !String(primaryControl.key || '').startsWith('header-');
+      for (let pointIndex = 0; pointIndex < pointCandidates.length; pointIndex += 1) {
+        const point = pointCandidates[pointIndex];
+        // When the normalized coordinate already hits a real control, the raw
+        // fallback coordinate may land inside a larger card on small phones.
+        // Never let that fallback steal an operator/tool tap.
+        if (pointIndex > 0 && controlStealsFallback) continue;
         const cardIndex = this.findGameCardAtPoint(point.x, point.y);
         if (cardIndex >= 0) {
           this.touchEffect = { x: point.x, y: point.y, time: Date.now() / 1000, color: COLORS.cyan };
@@ -5048,7 +5198,6 @@ class GameApp {
       let controlHit = null;
       let controlPoint = primary;
       for (const point of pointCandidates) {
-        const controlButtons = this.buttons.filter((button) => !String(button.key || '').startsWith('game-card-'));
         const candidate = hitTest.findButtonAtPoint(controlButtons, point.x, point.y);
         if (candidate) {
           controlHit = candidate;
@@ -5427,7 +5576,7 @@ class GameApp {
     const serverAuthoritative = Boolean(this.backendAuth && this.backendAuth.status === 'ready' && (
       (this.mode === 'campaign' && this.campaignRun) ||
       (this.mode === 'daily' && this.dailyRun) ||
-      (this.mode === 'endless' && this.endlessRun) ||
+      (this.mode === 'endless' && this.endlessRun && !this.endlessLocalFallback) ||
       (this.mode === 'friend' && !this.friendLocalFallback)
     ));
     // When a production backend is configured, a missing or failed run must
@@ -5605,6 +5754,8 @@ class GameApp {
     this.result = {
       passed, score: this.score, stars, starSummary, starDetails, combo: this.maxCombo, mistakes: this.mistakes, reason,
       rewardCoins: rewardCoins + matchReward, bonusLabels, levelComplete, matchResult,
+      rankChange: this.mode === 'friend' && !this.friendRanked
+        ? rankService.ineligibleChange('本局为休闲对战，不计入段位') : null,
       serverVerified: false,
       serverSubmitPending: serverAuthoritative,
       serverSubmitError: false,

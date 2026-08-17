@@ -2,10 +2,13 @@ package player
 
 import (
 	"context"
+	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/example/go-service/internal/apperror"
+	"github.com/example/go-service/internal/modules/user"
 )
 
 const (
@@ -63,8 +66,8 @@ func (s *Service) LeaderboardScoped(ctx context.Context, userID uint64, mode, sc
 		}
 		entries = append(entries, LeaderboardEntry{
 			UserID:   id,
-			Nickname: nickname,
-			Avatar:   avatar,
+			Nickname: normalizePublicNickname(nickname),
+			Avatar:   normalizePublicAvatar(avatar),
 			Score:    clampLeaderboardScore(score),
 		})
 	}
@@ -116,8 +119,8 @@ func (s *Service) LeaderboardScoped(ctx context.Context, userID uint64, mode, sc
 	if !found {
 		entries = append(entries, LeaderboardEntry{
 			UserID:   profile.ID,
-			Nickname: profile.Nickname,
-			Avatar:   profile.Avatar,
+			Nickname: normalizePublicNickname(profile.Nickname),
+			Avatar:   normalizePublicAvatar(profile.Avatar),
 			Score:    0,
 		})
 	}
@@ -149,6 +152,25 @@ func (s *Service) LeaderboardScoped(ctx context.Context, userID uint64, mode, sc
 		MyRank:   myRank,
 		MyScore:  myScore,
 	}, nil
+}
+
+func normalizePublicNickname(value string) string {
+	if normalized, err := user.NormalizeNickname(value); err == nil {
+		return normalized
+	}
+	return user.DefaultNickname
+}
+
+func normalizePublicAvatar(value string) string {
+	value = strings.TrimSpace(value)
+	if normalized, err := user.NormalizeAvatar(value); err == nil {
+		return normalized
+	}
+	// Keep malformed historical values out of room/leaderboard responses.
+	if parsed, err := url.Parse(value); err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil {
+		return value
+	}
+	return user.DefaultAvatar
 }
 
 func normalizeLeaderboardMode(mode string) string {

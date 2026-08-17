@@ -15,6 +15,7 @@ func validConfigForTest() Config {
 		JWT:      JWTConfig{Secret: "01234567890123456789012345678901", Algorithm: "HS256", AccessTTL: 1, RefreshTTL: 2},
 		Queue:    QueueConfig{Name: "game", Concurrency: 1, TaskTimeout: 1},
 		Game:     GameConfig{DailySeedSecret: "real-daily-seed-secret", MatchmakingWaitSeconds: 12},
+		Avatar:   AvatarConfig{StorageDir: "var/avatars", PublicBaseURL: "https://cdn.example.com", MaxBytes: 2 << 20, MaxDimension: 4096, UploadCooldownSeconds: 30},
 		Log:      LogConfig{Level: "info"},
 	}
 }

@@ -6,11 +6,11 @@ const {
   ACCOUNT_BACKUP_KEY_PREFIX,
   ACCOUNT_ERROR_LOG_PREFIX,
   ACTIVE_ACCOUNT_KEY,
-  LEGACY_MIGRATION_KEY,
   COIN_CAP,
   STORAGE_VERSION,
   LEGACY_KEYS,
 } = require('../config/storage_keys.js');
+const rankService = require('./rank_service.js');
 
 let activeAccountID = '';
 let lastLoadInfo = {
@@ -116,42 +116,18 @@ function removeWxValue(key) {
   return false;
 }
 
-function migrateLegacyToAccount(accountID) {
-  const keys = accountStorageKeys(accountID);
-  if (!keys.scoped) return false;
-  const marker = parseStoredRecord(readWxValue(LEGACY_MIGRATION_KEY));
-  if (marker && marker.checked) return Boolean(marker.migrated);
-
-  const scopedPrimary = parseStoredRecord(readWxValue(keys.primary));
-  const scopedBackup = parseStoredRecord(readWxValue(keys.backup));
-  let migrated = false;
-  if (!scopedPrimary && !scopedBackup) {
-    const legacyPrimary = parseStoredRecord(readWxValue(KEY));
-    const legacyBackup = parseStoredRecord(readWxValue(BACKUP_KEY));
-    const legacy = legacyPrimary || legacyBackup;
-    if (legacy) {
-      const normalized = normalize(legacy);
-      migrated = writeWxValue(keys.primary, normalized);
-      if (migrated) writeWxValue(keys.backup, normalized);
-    }
-  }
-  writeWxValue(LEGACY_MIGRATION_KEY, {
-    version: 1,
-    checked: true,
-    migrated,
-    account_id: keys.accountID,
-    checked_at: Date.now(),
-  });
-  return migrated;
-}
-
 function setAccount(accountID) {
   const safeAccountID = normalizeAccountID(accountID);
   if (!safeAccountID) return clearAccount();
   activeAccountID = safeAccountID;
   writeWxValue(ACTIVE_ACCOUNT_KEY, safeAccountID);
-  migrateLegacyToAccount(safeAccountID);
-  return load();
+  const progress = load();
+  const keys = currentStorageKeys();
+  // Materialize a private namespace on first login. This writes only the
+  // normalized defaults under the authenticated account key; anonymous
+  // storage is deliberately never read or copied here.
+  if (!parseStoredRecord(readWxValue(keys.primary)) && keys.scoped) save(progress);
+  return progress;
 }
 
 function clearAccount() {
@@ -202,6 +178,7 @@ function defaults() {
     tasks: { date: '', values: {}, claimed: {} },
     audio: { music_enabled: true, sfx_enabled: true, music_track: 0, music_volume: 0.42, sfx_volume: 0.72 },
     friend_matches: { date: '', played: 0, wins: 0, best_score: 0, best_time_ms: 0, reward_date: '', reward_count: 0 },
+    rank: rankService.defaults(),
     ads: { date: '', rewarded_used: 0 },
     weekly_tasks: { week: '', values: {}, claimed: {} },
     leaderboards: {},
@@ -234,6 +211,9 @@ function normalize(data) {
   ['daily', 'endless', 'tasks', 'audio', 'friend_matches', 'ads', 'milestones', 'login', 'player_stats', 'weekly_tasks', 'achievements', 'profile'].forEach((key) => {
     result[key] = Object.assign(base[key], result[key] && typeof result[key] === 'object' ? result[key] : {});
   });
+  // Ranked progress is normalized by one service so old saves and a new season
+  // can safely enter the matchmaking flow without breaking the rest of the save.
+  result.rank = rankService.normalize(result.rank);
   result.version = Math.max(Number(result.version || 0), STORAGE_VERSION);
   // 旧版本的内置头像不再继续使用，保留昵称但要求重新授权微信头像。
   const profileAvatar = String(result.profile && result.profile.avatar || '').trim();
@@ -450,7 +430,7 @@ const SERVER_OWNED_PROGRESS_KEYS = [
   'unlocked_level', 'last_level', 'levels', 'level_rewards', 'coins',
   'owned_skins', 'equipped_skin', 'owned_cosmetics', 'equipped_cosmetics',
   'login', 'daily', 'endless', 'friend_matches', 'tasks', 'weekly_tasks',
-  'player_stats', 'audio', 'achievements', 'server_events',
+  'player_stats', 'audio', 'achievements', 'rank', 'server_events',
 ];
 
 function mergeServerProgress(progress, remote, options = {}) {
