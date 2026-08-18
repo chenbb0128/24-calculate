@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,11 +141,16 @@ return 1
 `
 
 type FriendRoomRepository struct {
-	redis *redisplatform.Client
+	redis    *redisplatform.Client
+	database *sql.DB
 }
 
-func NewFriendRoomRepository(redis *redisplatform.Client) *FriendRoomRepository {
-	return &FriendRoomRepository{redis: redis}
+func NewFriendRoomRepository(redis *redisplatform.Client, databases ...*sql.DB) *FriendRoomRepository {
+	var database *sql.DB
+	if len(databases) > 0 {
+		database = databases[0]
+	}
+	return &FriendRoomRepository{redis: redis, database: database}
 }
 
 func (r *FriendRoomRepository) AcquireDistributedLock(ctx context.Context, scope string, ttl time.Duration) (string, bool, error) {
@@ -652,6 +658,9 @@ func (r *FriendRoomRepository) GetFriendMatchProgress(ctx context.Context, roomC
 }
 
 func (r *FriendRoomRepository) CreateEndlessRun(ctx context.Context, run EndlessRun) error {
+	if r != nil && r.database != nil {
+		return r.createEndlessRunMySQL(ctx, run)
+	}
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return fmt.Errorf("endless run redis repository is not initialized")
 	}
@@ -671,6 +680,9 @@ func (r *FriendRoomRepository) CreateEndlessRun(ctx context.Context, run Endless
 }
 
 func (r *FriendRoomRepository) GetEndlessRun(ctx context.Context, runID string) (EndlessRun, error) {
+	if r != nil && r.database != nil {
+		return r.getEndlessRunMySQL(ctx, runID)
+	}
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return EndlessRun{}, fmt.Errorf("endless run redis repository is not initialized")
 	}
@@ -689,6 +701,9 @@ func (r *FriendRoomRepository) GetEndlessRun(ctx context.Context, runID string) 
 }
 
 func (r *FriendRoomRepository) UpdateEndlessRun(ctx context.Context, run EndlessRun) error {
+	if r != nil && r.database != nil {
+		return r.updateEndlessRunMySQL(ctx, run)
+	}
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return fmt.Errorf("endless run redis repository is not initialized")
 	}

@@ -41,6 +41,9 @@ type FriendMatchSolutionStep struct {
 	First         int    `json:"first"`
 	Second        int    `json:"second"`
 	Operator      string `json:"operator"`
+	Left          *int   `json:"left,omitempty"`
+	Right         *int   `json:"right,omitempty"`
+	Result        *int   `json:"result,omitempty"`
 }
 
 type friendSolution struct {

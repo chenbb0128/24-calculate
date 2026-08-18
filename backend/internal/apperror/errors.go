@@ -47,6 +47,10 @@ func NotFound(message string, err error) *AppError {
 	return New(CodeNotFound, http.StatusNotFound, message, err)
 }
 
+func Conflict(message string, err error) *AppError {
+	return New(CodeConflict, http.StatusConflict, message, err)
+}
+
 func ServiceUnavailable(message string, err error) *AppError {
 	return New(CodeServiceUnavailable, http.StatusServiceUnavailable, message, err)
 }

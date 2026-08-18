@@ -150,6 +150,10 @@ paths:
       tags: [player]
       security: [{bearerAuth: []}]
       summary: Start an endless run
+      requestBody:
+        required: false
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/EndlessStartInput'}}
       responses: {'201': {$ref: '#/components/responses/Success'}}
   /api/v1/player/endless/runs/{run_id}:
     get:
@@ -158,6 +162,17 @@ paths:
       summary: Resume an endless run
       parameters: [{$ref: '#/components/parameters/RunID'}]
       responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}, '410': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/endless/runs/{run_id}/next-question:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Validate the current endless answer and serve the next puzzle
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/EndlessNextQuestionInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '400': {$ref: '#/components/responses/Error'}, '403': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '410': {$ref: '#/components/responses/Error'}}
   /api/v1/player/endless/runs/{run_id}/submit:
     post:
       tags: [player]
@@ -392,6 +407,25 @@ components:
       required: [level_id]
       properties:
         level_id: {type: integer, minimum: 0, maximum: 199}
+    EndlessStartInput:
+      type: object
+      properties:
+        protocol_version: {type: integer, enum: [1], default: 1}
+        idempotency_key: {type: string, minLength: 8, maxLength: 128}
+    EndlessNextQuestionInput:
+      type: object
+      required: [protocol_version, idempotency_key, question_index, puzzle_id, solved]
+      properties:
+        protocol_version: {type: integer, enum: [1]}
+        idempotency_key: {type: string, minLength: 8, maxLength: 128}
+        question_index: {type: integer, minimum: 0}
+        puzzle_id: {type: string, maxLength: 64}
+        elapsed_ms: {type: integer, minimum: 0, description: Client hint only; server time is authoritative}
+        solved: {type: boolean}
+        mistakes: {type: integer, minimum: 0, description: Client hint only}
+        score_delta: {type: integer, minimum: 0, description: Client hint only}
+        combo: {type: integer, minimum: 0, description: Client hint only}
+        solution_steps: {type: array, items: {type: object}}
     RunSubmission:
       type: object
       required: [protocol_version, idempotency_key, run_id, attempts, summary]

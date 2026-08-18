@@ -115,12 +115,39 @@ func (h *Handler) StartEndlessRun(c *gin.Context) {
 		response.WriteError(c, err)
 		return
 	}
-	result, err := h.service.StartEndlessRun(c.Request.Context(), userID)
+	var input EndlessRunStartInput
+	if err := c.ShouldBindJSON(&input); err != nil && err != io.EOF {
+		response.WriteError(c, apperror.BadRequest("request body is invalid", err))
+		return
+	}
+	if input.IdempotencyKey == "" {
+		input.IdempotencyKey = c.GetHeader("Idempotency-Key")
+	}
+	result, err := h.service.StartEndlessRunWithInput(c.Request.Context(), userID, input)
 	if err != nil {
 		response.WriteError(c, err)
 		return
 	}
 	response.Success(c, http.StatusCreated, result)
+}
+
+func (h *Handler) NextEndlessQuestion(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	var input EndlessNextQuestionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.WriteError(c, apperror.BadRequest("request body is invalid", err))
+		return
+	}
+	result, err := h.service.NextEndlessQuestion(c.Request.Context(), userID, c.Param("run_id"), input)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
 }
 
 func (h *Handler) SubmitEndlessRun(c *gin.Context) {

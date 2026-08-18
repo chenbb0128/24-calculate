@@ -91,7 +91,7 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 	userService.SetAvatarRateLimiter(redisClient)
 	userHandler := user.NewHandler(userService)
 	playerRepository := player.NewRepository(queries, txManager)
-	friendRoomRepository := player.NewFriendRoomRepository(redisClient)
+	friendRoomRepository := player.NewFriendRoomRepository(redisClient, database)
 	playerService := player.NewServiceWithRoomsAndEndless(userService, playerRepository, friendRoomRepository, friendRoomRepository)
 	rankRepository := player.NewSQLRankRepository(database)
 	playerService.SetRankStore(rankRepository)

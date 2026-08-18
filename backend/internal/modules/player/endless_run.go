@@ -21,6 +21,8 @@ const (
 	endlessRunProtocolVersion = 1
 	endlessRunQuestionCount   = 100
 	endlessRunTTL             = 2 * time.Hour
+	endlessRunTimeLimit       = 60 * time.Second
+	endlessRunStateVersion    = 2
 )
 
 type EndlessRunStore interface {
@@ -28,25 +30,42 @@ type EndlessRunStore interface {
 	GetEndlessRun(context.Context, string) (EndlessRun, error)
 }
 
+type EndlessRunStartStore interface {
+	GetEndlessRunByStartKey(context.Context, uint64, string) (EndlessRun, error)
+}
+
 var ErrEndlessRunNotFound = errors.New("endless run not found")
 
 type EndlessRun struct {
-	Version        int                      `json:"version"`
-	RunID          string                   `json:"run_id"`
-	UserID         uint64                   `json:"user_id"`
-	RunSeed        int64                    `json:"run_seed"`
-	Questions      []EndlessPuzzle          `json:"questions"`
-	Attempts       []EndlessRunAttemptInput `json:"attempts,omitempty"`
-	Status         string                   `json:"status"`
-	IdempotencyKey string                   `json:"idempotency_key,omitempty"`
-	QuestionIndex  int                      `json:"question_index"`
-	Score          int                      `json:"score"`
-	ElapsedMS      int                      `json:"elapsed_ms"`
-	Mistakes       int                      `json:"mistakes"`
-	BestCombo      int                      `json:"best_combo"`
-	FinishedAt     *time.Time               `json:"finished_at,omitempty"`
-	CreatedAt      time.Time                `json:"created_at"`
-	ExpiresAt      time.Time                `json:"expires_at"`
+	Version           int                                     `json:"version"`
+	StateVersion      int                                     `json:"state_version"`
+	RunID             string                                  `json:"run_id"`
+	UserID            uint64                                  `json:"user_id"`
+	RunSeed           int64                                   `json:"run_seed"`
+	Questions         []EndlessPuzzle                         `json:"questions"`
+	Attempts          []EndlessRunAttemptInput                `json:"attempts,omitempty"`
+	StartKey          string                                  `json:"start_key,omitempty"`
+	UsedFingerprints  []string                                `json:"used_fingerprints,omitempty"`
+	UsedNumberKeys    []string                                `json:"used_number_keys,omitempty"`
+	NextResults       map[string]EndlessNextQuestionResponse  `json:"next_results,omitempty"`
+	NextRequestHashes map[string]string                       `json:"next_request_hashes,omitempty"`
+	SubmitResults     map[string]EndlessRunSubmissionResponse `json:"submit_results,omitempty"`
+	Status            string                                  `json:"status"`
+	IdempotencyKey    string                                  `json:"idempotency_key,omitempty"`
+	QuestionIndex     int                                     `json:"question_index"`
+	Score             int                                     `json:"score"`
+	TimeLimitMS       int                                     `json:"time_limit_ms"`
+	ElapsedMS         int                                     `json:"elapsed_ms"`
+	Mistakes          int                                     `json:"mistakes"`
+	Combo             int                                     `json:"combo"`
+	BestCombo         int                                     `json:"best_combo"`
+	FinishedAt        *time.Time                              `json:"finished_at,omitempty"`
+	SubmittedAt       *time.Time                              `json:"submitted_at,omitempty"`
+	CreatedAt         time.Time                               `json:"created_at"`
+	StartedAt         time.Time                               `json:"started_at"`
+	LastActivityAt    time.Time                               `json:"last_activity_at"`
+	DeadlineAt        time.Time                               `json:"deadline_at"`
+	ExpiresAt         time.Time                               `json:"expires_at"`
 }
 
 // EndlessPuzzle contains the answer proof only inside the server-side run
@@ -54,40 +73,52 @@ type EndlessRun struct {
 type EndlessPuzzle struct {
 	PuzzleID      string                    `json:"puzzle_id"`
 	Numbers       []int                     `json:"numbers"`
+	Target        int                       `json:"target"`
 	Rules         FriendPuzzleRules         `json:"rules"`
 	QuestionHash  string                    `json:"question_hash"`
 	SourceSeed    string                    `json:"source_seed"`
 	SolutionCount int                       `json:"solution_count"`
 	ShortestSteps int                       `json:"shortest_steps"`
+	SolutionHash  string                    `json:"solution_hash"`
+	Difficulty    string                    `json:"difficulty"`
 	TimeLimitMS   int                       `json:"time_limit_ms"`
+	ServedAt      time.Time                 `json:"served_at"`
 	SolutionSteps []FriendMatchSolutionStep `json:"solution_steps"`
 }
 
 type EndlessPuzzlePublic struct {
 	PuzzleID     string            `json:"puzzle_id"`
 	Numbers      []int             `json:"numbers"`
+	Target       int               `json:"target"`
 	Rules        FriendPuzzleRules `json:"rules"`
 	QuestionHash string            `json:"question_hash"`
+	Difficulty   string            `json:"difficulty"`
 	TimeLimitMS  int               `json:"time_limit_ms"`
 }
 
 type EndlessRunResponse struct {
-	Version       int                      `json:"version"`
-	RunID         string                   `json:"run_id"`
-	RunSeed       int64                    `json:"run_seed"`
-	QuestionCount int                      `json:"question_count"`
-	CreatedAt     time.Time                `json:"created_at"`
-	ExpiresAt     time.Time                `json:"expires_at"`
-	Puzzles       []EndlessPuzzlePublic    `json:"puzzles"`
-	Questions     []EndlessPuzzlePublic    `json:"questions"`
-	Attempts      []EndlessRunAttemptInput `json:"attempts"`
-	Status        string                   `json:"status"`
-	QuestionIndex int                      `json:"question_index"`
-	Score         int                      `json:"score"`
-	ElapsedMS     int                      `json:"elapsed_ms"`
-	Mistakes      int                      `json:"mistakes"`
-	BestCombo     int                      `json:"best_combo"`
-	FinishedAt    *time.Time               `json:"finished_at,omitempty"`
+	Version         int                      `json:"version"`
+	RunID           string                   `json:"run_id"`
+	RunSeed         int64                    `json:"run_seed"`
+	QuestionCount   int                      `json:"question_count"`
+	QuestionsSolved int                      `json:"questions_solved"`
+	TimeLimitMS     int                      `json:"time_limit_ms"`
+	CreatedAt       time.Time                `json:"created_at"`
+	StartedAt       time.Time                `json:"started_at"`
+	LastActivityAt  time.Time                `json:"last_activity_at"`
+	DeadlineAt      time.Time                `json:"deadline_at"`
+	ExpiresAt       time.Time                `json:"expires_at"`
+	Puzzles         []EndlessPuzzlePublic    `json:"puzzles"`
+	Questions       []EndlessPuzzlePublic    `json:"questions"`
+	Puzzle          *EndlessPuzzlePublic     `json:"puzzle,omitempty"`
+	Attempts        []EndlessRunAttemptInput `json:"attempts"`
+	Status          string                   `json:"status"`
+	QuestionIndex   int                      `json:"question_index"`
+	Score           int                      `json:"score"`
+	ElapsedMS       int                      `json:"elapsed_ms"`
+	Mistakes        int                      `json:"mistakes"`
+	BestCombo       int                      `json:"best_combo"`
+	FinishedAt      *time.Time               `json:"finished_at,omitempty"`
 }
 
 type EndlessRunAttemptInput struct {
@@ -123,17 +154,96 @@ type EndlessRunSubmissionInput struct {
 type EndlessRunSubmissionResponse struct {
 	Mode                string          `json:"mode"`
 	RunID               string          `json:"run_id"`
+	Status              string          `json:"status"`
 	Score               int             `json:"score"`
 	Questions           int             `json:"questions"`
 	ElapsedMS           int             `json:"elapsed_ms"`
+	Mistakes            int             `json:"mistakes"`
+	BestCombo           int             `json:"best_combo"`
 	RewardCoins         int             `json:"reward_coins"`
 	Coins               int             `json:"coins"`
 	Validated           bool            `json:"validated"`
+	LeaderboardUpdated  bool            `json:"leaderboard_updated"`
 	IdempotencyReplayed bool            `json:"idempotency_replayed"`
 	Progress            json.RawMessage `json:"progress,omitempty"`
 }
 
 func (s *Service) StartEndlessRun(ctx context.Context, userID uint64) (EndlessRunResponse, error) {
+	return s.StartEndlessRunWithInput(ctx, userID, EndlessRunStartInput{})
+}
+
+func (s *Service) StartEndlessRunWithInput(ctx context.Context, userID uint64, input EndlessRunStartInput) (EndlessRunResponse, error) {
+	if s.endlessRuns == nil {
+		return EndlessRunResponse{}, apperror.ServiceUnavailable("endless run service is unavailable", nil)
+	}
+	if input.ProtocolVersion != 0 && input.ProtocolVersion != endlessRunProtocolVersion {
+		return EndlessRunResponse{}, apperror.BadRequest("endless start protocol is invalid", nil)
+	}
+	if _, err := s.profiles.GetProfile(ctx, userID); err != nil {
+		return EndlessRunResponse{}, err
+	}
+	startKey := strings.TrimSpace(input.IdempotencyKey)
+	startRelease := func() {}
+	if startKey != "" {
+		if len(startKey) < 8 || len(startKey) > 128 {
+			return EndlessRunResponse{}, apperror.BadRequest("idempotency_key length is invalid", nil)
+		}
+		if release, lockErr := s.acquireSettlementLock(ctx, fmt.Sprintf("endless-start:%d:%s", userID, startKey)); lockErr != nil {
+			return EndlessRunResponse{}, lockErr
+		} else {
+			startRelease = release
+		}
+		defer startRelease()
+		if startStore, ok := s.endlessRuns.(EndlessRunStartStore); ok {
+			existing, lookupErr := startStore.GetEndlessRunByStartKey(ctx, userID, startKey)
+			if lookupErr == nil {
+				return publicEndlessRun(existing), nil
+			}
+			if !errors.Is(lookupErr, ErrEndlessRunNotFound) {
+				return EndlessRunResponse{}, lookupErr
+			}
+		}
+	}
+	seed, err := randomEndlessSeed()
+	if err != nil {
+		return EndlessRunResponse{}, err
+	}
+	runID, err := randomEndlessRunID()
+	if err != nil {
+		return EndlessRunResponse{}, err
+	}
+	now := time.Now().UTC()
+	first, ok := generateEndlessPuzzle(seed, 0, nil, now)
+	if !ok {
+		return EndlessRunResponse{}, apperror.ServiceUnavailable("endless puzzle generation failed", nil)
+	}
+	run := EndlessRun{
+		Version: endlessRunProtocolVersion, StateVersion: endlessRunStateVersion,
+		RunID: runID, UserID: userID, RunSeed: seed,
+		Questions: []EndlessPuzzle{first}, Status: RunRunning, StartKey: startKey,
+		UsedFingerprints: []string{endlessQuestionFingerprint(first)},
+		UsedNumberKeys:   []string{friendNumberKey(first.Numbers)},
+		NextResults:      map[string]EndlessNextQuestionResponse{}, NextRequestHashes: map[string]string{},
+		SubmitResults: map[string]EndlessRunSubmissionResponse{},
+		TimeLimitMS:   int(endlessRunTimeLimit / time.Millisecond),
+		CreatedAt:     now, StartedAt: now, LastActivityAt: now,
+		DeadlineAt: now.Add(endlessRunTimeLimit), ExpiresAt: now.Add(endlessRunTTL),
+	}
+	if err := s.endlessRuns.CreateEndlessRun(ctx, run); err != nil {
+		if startKey != "" {
+			if startStore, ok := s.endlessRuns.(EndlessRunStartStore); ok {
+				existing, lookupErr := startStore.GetEndlessRunByStartKey(ctx, userID, startKey)
+				if lookupErr == nil {
+					return publicEndlessRun(existing), nil
+				}
+			}
+		}
+		return EndlessRunResponse{}, err
+	}
+	return publicEndlessRun(run), nil
+}
+
+func (s *Service) startEndlessRunLegacy(ctx context.Context, userID uint64) (EndlessRunResponse, error) {
 	if s.endlessRuns == nil {
 		return EndlessRunResponse{}, apperror.ServiceUnavailable("无尽模式服务暂不可用", nil)
 	}
@@ -170,6 +280,17 @@ func (s *Service) StartEndlessRun(ctx context.Context, userID uint64) (EndlessRu
 }
 
 func (s *Service) SubmitEndlessRun(ctx context.Context, userID uint64, runID string, input EndlessRunSubmissionInput) (EndlessRunSubmissionResponse, error) {
+	if s.endlessRuns == nil {
+		return EndlessRunSubmissionResponse{}, apperror.ServiceUnavailable("endless run service is unavailable", nil)
+	}
+	run, err := s.endlessRuns.GetEndlessRun(ctx, strings.TrimSpace(runID))
+	if err == nil && (run.StateVersion >= endlessRunStateVersion || !run.StartedAt.IsZero()) {
+		return s.submitEndlessRunAuthoritative(ctx, userID, runID, input)
+	}
+	return s.submitEndlessRunLegacy(ctx, userID, runID, input)
+}
+
+func (s *Service) submitEndlessRunLegacy(ctx context.Context, userID uint64, runID string, input EndlessRunSubmissionInput) (EndlessRunSubmissionResponse, error) {
 	if s.endlessRuns == nil {
 		return EndlessRunSubmissionResponse{}, apperror.ServiceUnavailable("无尽模式服务暂不可用", nil)
 	}
@@ -351,7 +472,7 @@ func generateEndlessRunQuestions(seed int64, count int) []EndlessPuzzle {
 	used := make(map[string]struct{}, count)
 	result := make([]EndlessPuzzle, 0, count)
 	for index, attempts := 0, 0; len(result) < count && attempts < count*500; attempts++ {
-		numbers := []int{random.int(1, 13), random.int(1, 13), random.int(1, 13), random.int(1, 13)}
+		numbers := []int{random.int(1, 9), random.int(1, 9), random.int(1, 9), random.int(1, 9)}
 		key := friendNumberKey(numbers)
 		if _, exists := used[key]; exists {
 			continue
@@ -387,13 +508,38 @@ func generateEndlessRunQuestions(seed int64, count int) []EndlessPuzzle {
 func publicEndlessRun(run EndlessRun) EndlessRunResponse {
 	puzzles := make([]EndlessPuzzlePublic, len(run.Questions))
 	for index, puzzle := range run.Questions {
-		puzzles[index] = EndlessPuzzlePublic{PuzzleID: puzzle.PuzzleID, Numbers: append([]int(nil), puzzle.Numbers...), Rules: puzzle.Rules, QuestionHash: puzzle.QuestionHash, TimeLimitMS: puzzle.TimeLimitMS}
+		puzzles[index] = publicEndlessPuzzle(puzzle)
 	}
 	attempts := run.Attempts
 	if attempts == nil {
 		attempts = make([]EndlessRunAttemptInput, 0)
 	}
-	return EndlessRunResponse{Version: run.Version, RunID: run.RunID, RunSeed: run.RunSeed, QuestionCount: len(puzzles), CreatedAt: run.CreatedAt, ExpiresAt: run.ExpiresAt, Puzzles: puzzles, Questions: puzzles, Attempts: attempts, Status: runStatusOrRunning(run.Status), QuestionIndex: run.QuestionIndex, Score: run.Score, ElapsedMS: run.ElapsedMS, Mistakes: run.Mistakes, BestCombo: run.BestCombo, FinishedAt: run.FinishedAt}
+	var current *EndlessPuzzlePublic
+	if run.QuestionIndex >= 0 && run.QuestionIndex < len(puzzles) {
+		value := puzzles[run.QuestionIndex]
+		current = &value
+	}
+	questionsSolved := 0
+	for _, attempt := range attempts {
+		if attempt.Solved {
+			questionsSolved++
+		}
+	}
+	return EndlessRunResponse{
+		Version: run.Version, RunID: run.RunID, RunSeed: run.RunSeed, QuestionCount: len(puzzles), QuestionsSolved: questionsSolved,
+		TimeLimitMS: run.TimeLimitMS, CreatedAt: run.CreatedAt, StartedAt: run.StartedAt, LastActivityAt: run.LastActivityAt,
+		DeadlineAt: run.DeadlineAt, ExpiresAt: run.ExpiresAt, Puzzles: puzzles, Questions: puzzles, Puzzle: current,
+		Attempts: attempts, Status: runStatusOrRunning(run.Status), QuestionIndex: run.QuestionIndex, Score: run.Score,
+		ElapsedMS: run.ElapsedMS, Mistakes: run.Mistakes, BestCombo: run.BestCombo, FinishedAt: run.FinishedAt,
+	}
+}
+
+func publicEndlessPuzzle(puzzle EndlessPuzzle) EndlessPuzzlePublic {
+	target := puzzle.Target
+	if target == 0 {
+		target = 24
+	}
+	return EndlessPuzzlePublic{PuzzleID: puzzle.PuzzleID, Numbers: append([]int(nil), puzzle.Numbers...), Target: target, Rules: puzzle.Rules, QuestionHash: puzzle.QuestionHash, Difficulty: puzzle.Difficulty, TimeLimitMS: puzzle.TimeLimitMS}
 }
 
 func randomEndlessSeed() (int64, error) {

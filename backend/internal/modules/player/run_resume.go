@@ -89,5 +89,13 @@ func (s *Service) ResumeEndlessRun(ctx context.Context, userID uint64, runID str
 		}
 		return EndlessRunResponse{}, apperror.New(10005, 410, "endless run has expired", nil)
 	}
+	if run.Status == RunRunning && !run.DeadlineAt.IsZero() && !time.Now().UTC().Before(run.DeadlineAt) {
+		finishEndlessRun(&run, time.Now().UTC())
+		if stateStore, ok := s.endlessRuns.(EndlessRunStateStore); ok {
+			if err := stateStore.UpdateEndlessRun(ctx, run); err != nil {
+				return EndlessRunResponse{}, err
+			}
+		}
+	}
 	return publicEndlessRun(run), nil
 }

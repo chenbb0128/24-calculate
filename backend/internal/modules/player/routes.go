@@ -22,6 +22,7 @@ func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatfo
 	routes.GET("/leaderboards/:mode", handler.Leaderboard)
 	routes.POST("/endless/runs", handler.StartEndlessRun)
 	routes.GET("/endless/runs/:run_id", handler.ResumeEndlessRun)
+	routes.POST("/endless/runs/:run_id/next-question", handler.NextEndlessQuestion)
 	routes.POST("/endless/runs/:run_id/submit", handler.SubmitEndlessRun)
 	routes.POST("/campaign/runs", handler.StartCampaignRun)
 	routes.GET("/campaign/runs/:run_id", handler.ResumeCampaignRun)
