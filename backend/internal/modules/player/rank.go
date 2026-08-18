@@ -461,13 +461,51 @@ func (s *Service) settleRankedFriendMatch(ctx context.Context, userID uint64, ro
 		return nil, nil
 	}
 	players := make([]uint64, 0, 2)
-	for userID := range submissions {
-		if userID == 0 {
-			return nil, nil
-		}
-		players = append(players, userID)
+	for playerID := range submissions {
+		players = append(players, playerID)
 	}
 	sort.Slice(players, func(i, j int) bool { return players[i] < players[j] })
+	botIndex := -1
+	for index, playerID := range players {
+		if playerID == 0 {
+			botIndex = index
+		}
+	}
+	if botIndex >= 0 {
+		humanIndex := 1 - botIndex
+		humanID := players[humanIndex]
+		if humanID == 0 || humanID != userID {
+			return nil, nil
+		}
+		human, bot := submissions[humanID], submissions[0]
+		outcome := compareFriendResults(human, bot)
+		matchID := room.MatchID
+		if strings.TrimSpace(matchID) == "" {
+			matchID = room.RoomID
+		}
+		seasonID := room.SeasonID
+		if strings.TrimSpace(seasonID) == "" {
+			seasonID = s.currentRankSeasonID()
+		}
+		release, err := s.acquireSettlementLock(ctx, "ranked:"+matchID)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+		settled, err := s.rankStore.SettleRankedMatch(ctx, RankedMatchSettlement{
+			MatchID: matchID, SeasonID: seasonID,
+			Players: []RankMatchPlayer{{UserID: humanID, Outcome: outcome, IdempotencyKey: human.IdempotencyKey,
+				Solved: human.Solved, QuestionCount: room.Rules.QuestionCount, ElapsedMS: human.ElapsedMS, Mistakes: human.Mistakes}},
+		})
+		if err != nil {
+			return nil, err
+		}
+		result, ok := settled[userID]
+		if !ok {
+			return nil, fmt.Errorf("rank settlement did not return current player")
+		}
+		return &result, nil
+	}
 	left, right := submissions[players[0]], submissions[players[1]]
 	leftOutcome := compareFriendResults(left, right)
 	rightOutcome := compareFriendResults(right, left)
@@ -638,10 +676,11 @@ func validateRankedMatchSettlement(settlement RankedMatchSettlement) error {
 	if _, err := normalizeRankSeasonID(settlement.SeasonID); err != nil {
 		return err
 	}
-	if len(settlement.Players) != 2 {
-		return fmt.Errorf("ranked match must contain two players")
+	if len(settlement.Players) != 1 && len(settlement.Players) != 2 {
+		return fmt.Errorf("ranked match must contain one or two players")
 	}
-	if settlement.Players[0].UserID == 0 || settlement.Players[1].UserID == 0 || settlement.Players[0].UserID == settlement.Players[1].UserID {
+	if settlement.Players[0].UserID == 0 || (len(settlement.Players) == 2 &&
+		(settlement.Players[1].UserID == 0 || settlement.Players[0].UserID == settlement.Players[1].UserID)) {
 		return fmt.Errorf("ranked match players are invalid")
 	}
 	seen := map[uint64]struct{}{}
@@ -657,9 +696,9 @@ func validateRankedMatchSettlement(settlement RankedMatchSettlement) error {
 			return fmt.Errorf("ranked idempotency_key is invalid")
 		}
 	}
-	if (settlement.Players[0].Outcome == "win") != (settlement.Players[1].Outcome == "lose") ||
+	if len(settlement.Players) == 2 && ((settlement.Players[0].Outcome == "win") != (settlement.Players[1].Outcome == "lose") ||
 		(settlement.Players[0].Outcome == "lose") != (settlement.Players[1].Outcome == "win") ||
-		(settlement.Players[0].Outcome == "draw") != (settlement.Players[1].Outcome == "draw") {
+		(settlement.Players[0].Outcome == "draw") != (settlement.Players[1].Outcome == "draw")) {
 		return fmt.Errorf("ranked match outcomes are inconsistent")
 	}
 	return nil

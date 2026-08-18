@@ -246,8 +246,8 @@ func (s *Service) createMatchmakingFriendRoom(ctx context.Context, userID uint64
 	}, true, "matchmaking")
 }
 
-func (s *Service) createBotFriendRoom(ctx context.Context, userID uint64) (FriendRoom, error) {
-	return s.createFriendRoomWithRules(ctx, userID, FriendRoomCreateInput{}, false, "bot")
+func (s *Service) createBotFriendRoom(ctx context.Context, userID uint64, ranked bool, seasonID string) (FriendRoom, error) {
+	return s.createFriendRoomWithRules(ctx, userID, FriendRoomCreateInput{Ranked: ranked, SeasonID: seasonID}, ranked, "matchmaking")
 }
 
 func (s *Service) createFriendRoomWithRules(ctx context.Context, userID uint64, input FriendRoomCreateInput, allowRanked bool, trustedSource string) (FriendRoom, error) {
