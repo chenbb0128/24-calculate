@@ -2,15 +2,20 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /src
 RUN apk add --no-cache ca-certificates git
-ENV GOPROXY=https://goproxy.cn,direct
+
+# Keep manual builds safe on small production hosts. CI can explicitly raise
+# this value because it runs outside the production server.
+ARG GO_BUILD_PARALLELISM=1
+ENV GOPROXY=https://goproxy.cn,direct \
+    GOMAXPROCS=${GO_BUILD_PARALLELISM}
 
 COPY go.mod go.sum ./
 RUN go mod download
-RUN CGO_ENABLED=0 go install github.com/pressly/goose/v3/cmd/goose@v3.24.3
+RUN CGO_ENABLED=0 go install -p="${GO_BUILD_PARALLELISM}" github.com/pressly/goose/v3/cmd/goose@v3.24.3
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p="${GO_BUILD_PARALLELISM}" -trimpath -ldflags="-s -w" -o /out/api ./cmd/api \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p="${GO_BUILD_PARALLELISM}" -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
 
 FROM alpine:3.22
 

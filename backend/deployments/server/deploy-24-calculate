@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly EXPECTED_SHA="${1:-}"
+readonly APP_DIR="/data/website/24-calculate/server"
+readonly DEPLOY_DIR="$APP_DIR/backend/deployments"
+readonly COMPOSE_FILE="$DEPLOY_DIR/docker-compose.production.yml"
+readonly ENV_FILE="$DEPLOY_DIR/.env"
+readonly IMAGE_NAME="ghcr.io/chenbb0128/24-calculate-backend"
+readonly API_CONTAINER="twenty_four_calculate_api"
+readonly HEALTH_URL="https://calc-api.pdurl.cn/ready"
+readonly LOCAL_HEALTH_URL="http://127.0.0.1:18082/ready"
+readonly AVATAR_DIR="/data/website/24-calculate/avatars"
+readonly BACKUP_DIR="/data/backups/24-calculate/mysql"
+readonly LOCK_FILE="/var/lock/24-calculate-deploy.lock"
+
+docker_config_dir=""
+backup_temporary_file=""
+previous_image_id=""
+services_switched=0
+
+log() {
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+fail() {
+    log "ERROR: $*" >&2
+    exit 1
+}
+
+compose() {
+    APP_IMAGE_TAG="$EXPECTED_SHA" docker compose \
+        -f "$COMPOSE_FILE" \
+        --env-file "$ENV_FILE" \
+        "$@"
+}
+
+read_env_value() {
+    local key="$1"
+    local line
+
+    line="$(grep -m1 "^${key}=" "$ENV_FILE")" \
+        || fail "Required environment value is missing: $key"
+    printf '%s' "${line#*=}"
+}
+
+backup_database() {
+    local db_host
+    local db_port
+    local db_user
+    local db_password
+    local db_name
+    local timestamp
+    local backup_file
+
+    db_host="$(read_env_value GO_SERVICE_DATABASE_HOST)"
+    db_port="$(read_env_value GO_SERVICE_DATABASE_PORT)"
+    db_user="$(read_env_value GO_SERVICE_DATABASE_USER)"
+    db_password="$(read_env_value GO_SERVICE_DATABASE_PASSWORD)"
+    db_name="$(read_env_value GO_SERVICE_DATABASE_NAME)"
+
+    timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+    backup_file="$BACKUP_DIR/${timestamp}.sql.gz"
+    backup_temporary_file="${backup_file}.tmp"
+
+    install -d -m 0700 "$BACKUP_DIR"
+    log "Backing up MySQL before migrations: $backup_file"
+
+    MYSQL_PWD="$db_password" mysqldump \
+        --host="$db_host" \
+        --port="$db_port" \
+        --user="$db_user" \
+        --single-transaction \
+        --quick \
+        --skip-lock-tables \
+        --default-character-set=utf8mb4 \
+        "$db_name" | gzip -1 > "$backup_temporary_file"
+
+    chmod 0600 "$backup_temporary_file"
+    mv "$backup_temporary_file" "$backup_file"
+    backup_temporary_file=""
+    sha256sum "$backup_file" > "${backup_file}.sha256"
+    chmod 0600 "${backup_file}.sha256"
+
+    db_password=""
+}
+
+restore_previous_image() {
+    [[ -n "$previous_image_id" ]] || return 0
+
+    log "Restoring previous application image $previous_image_id"
+    docker tag "$previous_image_id" "$IMAGE_NAME:rollback"
+    APP_IMAGE_TAG=rollback docker compose \
+        -f "$COMPOSE_FILE" \
+        --env-file "$ENV_FILE" \
+        up -d --no-build --force-recreate api worker
+}
+
+cleanup() {
+    local exit_code=$?
+
+    if [[ "$exit_code" -ne 0 && "$services_switched" -eq 1 ]]; then
+        restore_previous_image || log 'Automatic application rollback failed'
+    fi
+
+    if [[ -n "$backup_temporary_file" ]]; then
+        rm -f -- "$backup_temporary_file"
+    fi
+
+    if [[ -n "$docker_config_dir" && -d "$docker_config_dir" ]]; then
+        rm -rf -- "$docker_config_dir"
+    fi
+
+    if [[ "$exit_code" -ne 0 ]]; then
+        log "Deployment failed with exit code $exit_code" >&2
+    fi
+
+    trap - EXIT
+    exit "$exit_code"
+}
+
+trap cleanup EXIT
+
+[[ "$(id -u)" -eq 0 ]] || fail 'This script must run as root'
+[[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] \
+    || fail 'Expected one lowercase 40-character Git commit SHA'
+
+IFS= read -r ghcr_user || fail 'Missing GHCR username on standard input'
+IFS= read -r ghcr_token || fail 'Missing GHCR token on standard input'
+[[ "$ghcr_user" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] \
+    || fail 'Invalid GHCR username'
+[[ -n "$ghcr_token" ]] || fail 'GHCR token must not be empty'
+
+exec 9>"$LOCK_FILE"
+flock -n 9 || fail 'Another deployment is already running'
+
+[[ -d "$APP_DIR/.git" ]] || fail "Git repository not found at $APP_DIR"
+[[ -f "$COMPOSE_FILE" ]] || fail "Compose file not found: $COMPOSE_FILE"
+[[ -f "$ENV_FILE" ]] || fail "Environment file not found: $ENV_FILE"
+command -v mysqldump >/dev/null || fail 'mysqldump is not installed'
+
+cd "$APP_DIR"
+git config core.fileMode false
+
+log 'Fetching origin/master'
+git fetch --quiet --prune origin master
+
+readonly REMOTE_SHA="$(git rev-parse origin/master)"
+readonly CURRENT_SHA="$(git rev-parse HEAD)"
+
+[[ "$EXPECTED_SHA" == "$REMOTE_SHA" ]] \
+    || fail "Requested commit $EXPECTED_SHA is not current origin/master $REMOTE_SHA"
+[[ "$(git branch --show-current)" == 'master' ]] \
+    || fail 'Production worktree must remain on master'
+
+if ! git diff --quiet || ! git diff --cached --quiet \
+    || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    fail 'Production worktree is dirty; refusing to overwrite server changes'
+fi
+
+git merge-base --is-ancestor "$CURRENT_SHA" "$EXPECTED_SHA" \
+    || fail "Deployment is not a fast-forward from $CURRENT_SHA to $EXPECTED_SHA"
+
+docker_config_dir="$(mktemp -d /tmp/24-calculate-docker-config.XXXXXX)"
+chmod 0700 "$docker_config_dir"
+
+log "Pulling immutable image $IMAGE_NAME:$EXPECTED_SHA"
+printf '%s' "$ghcr_token" | DOCKER_CONFIG="$docker_config_dir" \
+    docker login ghcr.io --username "$ghcr_user" --password-stdin >/dev/null
+DOCKER_CONFIG="$docker_config_dir" docker pull "$IMAGE_NAME:$EXPECTED_SHA"
+ghcr_token=""
+rm -rf -- "$docker_config_dir"
+docker_config_dir=""
+
+log "Updating application from $CURRENT_SHA to $EXPECTED_SHA"
+git merge --quiet --ff-only "$EXPECTED_SHA"
+
+install -d -m 0755 -o 100 -g 101 "$AVATAR_DIR"
+compose config --quiet
+backup_database
+
+if docker inspect "$API_CONTAINER" >/dev/null 2>&1; then
+    previous_image_id="$(docker inspect "$API_CONTAINER" --format '{{.Image}}')"
+    docker tag "$previous_image_id" "$IMAGE_NAME:rollback"
+else
+    log "No existing API container found; rollback image is not available for this deployment"
+fi
+
+compose rm -f -s migrate >/dev/null 2>&1 || true
+
+log 'Applying database migrations'
+compose --profile migrate run --rm --no-deps migrate
+
+log 'Recreating API and worker from the selected image'
+services_switched=1
+compose up -d --no-build --force-recreate api worker
+
+log 'Checking local and public readiness endpoints'
+for attempt in {1..20}; do
+    if curl --fail --silent --show-error --max-time 5 "$LOCAL_HEALTH_URL" >/dev/null \
+        && curl --fail --silent --show-error --max-time 5 "$HEALTH_URL" >/dev/null; then
+        services_switched=0
+        log "Deployment completed successfully at $EXPECTED_SHA"
+        exit 0
+    fi
+
+    log "Readiness check attempt $attempt failed; retrying"
+    sleep 3
+done
+
+fail "Readiness checks failed: $LOCAL_HEALTH_URL and $HEALTH_URL"

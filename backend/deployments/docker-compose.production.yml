@@ -1,8 +1,7 @@
 name: ${COMPOSE_PROJECT_NAME:-twenty_four_calculate}
 
-x-backend-build: &backend-build
-  context: ..
-  dockerfile: deployments/Dockerfile.production
+x-backend-image: &backend-image
+  image: ghcr.io/chenbb0128/24-calculate-backend:${APP_IMAGE_TAG:-latest}
 
 x-backend-environment: &backend-environment
   GO_SERVICE_APP_NAME: twenty-four-calculate
@@ -23,6 +22,11 @@ x-backend-environment: &backend-environment
   GO_SERVICE_JWT_SECRET: ${GO_SERVICE_JWT_SECRET:?GO_SERVICE_JWT_SECRET must be set}
   GO_SERVICE_JWT_ISSUER: twenty-four-calculate
   GO_SERVICE_GAME_DAILY_SEED_SECRET: ${GO_SERVICE_GAME_DAILY_SEED_SECRET:?GO_SERVICE_GAME_DAILY_SEED_SECRET must be set}
+  GO_SERVICE_AVATAR_STORAGE_DIR: /var/lib/24-calculate/avatars
+  GO_SERVICE_AVATAR_PUBLIC_BASE_URL: ${GO_SERVICE_AVATAR_PUBLIC_BASE_URL:-https://calc-api.pdurl.cn}
+  GO_SERVICE_AVATAR_MAX_BYTES: ${GO_SERVICE_AVATAR_MAX_BYTES:-2097152}
+  GO_SERVICE_AVATAR_MAX_DIMENSION: ${GO_SERVICE_AVATAR_MAX_DIMENSION:-4096}
+  GO_SERVICE_AVATAR_UPLOAD_COOLDOWN_SECONDS: ${GO_SERVICE_AVATAR_UPLOAD_COOLDOWN_SECONDS:-30}
   GO_SERVICE_QUEUE_NAME: ${GO_SERVICE_QUEUE_NAME:-twenty_four_calculate}
   GO_SERVICE_LOG_LEVEL: ${GO_SERVICE_LOG_LEVEL:-info}
   GO_SERVICE_LOG_FORMAT: json
@@ -38,14 +42,21 @@ x-extra-hosts: &extra-hosts
 
 services:
   api:
-    build: *backend-build
-    image: twenty-four-calculate-backend:${APP_IMAGE_TAG:-latest}
+    <<: *backend-image
     container_name: twenty_four_calculate_api
     init: true
     restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 256m
+    cpus: "1.0"
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
     command: ["/app/api"]
     environment: *backend-environment
     extra_hosts: *extra-hosts
+    volumes:
+      - ${AVATAR_STORAGE_PATH:-/data/website/24-calculate/avatars}:/var/lib/24-calculate/avatars
     ports:
       - "${API_BIND_HOST:-127.0.0.1}:${API_PORT:-18082}:8080"
     healthcheck:
@@ -59,11 +70,16 @@ services:
     logging: *default-logging
 
   worker:
-    build: *backend-build
-    image: twenty-four-calculate-backend:${APP_IMAGE_TAG:-latest}
+    <<: *backend-image
     container_name: twenty_four_calculate_worker
     init: true
     restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 256m
+    cpus: "1.0"
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
     command: ["/app/worker"]
     environment: *backend-environment
     extra_hosts: *extra-hosts
@@ -73,11 +89,15 @@ services:
 
   migrate:
     profiles: [migrate]
-    build: *backend-build
-    image: twenty-four-calculate-backend:${APP_IMAGE_TAG:-latest}
+    <<: *backend-image
     container_name: twenty_four_calculate_migrate
     init: true
     restart: "no"
+    mem_limit: 256m
+    cpus: "1.0"
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
     command:
       - /bin/sh
       - -ec

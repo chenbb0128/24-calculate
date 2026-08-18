@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly ENTRYPOINT_SOURCE="${1:-}"
+readonly DEPLOY_SOURCE="${2:-}"
+readonly PUBLIC_KEY_SOURCE="${3:-}"
+readonly DEPLOY_USER="calculate-deploy"
+readonly ENTRYPOINT_TARGET="/usr/local/bin/24-calculate-deploy-entrypoint"
+readonly DEPLOY_TARGET="/usr/local/sbin/deploy-24-calculate"
+readonly SUDOERS_TARGET="/etc/sudoers.d/24-calculate-deploy"
+
+fail() {
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ "$(id -u)" -eq 0 ]] || fail 'This installer must run as root'
+
+for source_file in \
+    "$ENTRYPOINT_SOURCE" \
+    "$DEPLOY_SOURCE" \
+    "$PUBLIC_KEY_SOURCE"; do
+    [[ -f "$source_file" ]] || fail "Required source file not found: $source_file"
+done
+
+bash -n "$ENTRYPOINT_SOURCE" "$DEPLOY_SOURCE"
+
+if ! id -u "$DEPLOY_USER" >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash "$DEPLOY_USER"
+fi
+
+readonly DEPLOY_HOME="$(getent passwd "$DEPLOY_USER" | cut -d: -f6)"
+readonly DEPLOY_GROUP="$(id -gn "$DEPLOY_USER")"
+readonly SSH_DIR="$DEPLOY_HOME/.ssh"
+readonly AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
+
+[[ -n "$DEPLOY_HOME" && -d "$DEPLOY_HOME" ]] \
+    || fail "Deploy user home directory was not found: $DEPLOY_USER"
+
+readonly PUBLIC_KEY="$(tr -d '\r\n' < "$PUBLIC_KEY_SOURCE")"
+[[ "$PUBLIC_KEY" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+\ github-actions-24-calculate$ ]] \
+    || fail 'Unexpected deployment public key format'
+readonly PUBLIC_KEY_BLOB="$(printf '%s\n' "$PUBLIC_KEY" | awk '{print $2}')"
+
+install -m 0755 -o root -g root "$ENTRYPOINT_SOURCE" "$ENTRYPOINT_TARGET"
+install -m 0755 -o root -g root "$DEPLOY_SOURCE" "$DEPLOY_TARGET"
+
+install -d -m 0700 -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" "$SSH_DIR"
+touch "$AUTHORIZED_KEYS"
+chown "$DEPLOY_USER:$DEPLOY_GROUP" "$AUTHORIZED_KEYS"
+chmod 0600 "$AUTHORIZED_KEYS"
+
+if grep -Fq " $PUBLIC_KEY_BLOB " "$AUTHORIZED_KEYS"; then
+    grep -Fq "command=\"$ENTRYPOINT_TARGET\"" "$AUTHORIZED_KEYS" \
+        || fail 'The deployment public key already exists with different restrictions'
+else
+    cp -a "$AUTHORIZED_KEYS" "${AUTHORIZED_KEYS}.backup-$(date -u '+%Y%m%dT%H%M%SZ')"
+    printf 'restrict,command="%s" %s\n' "$ENTRYPOINT_TARGET" "$PUBLIC_KEY" \
+        >> "$AUTHORIZED_KEYS"
+fi
+
+printf '%s ALL=(root) NOPASSWD: %s *\n' "$DEPLOY_USER" "$DEPLOY_TARGET" > "$SUDOERS_TARGET"
+chmod 0440 "$SUDOERS_TARGET"
+visudo -cf "$SUDOERS_TARGET" >/dev/null
+
+printf 'Installed restricted 24-calculate deployment components for %s.\n' "$DEPLOY_USER"

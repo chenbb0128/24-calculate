@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly REQUESTED_SHA="${SSH_ORIGINAL_COMMAND:-}"
+
+if [[ ! "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'Only a lowercase 40-character Git commit SHA is accepted.\n' >&2
+    exit 64
+fi
+
+exec /usr/bin/sudo -n /usr/local/sbin/deploy-24-calculate "$REQUESTED_SHA"

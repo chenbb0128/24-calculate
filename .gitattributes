@@ -1,0 +1,8 @@
+.gitattributes text eol=lf
+*.sh text eol=lf
+.github/workflows/*.yml text eol=lf
+backend/deployments/Dockerfile.production text eol=lf
+backend/deployments/docker-compose.production.yml text eol=lf
+backend/deployments/server/* text eol=lf
+backend/deployments/*.md text eol=lf
+backend/deployments/*.example text eol=lf

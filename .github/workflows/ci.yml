@@ -46,6 +46,10 @@ jobs:
         shell: bash
         run: bash -n scripts/*.sh
 
+      - name: Check production deployment scripts
+        shell: bash
+        run: bash -n deployments/server/24-calculate-deploy-entrypoint deployments/server/deploy-24-calculate deployments/server/install-deploy-components
+
   frontend:
     name: Frontend checks
     runs-on: ubuntu-latest

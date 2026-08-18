@@ -1,108 +1,97 @@
-# 24-calculate Production Deployment (legacy Docker reference)
+# 24-calculate Production Deployment
 
-> 当前项目的正式部署方案是不使用 Docker 的 Go + MySQL + Redis/Memurai + Nginx 原生部署。
-> 请以 [`../docs/production-native.md`](../docs/production-native.md) 为准。本文件仅保留给仍在使用旧 Docker 环境的维护者，不能作为新生产环境的部署步骤。
+This project deploys only the Go backend. The WeChat mini game frontend is not deployed by this server workflow.
 
-This deployment is server-only. The WeChat mini game frontend is not deployed by these files.
-
-The production server already runs Docker, Nginx, Redis, MySQL, ClassMate, and YouQuanGou services. This project must stay isolated:
-
-- Do not create, restart, remove, or reconfigure the shared Redis service.
-- Do not create a MySQL container here. Use the external MySQL settings in `.env`.
-- Do not run `docker compose down -v`.
-- Use the dedicated directory `/data/website/24-calculate/server`.
-- Use the dedicated containers `twenty_four_calculate_api` and `twenty_four_calculate_worker`.
-
-## Files
+## Current Server Layout
 
 ```text
-/data/website/24-calculate/server
-`-- deployments
-    |-- docker-compose.production.yml
-    |-- Dockerfile.production
-    |-- production.env.example
-    `-- .env
+/data/website/24-calculate/server       # Git checkout
+/data/website/24-calculate/avatars      # Avatar volume
+/data/backups/24-calculate/mysql        # Migration backups
+/data/docker-container/services/nginx/sites/calc-api.pdurl.cn.conf
 ```
 
-Create `.env` on the server:
-
-```bash
-cd /data/website/24-calculate/server/deployments
-cp production.env.example .env
-chmod 600 .env
-```
-
-Fill all `replace-with-` values. For the migration command, prefer an alphanumeric MySQL password unless you verify that special characters are properly escaped in the MySQL DSN.
-
-## External Services
-
-Set `SHARED_DOCKER_NETWORK` to the existing Docker network that can reach Nginx, Redis, and MySQL. On the current server this is expected to be `docker-container_backend`, but verify before startup:
-
-```bash
-docker network ls
-docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Networks}}\t{{.Ports}}'
-```
-
-If Redis or MySQL is exposed only on the host, keep the network as `bridge` or the existing shared network and use this inside `GO_SERVICE_REDIS_ADDR` or `GO_SERVICE_DATABASE_HOST`:
+Runtime containers:
 
 ```text
-host.docker.internal:<port>
+twenty_four_calculate_api
+twenty_four_calculate_worker
 ```
 
-For shared Redis, prefer an unused logical DB, for example:
+Shared services are not managed by this compose project:
 
 ```text
-GO_SERVICE_REDIS_DB=2
+MySQL: 172.17.0.1:3306
+Redis: docker-container-redis-1:6379, logical DB 3
+Docker network: docker-container_backend
 ```
 
-This matters because the app uses Redis keys and Asynq queue metadata.
+## Deployment Model
 
-## First Startup
+GitHub Actions builds and publishes the production image to GHCR:
 
-Do this only after MySQL credentials are ready.
+```text
+ghcr.io/chenbb0128/24-calculate-backend:<commit-sha>
+```
+
+The production server no longer compiles Go during normal deployment. It only:
+
+1. Verifies the requested SHA is the current `origin/master`.
+2. Pulls the immutable GHCR image for that SHA.
+3. Fast-forwards the server checkout.
+4. Backs up MySQL.
+5. Runs Goose migrations.
+6. Recreates only the API and worker containers.
+7. Checks `/ready` locally and through `https://calc-api.pdurl.cn/ready`.
+
+Do not run `docker compose down -v` on the production server.
+
+## GitHub Secrets
+
+The production workflow needs these repository secrets:
+
+```text
+PROD_HOST=116.62.159.237
+PROD_PORT=22
+PROD_USER=calculate-deploy
+PROD_SSH_KEY=<private key for github-actions-24-calculate>
+PROD_KNOWN_HOSTS=<ssh-keyscan output for the server>
+```
+
+`GITHUB_TOKEN` is used automatically for GHCR push/pull during the workflow.
+
+## Server Install
+
+Install the restricted deploy user and commands from the server as root:
 
 ```bash
-cd /data/website/24-calculate/server/deployments
-docker compose -f docker-compose.production.yml --env-file .env config
-docker compose -f docker-compose.production.yml --env-file .env build
-docker compose -f docker-compose.production.yml --env-file .env --profile migrate run --rm migrate
-docker compose -f docker-compose.production.yml --env-file .env up -d api worker
-docker compose -f docker-compose.production.yml --env-file .env ps
+cd /data/website/24-calculate/server
+bash backend/deployments/server/install-deploy-components \
+  backend/deployments/server/24-calculate-deploy-entrypoint \
+  backend/deployments/server/deploy-24-calculate \
+  /tmp/github-actions-24-calculate.pub
 ```
 
-## Checks
+The installer creates `calculate-deploy`, appends one forced-command SSH key, and allows that user to run only `/usr/local/sbin/deploy-24-calculate` through sudo.
+
+## Manual Deploy
+
+A manual server-side deploy can still be run by root when needed:
+
+```bash
+cd /data/website/24-calculate/server
+git fetch --prune origin master
+sha=$(git rev-parse origin/master)
+printf '%s\n%s\n' '<ghcr-user>' '<ghcr-token>' | /usr/local/sbin/deploy-24-calculate "$sha"
+```
+
+For normal releases, use the GitHub Actions workflow instead.
+
+## Health Checks
 
 ```bash
 curl --fail http://127.0.0.1:18082/health
 curl --fail http://127.0.0.1:18082/ready
-docker compose -f docker-compose.production.yml --env-file .env logs --tail=100 api worker
+curl --fail https://calc-api.pdurl.cn/health
+curl --fail https://calc-api.pdurl.cn/ready
 ```
-
-`/health` only checks that the API process is alive. `/ready` checks MySQL and Redis too.
-
-## Nginx
-
-If Nginx runs in Docker on the same `SHARED_DOCKER_NETWORK`, proxy to:
-
-```nginx
-proxy_pass http://twenty_four_calculate_api:8080;
-```
-
-If Nginx runs directly on the host, proxy to:
-
-```nginx
-proxy_pass http://127.0.0.1:18082;
-```
-
-Use `nginx-api.conf.example` as a minimal reference, then run `nginx -t` before reloading the existing Nginx container.
-
-## Upgrade
-
-```bash
-cd /data/website/24-calculate/server/deployments
-docker compose -f docker-compose.production.yml --env-file .env build
-docker compose -f docker-compose.production.yml --env-file .env --profile migrate run --rm migrate
-docker compose -f docker-compose.production.yml --env-file .env up -d api worker
-```
-
-Back up MySQL before migrations. Redis data for rooms, matchmaking, run state, and queue metadata is temporary but still shared, so do not flush it.
