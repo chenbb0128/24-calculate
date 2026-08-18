@@ -94,7 +94,7 @@ jobs:
     name: Deploy production
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -144,6 +144,8 @@ jobs:
           set -Eeuo pipefail
           printf '%s\n%s\n' "$GHCR_USER" "$GHCR_TOKEN" | ssh \
             -o BatchMode=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
