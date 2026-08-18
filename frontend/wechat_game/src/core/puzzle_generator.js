@@ -263,8 +263,22 @@ function generatePuzzleSet(config, levelIndex, count, seed, globalUsedKeys = nul
   const random = new SeededRandom(seed + levelIndex * 7919);
   const result = [];
   const used = globalUsedKeys instanceof Set ? globalUsedKeys : new Set();
-  const candidates = candidatePool(config);
-  const start = (levelIndex * 7) % candidates.length;
+  let candidates = candidatePool(config);
+  // Friend rounds opt into a seeded shuffle so a new round does not repeatedly
+  // take the same prefix of the deterministic candidate pool. Other modes keep
+  // the original order and therefore retain their fixed-question guarantees.
+  if (config && (config.shuffleCandidates || config.shuffle_candidates)) {
+    candidates = candidates.map((numbers) => numbers.slice());
+    for (let index = candidates.length - 1; index > 0; index -= 1) {
+      const swapIndex = random.int(0, index);
+      const value = candidates[index];
+      candidates[index] = candidates[swapIndex];
+      candidates[swapIndex] = value;
+    }
+  }
+  const start = config && (config.shuffleCandidates || config.shuffle_candidates)
+    ? random.int(0, Math.max(0, candidates.length - 1))
+    : (levelIndex * 7) % candidates.length;
 
   function tryNumbers(numbers) {
     const key = numberKey(numbers);

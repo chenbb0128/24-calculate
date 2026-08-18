@@ -9,6 +9,14 @@
       {
         "value": "assets/audio/previews",
         "type": "folder"
+      },
+      {
+        "value": "assets/audio/music_home_childlike.wav",
+        "type": "file"
+      },
+      {
+        "value": "assets/audio/music_level_childlike.wav",
+        "type": "file"
       }
     ],
     "include": []

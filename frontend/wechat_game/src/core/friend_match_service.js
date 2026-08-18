@@ -1,5 +1,7 @@
-const QUESTION_COUNT = 8;
-const TIME_LIMIT = 120;
+const QUESTION_COUNT = 10;
+// 双人对战共用一条总计时，10 道题使用 3 分钟，给玩家更充分的思考时间。
+// 正式房间如果由服务端返回 rules.time_limit，则仍以服务端合同为准。
+const TIME_LIMIT = 180;
 const MATCHMAKING_TIMEOUT = 20;
 const MATCHMAKING_MIN_TIMEOUT = 18;
 const MATCHMAKING_MAX_TIMEOUT = 24;
@@ -96,11 +98,43 @@ function isRoomReady(room) {
     && target.players.length >= 2;
 }
 
-function generatePuzzles(generator, roomSeed) {
-  const config = { min_digit: 1, max_digit: 9, min_solutions: 1, max_solutions: 12, questionCount: QUESTION_COUNT, question_count: QUESTION_COUNT };
-  let puzzles = generator.generatePuzzleSet(config, Math.abs(Number(roomSeed)) % 97, QUESTION_COUNT, Math.abs(Number(roomSeed)));
-  if (puzzles.length < QUESTION_COUNT) puzzles = generator.generatePuzzleSet({ ...config, max_solutions: 999999 }, Math.abs(Number(roomSeed)) % 97, QUESTION_COUNT, Math.abs(Number(roomSeed)));
-  return puzzles;
+function mixSeed(...values) {
+  let state = 2166136261;
+  values.forEach((value) => {
+    String(value === undefined || value === null ? '' : value).split('').forEach((character) => {
+      state ^= character.charCodeAt(0);
+      state = Math.imul(state, 16777619);
+    });
+  });
+  return (state >>> 0) || 1;
+}
+
+function generatePuzzles(generator, roomSeed, roundSeed = roomSeed, questionCount = QUESTION_COUNT) {
+  const count = Math.max(1, Math.floor(Number(questionCount) || QUESTION_COUNT));
+  const config = { min_digit: 1, max_digit: 9, min_solutions: 1, max_solutions: 12, shuffle_candidates: true, questionCount: count, question_count: count };
+  const used = new Set();
+  const puzzles = [];
+  const baseSeed = mixSeed(roomSeed, roundSeed, 'friend-question-bank');
+  // generatePuzzleSet 的候选池是确定顺序的；多窗口取样可以扩大好友对战的
+  // 题目空间，仍然由同一个 seed 复现，并用 used 确保本局不重复。
+  for (let window = 0; window < 12 && puzzles.length < count; window += 1) {
+    const seed = mixSeed(baseSeed, window);
+    const levelIndex = (seed % 100000) + window * 7919;
+    const batch = generator.generatePuzzleSet(config, levelIndex, count - puzzles.length, seed, used);
+    batch.forEach((record) => { if (puzzles.length < count) puzzles.push(record); });
+  }
+  if (puzzles.length < count) {
+    const fallbackConfig = { ...config, max_solutions: 999999, shuffle_candidates: true };
+    for (let window = 12; window < 24 && puzzles.length < count; window += 1) {
+      const seed = mixSeed(baseSeed, 'fallback', window);
+      const batch = generator.generatePuzzleSet(fallbackConfig, (seed % 100000) + window * 7919, count - puzzles.length, seed, used);
+      batch.forEach((record) => { if (puzzles.length < count) puzzles.push(record); });
+    }
+  }
+  return puzzles.map((record, index) => {
+    const puzzleId = `F${baseSeed.toString(36).toUpperCase()}-Q${index + 1}`;
+    return Object.assign({}, record, { puzzleId, puzzle_id: puzzleId });
+  });
 }
 
 function seeded(seed) {
@@ -189,7 +223,10 @@ function opponentSnapshot(plan, elapsedSeconds, questionCount = QUESTION_COUNT, 
   };
 }
 
-function createMatch(room, puzzles) { return { version: 1, protocol_version: 2, match_id: String(room.room_id), room_id: String(room.room_id), room_code: String(room.room_code), room_seed: Number(room.room_seed), rules: Object.assign({}, rules(), room && room.rules || {}), puzzles: JSON.parse(JSON.stringify(puzzles || [])), players: JSON.parse(JSON.stringify(room.players || [])), events: [] }; }
+function createMatch(room, puzzles) {
+  const matchID = String(room && (room.match_id || room.matchId || room.round_id || room.roundId || room.room_id) || '');
+  return { version: 1, protocol_version: 2, match_id: matchID, room_id: String(room.room_id), room_code: String(room.room_code), room_seed: Number(room.room_seed), rules: Object.assign({}, rules(), room && room.rules || {}), puzzles: JSON.parse(JSON.stringify(puzzles || [])), players: JSON.parse(JSON.stringify(room.players || [])), events: [] };
+}
 
 function calculateResult(playerSolved, playerScore, playerMistakes, playerElapsed, opponent) {
   const opponentSolved = Number(opponent.solved || 0); const opponentScore = Number(opponent.score || 0);

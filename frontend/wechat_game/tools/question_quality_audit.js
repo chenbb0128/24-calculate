@@ -193,8 +193,9 @@ function auditDaily(service) {
       else if (!structurallyValid || (solverDays.has(day) && !valid)) issues.push(problem('daily', '每日题目未通过规则验证', { date, question: index + 1, rule: rule.id, numberKey }));
       if (localKeys.has(numberKey)) issues.push(problem('daily', '同一天出现重复题目', { date, numberKey }));
       localKeys.add(numberKey);
-      if (allKeys.has(numberKey)) issues.push(problem('daily', '年度每日题目重复', { date, question: index + 1, numberKey }));
-      allKeys.add(numberKey);
+      const annualKey = `${rule.id}:${numberKey}`;
+      if (allKeys.has(annualKey)) issues.push(problem('daily', '同一规则年度每日题目重复', { date, question: index + 1, rule: rule.id, numberKey }));
+      allKeys.add(annualKey);
       if (rule.id === 'big_digits' && !numbers.some((value) => Number(value) >= 10)) issues.push(problem('daily', '大数字规则未生效', { date, numberKey }));
     });
     if (sampleDays.has(day)) {

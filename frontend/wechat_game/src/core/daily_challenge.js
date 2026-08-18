@@ -1,4 +1,5 @@
-const DAILY_QUESTION_COUNT = 3;
+const DAILY_QUESTION_COUNT = 5;
+const DAILY_STAGE_NAMES = ['热身题', '进阶题', '高难题', '挑战题', '极限题'];
 const RULE_COUNT = 8;
 const dailyPuzzleData = require('./daily_puzzle_data.js');
 
@@ -13,7 +14,7 @@ const ADVANCED_CANDIDATES = [
   [2, 6, 10, 13], [2, 6, 11, 12], [3, 4, 6, 13],
 ];
 // 先保留一组可读的候选；真正入题前仍由 solve + forbiddenOperator 再次验证。
-// 不固定为少量数字，避免某些日期因重复数字不足而无法生成三题。
+// 不固定为少量数字，避免某些日期因重复数字不足而无法生成五题。
 const NO_MULTIPLY_CANDIDATES = SIMPLE_CANDIDATES;
 
 class SeededRandom {
@@ -24,7 +25,7 @@ class SeededRandom {
 
 function ruleForIndex(index) {
   const rules = [
-    { id: 'no_division', title: '今日规则：禁用除法', text: '三题都不能使用 ÷，全部答对可领取完整奖励。', maxDigit: 9, forbiddenOperator: '÷' },
+    { id: 'no_division', title: '今日规则：禁用除法', text: '五题都不能使用 ÷，全部答对可领取完整奖励。', maxDigit: 9, forbiddenOperator: '÷' },
     { id: 'no_undo', title: '今日规则：一步到底', text: '今天不能撤销，每一步都要先想清楚。', maxDigit: 9 },
     { id: 'big_digits', title: '今日规则：进阶数字', text: '题目会出现 10～13，观察数字组合再开始。', maxDigit: 13 },
     { id: 'must_subtract', title: '今日规则：必须减法', text: '每题至少使用一次减法，才算完成挑战。', maxDigit: 9, requiredOperator: '-' },
@@ -70,14 +71,14 @@ function buildScheduled(generator, dateKey, dateSeed) {
     );
     if (!record || !record.numbers || record.solutionSteps.length !== 3 || !generator.isVerifiedRecord(record)) return null;
     record.daily_stage = stage;
-    record.daily_stage_name = ['热身题', '进阶题', '高难题'][stage];
+    record.daily_stage_name = DAILY_STAGE_NAMES[stage];
     record.daily_rule_id = rule.id;
     puzzles.push(record);
   }
   return {
     date_key: dateKey,
     seed: Number(dateSeed),
-    title: '每日挑战 · 三题连战',
+    title: '每日挑战 · 五题连战',
     rule_id: rule.id,
     rule_title: rule.title,
     rule_text: rule.text,
@@ -126,14 +127,14 @@ function build(generator, dateKey, dateSeed) {
     }
     if (!record) return {};
     record.daily_stage = stage;
-    record.daily_stage_name = ['热身题', '进阶题', '高难题'][stage];
+    record.daily_stage_name = DAILY_STAGE_NAMES[stage];
     record.daily_rule_id = rule.id;
     puzzles.push(record);
   }
   return {
     date_key: dateKey,
     seed: Number(dateSeed),
-    title: '每日挑战 · 三题连战',
+    title: '每日挑战 · 五题连战',
     rule_id: rule.id,
     rule_title: rule.title,
     rule_text: rule.text,
@@ -151,4 +152,4 @@ function build(generator, dateKey, dateSeed) {
   };
 }
 
-module.exports = { DAILY_QUESTION_COUNT, RULE_COUNT, rulePreview: (seed) => ruleForIndex(Number(seed) % RULE_COUNT), build, ruleForIndex };
+module.exports = { DAILY_QUESTION_COUNT, DAILY_STAGE_NAMES, RULE_COUNT, rulePreview: (seed) => ruleForIndex(Number(seed) % RULE_COUNT), build, ruleForIndex };

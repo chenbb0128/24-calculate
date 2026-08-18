@@ -113,11 +113,34 @@ class ModeController {
       this.status = '题目正在准备，请稍候';
       return;
     }
+    if (!forceRestart && this.pendingRunsRestorePromise && !this.pendingRunsRestoreReady) {
+      const waitingToken = ++this.gameRequestToken;
+      this.status = '正在检查上次闯关进度…';
+      this.pendingRunsRestorePromise.then(() => {
+        if (waitingToken !== this.gameRequestToken) return;
+        this.startCampaign(index, options);
+      }).catch(() => {
+        if (waitingToken !== this.gameRequestToken) return;
+        this.startCampaign(index, options);
+      });
+      return;
+    }
     if (!forceRestart && !this.isCampaignLevelUnlocked(index)) {
       if (Number(index) >= 100 && !this.isCampaignBlockUnlocked(Math.floor(Number(index) / 100))) {
         this.status = `前 100 关累计达到 ${this.campaignBlockGateScore()} 分后解锁下一阶段`;
       }
       return;
+    }
+    if (!forceRestart) {
+      const pendingCampaign = this.pendingResumeRuns && this.pendingResumeRuns.campaign;
+      const pendingLevel = pendingCampaign && pendingCampaign.pending
+        ? Number(pendingCampaign.pending.level_id)
+        : NaN;
+      if (pendingCampaign && Number.isFinite(pendingLevel) && pendingLevel === Number(index)
+        && this.applyResumedRun && this.applyResumedRun(pendingCampaign)) {
+        delete this.pendingResumeRuns.campaign;
+        return;
+      }
     }
     this.mode = 'campaign';
     this.hintPopup = null;
@@ -196,12 +219,34 @@ class ModeController {
   startDaily() {
     const requestToken = ++this.gameRequestToken;
     if (!this.ensureBackendReady('daily', 'home')) return;
+    // Bootstrap checks pending runs asynchronously. If the player taps the
+    // entry while that check is still in flight, wait for it instead of
+    // creating a second Daily Challenge run. The latest tap owns the retry.
+    if (this.pendingRunsRestorePromise && !this.pendingRunsRestoreReady) {
+      this.status = '正在检查每日挑战进度…';
+      this.pendingRunsRestorePromise.then(() => {
+        if (requestToken !== this.gameRequestToken || this.screen !== 'home') return;
+        this.startDaily();
+      }).catch(() => {
+        if (requestToken !== this.gameRequestToken || this.screen !== 'home') return;
+        this.startDaily();
+      });
+      return;
+    }
     const today = storage.todayKey();
     const currentProgress = this.progress;
     const latestProgress = storage.load();
     const currentCompleted = storage.isDailyCompleted(currentProgress, today);
     const savedCompleted = storage.isDailyCompleted(latestProgress, today);
     this.progress = currentCompleted ? currentProgress : latestProgress;
+    // A server-confirmed active Run is authoritative over a stale local
+    // completion flag. This lets a player resume an interrupted Daily
+    // Challenge instead of being incorrectly locked out for the day.
+    const pendingDaily = this.pendingResumeRuns && this.pendingResumeRuns.daily;
+    if (pendingDaily) {
+      delete this.pendingResumeRuns.daily;
+      if (this.applyResumedRun && this.applyResumedRun(pendingDaily)) return;
+    }
     if (currentCompleted || savedCompleted) {
       this.dailyChallenge = null;
       this.status = '今日挑战已完成，明天零点更新';
@@ -215,6 +260,15 @@ class ModeController {
     this.dailyRun = null;
     this.dailyAttempts = [];
     this.dailyRunLoading = false;
+    this.hintsUsed = 0;
+    // Enter a visible loading state immediately. Previously the request was
+    // sent while the home screen stayed visible, which looked like a dead tap
+    // on slower devices or when the backend took a moment to respond.
+    this.puzzles = [];
+    this.cards = [];
+    this.originalCards = [];
+    this.currentPuzzle = null;
+    this.screen = 'game';
     if (this.backendAuth && this.backendAuth.status === 'ready' && apiClient.createDailyRun) {
       this.dailyRunLoading = true;
       this.status = '正在向服务端领取今日挑战…';
@@ -234,7 +288,10 @@ class ModeController {
           this.screen = 'home';
           return;
         }
-        if (!run || !run.run_id || !Array.isArray(run.puzzles) || run.puzzles.length !== dailyChallenge.DAILY_QUESTION_COUNT) {
+        const serverQuestionCount = Math.floor(Number(run && (run.question_count || run.questionCount)) || 0);
+        const puzzleCount = Array.isArray(run && run.puzzles) ? run.puzzles.length : 0;
+        if (!run || !run.run_id || puzzleCount < 1
+          || (serverQuestionCount > 0 && serverQuestionCount !== puzzleCount)) {
           throw new Error('服务端每日挑战题目合同无效');
         }
          this.dailyRun = run;
@@ -244,10 +301,11 @@ class ModeController {
           date_key: run.date_key || run.dateKey || storage.todayKey(),
           rule_id: run.rule_id || run.ruleId || '',
           rule_title: run.rule_title || run.ruleTitle || '',
-          rule_text: run.rule_text || run.ruleText || '',
-          time_limit: Number(run.time_limit || run.timeLimitSeconds || 150),
-          time_limit_ms: Number(run.time_limit_ms || run.timeLimitMS || 150000),
-          hint_count: Number(run.hint_count || run.hintCount || 1),
+           rule_text: run.rule_text || run.ruleText || '',
+           time_limit: Number(run.time_limit || run.timeLimitSeconds || 150),
+           time_limit_ms: Number(run.time_limit_ms || run.timeLimitMS || 150000),
+            question_count: puzzleCount,
+           hint_count: run.hint_count !== undefined ? Number(run.hint_count) : Number(run.hintCount !== undefined ? run.hintCount : 1),
           allow_hint: run.allow_hint !== undefined ? Boolean(run.allow_hint) : true,
           required_operator: run.required_operator || run.requiredOperator || '',
           forbidden_operator: run.forbidden_operator || run.forbiddenOperator || '',
@@ -289,6 +347,7 @@ class ModeController {
     this.dailyRun = null;
     this.dailyAttempts = [];
     this.dailyRunLoading = false;
+    this.hintsUsed = 0;
     const service = this.ensureQuestionService();
     this.dailyChallenge = service.getDailyChallenge(storage.todayKey(), storage.todaySeed());
     if (!this.dailyChallenge || !Array.isArray(this.dailyChallenge.puzzles) || this.dailyChallenge.puzzles.length < dailyChallenge.DAILY_QUESTION_COUNT) {
@@ -302,6 +361,23 @@ class ModeController {
   }
 
   startEndless() {
+    if (this.pendingRunsRestorePromise && !this.pendingRunsRestoreReady) {
+      const waitingToken = ++this.gameRequestToken;
+      this.status = '正在检查上次无尽进度…';
+      this.pendingRunsRestorePromise.then(() => {
+        if (waitingToken !== this.gameRequestToken) return;
+        this.startEndless();
+      }).catch(() => {
+        if (waitingToken !== this.gameRequestToken) return;
+        this.startEndless();
+      });
+      return;
+    }
+    const pendingEndless = this.pendingResumeRuns && this.pendingResumeRuns.endless;
+    if (pendingEndless && this.applyResumedRun && this.applyResumedRun(pendingEndless)) {
+      delete this.pendingResumeRuns.endless;
+      return;
+    }
     const requestToken = ++this.gameRequestToken;
     this.mode = 'endless';
     this.hintPopup = null;
@@ -322,6 +398,20 @@ class ModeController {
     this.endlessServerResult = null;
     this.endlessRunLoading = false;
     this.puzzles = [];
+    // 进入新一局时先清空上一局的可视题面。服务器取题期间只能显示
+    // loading 面板，不能让旧 currentPuzzle/cards 短暂穿透到新一局。
+    this.currentPuzzle = null;
+    this.originalCards = [];
+    this.cards = [];
+    this.undoStack = [];
+    this.questionOperators = [];
+    this.questionSteps = [];
+    this.selectedIndex = -1;
+    this.selectedOperator = '';
+    this.timerLimit = 0;
+    this.timeLeft = 0;
+    this.result = null;
+    this.gamePaused = false;
 
     const backendReady = Boolean(this.backendAuth && this.backendAuth.status === 'ready');
     if (backendReady) {
@@ -482,10 +572,11 @@ class ModeController {
     this.friendSeed = roomSeed;
     const service = this.ensureQuestionService();
     const questionCount = this.friendQuestionCount();
+    const roundKey = String(this.friendRoom.round_id || this.friendRoom.roundId || this.friendRoom.match_id || this.friendRoom.matchId || '');
     const serverPuzzles = Array.isArray(this.friendRoom.puzzles) ? this.friendRoom.puzzles : [];
     this.puzzles = serverPuzzles.length === questionCount
       ? serverPuzzles.map((record) => ({ ...record, puzzleId: record.puzzleId || record.puzzle_id }))
-      : service.getFriendQuestions(roomSeed, { count: questionCount });
+      : service.getFriendQuestions(roomSeed, { count: questionCount, roundKey });
     if (this.puzzles.length < questionCount) {
       this.status = service.lastError || '对战题目生成失败，请重新创建房间';
       this.screen = 'friend_lobby';
@@ -548,9 +639,123 @@ class ModeController {
     this.friendRoomRequestInFlight = false;
     this.friendRoomExpired = false;
     this.friendRoomError = '';
+    this.friendRematchWaiting = false;
+    this.friendRematchRequestInFlight = false;
+    this.friendRematchPreviousMatchID = '';
     this.friendMatch = null;
     this.friendMatchProgress = null;
     this.screen = 'friend_lobby';
+  }
+
+  requestFriendRematch() {
+    const room = this.friendRoom && JSON.parse(JSON.stringify(this.friendRoom));
+    const roomCode = String(room && room.room_code || '').trim();
+    if (!roomCode || this.friendRematchRequestInFlight) return;
+    const previousMatchID = String(room.match_id || room.matchId || room.round_id || room.roundId || '');
+    const localMode = this.friendLocalFallback || this.friendRoomBackendStatus === 'local';
+
+    // Preserve the room and both players, but invalidate every piece of the
+    // previous match state before entering the waiting room. In particular,
+    // never call startFriend() here: doing so would reuse the old match_id and
+    // send a zero-progress update into the finished round.
+    const requestToken = ++this.gameRequestToken;
+    this.friendRematchPreviousMatchID = previousMatchID;
+    this.friendRematchWaiting = !localMode;
+    this.friendRematchRequestInFlight = !localMode;
+    this.mode = 'friend';
+    this.screen = 'friend_lobby';
+    this.friendLobbyView = 'room';
+    this.friendRoomFromInvite = false;
+    this.friendRoom = room;
+    this.friendSelfReady = false;
+    this.friendReadyRequestInFlight = false;
+    this.friendStartRequestInFlight = false;
+    this.friendServerStartAt = 0;
+    this.friendCountdownActive = false;
+    this.friendCountdownUntil = 0;
+    this.friendCountdownLastNumber = 0;
+    this.friendMatch = null;
+    this.friendMatchContract = null;
+    this.friendAttempts = [];
+    this.friendServerResult = null;
+    this.friendMatchProgress = { players: [] };
+    this.friendProgressLastPollAt = 0;
+    this.friendProgressLastSentKey = '';
+    this.friendMatchResolutionApplied = false;
+    this.friendRankChange = null;
+    this.friendStartedAt = 0;
+    this.friendPlayerSolved = 0;
+    this.currentQuestion = 0;
+    this.result = null;
+    this.puzzles = [];
+    this.cards = [];
+    this.selectedIndex = -1;
+    this.selectedOperator = '';
+    this.undoStack = [];
+    this.transitioning = false;
+    this.settling = false;
+    this.autoNextAt = 0;
+    this.popup = '';
+    this.hintPopup = null;
+    this.resultHelpPopup = false;
+    this.status = localMode ? '新一局已准备，请点击准备' : '正在返回等待房间…';
+    this.friendRoomLastPollAt = Date.now();
+
+    if (localMode) {
+      const nextSeed = (Math.abs(Number(room.room_seed) || 1) + Date.now()) >>> 0 || 1;
+      const nextMatchID = `${String(room.room_id || roomCode)}-r${Date.now()}`;
+      this.friendRoom = Object.assign(room, {
+        room_seed: nextSeed,
+        match_id: nextMatchID,
+        round_id: nextMatchID,
+        start_at: 0,
+        status: friendMatch.ROOM_STATUS.WAITING,
+        question_hash: '',
+        puzzle_ids: [],
+        puzzles: [],
+        players: (Array.isArray(room.players) ? room.players : []).map((player, index) => Object.assign({}, player, {
+          // A local fallback has no second device to click; keep the hidden
+          // opponent ready while requiring the local player to prepare again.
+          ready: index > 0,
+        })),
+      });
+      this.friendRules = Object.assign({}, friendMatch.rules(), this.friendRoom.rules || {});
+      this.friendRematchWaiting = false;
+      this.friendRematchRequestInFlight = false;
+      this.triggerFeedback('info', '新一局已准备，请点击准备');
+      return;
+    }
+
+    if (!apiClient.rematchFriendRoom) {
+      this.friendRematchRequestInFlight = false;
+      this.friendRematchWaiting = false;
+      this.status = '当前服务端暂不支持再来一局，请更新后端接口';
+      this.triggerFeedback('error', this.status);
+      return;
+    }
+    apiClient.rematchFriendRoom(roomCode, {
+      client_round_id: `${roomCode}-${Date.now()}`,
+    }).then((nextRoom) => {
+      if (requestToken !== this.gameRequestToken || this.screen !== 'friend_lobby') return;
+      if (!nextRoom || !nextRoom.room_code) throw new Error('服务端未返回新的等待房间');
+      this.friendRoom = friendMatch.normalizeRoom(nextRoom, this.friendRoom);
+      this.friendRules = Object.assign({}, friendMatch.rules(), this.friendRoom.rules || {});
+      this.friendRoomBackendStatus = 'ready';
+      this.friendSelfReady = false;
+      this.friendRematchWaiting = false;
+      this.friendRoomLastPollAt = Date.now();
+      this.status = '已回到等待房间，请双方重新准备';
+      this.triggerFeedback('success', '新一局房间已准备');
+    }).catch((error) => {
+      if (requestToken !== this.gameRequestToken || this.screen !== 'friend_lobby') return;
+      this.friendRematchWaiting = false;
+      this.status = Number(error && (error.statusCode || error.status)) === 404
+        ? '服务端还未开启再来一局，请先更新后端'
+        : String(error && error.message || '新一局创建失败，请稍后重试');
+      this.triggerFeedback('error', this.status);
+    }).then(() => {
+      this.friendRematchRequestInFlight = false;
+    });
   }
 
   beginSession(timeLimit) {
@@ -567,7 +772,9 @@ class ModeController {
     this.maxCombo = this.currentQuestion === 0 ? 0 : this.maxCombo;
     this.freeUndo = this.currentQuestion === 0 ? true : this.freeUndo;
     this.freeHint = this.currentQuestion === 0 ? true : this.freeHint;
-    this.hintUsed = this.currentQuestion === 0 ? false : this.hintUsed;
+    this.hintUsed = false;
+    this.questionHintsUsed = 0;
+    this.hintsUsed = this.currentQuestion === 0 ? 0 : Math.max(0, Math.floor(Number(this.hintsUsed) || 0));
     this.timerLimit = timeLimit;
     // 好友对战的 120 秒是整场共用，不会每答对一题就重新计时。
     if (this.mode !== 'friend' || this.currentQuestion === 0 || this.timeLeft <= 0) this.timeLeft = timeLimit;
@@ -617,6 +824,8 @@ class ModeController {
   beginEndlessQuestionInternal(options = {}) {
     this.renderRecovery = false;
     this.transitioning = false;
+    this.hintUsed = false;
+    this.questionHintsUsed = 0;
     this.autoNextAt = 0;
     this.autoNextToken += 1;
     const config = puzzle.endlessConfig(this.currentQuestion);
@@ -914,6 +1123,17 @@ class ModeController {
     this.showRewarded('undo', () => { restore(); this.triggerFeedback('success', '看完广告，获得一次撤销'); });
   }
 
+  dailyHintLimit() {
+    if (this.mode !== 'daily' || !this.dailyChallenge) return 0;
+    if (this.dailyChallenge.allow_hint === false) return 0;
+    const value = Number(this.dailyChallenge.hint_count);
+    return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 1;
+  }
+
+  dailyHintsRemaining() {
+    return Math.max(0, this.dailyHintLimit() - Math.max(0, Math.floor(Number(this.hintsUsed) || 0)));
+  }
+
   hint() {
     const step = this.currentPuzzle && this.currentPuzzle.firstStep;
     if (!step) { this.status = '这道题暂时没有提示'; return; }
@@ -925,7 +1145,20 @@ class ModeController {
       this.status = '本关暂不允许使用提示';
       return;
     }
+    if (this.mode === 'daily') {
+      if (this.dailyHintLimit() <= 0) {
+        this.status = '今日挑战不允许使用提示';
+        return;
+      }
+      if (this.dailyHintsRemaining() <= 0) {
+        this.status = '今日提示次数已用完';
+        return;
+      }
+    }
     const show = () => {
+      if (this.mode === 'daily') this.hintsUsed = Math.max(0, Math.floor(Number(this.hintsUsed) || 0)) + 1;
+      this.questionHintsUsed = Math.max(0, Math.floor(Number(this.questionHintsUsed) || 0)) + 1;
+      this.hintUsed = true;
       this.hintPopup = { ...step };
       this.status = '提示已显示，点击屏幕任意位置关闭';
     };
