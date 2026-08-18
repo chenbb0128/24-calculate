@@ -204,7 +204,9 @@ func (s *Service) UploadAvatar(ctx context.Context, id uint64, data []byte, maxD
 			}
 		}(oldAvatar)
 	}
-	return AvatarUploadResponse{AvatarURL: stored.URL, AvatarKey: stored.Key, Width: width, Height: height, Format: "webp"}, nil
+	user.Avatar = stored.URL
+	user.UpdatedAt = now
+	return AvatarUploadResponse{AvatarURL: stored.URL, AvatarKey: stored.Key, Width: width, Height: height, Format: "webp", Profile: toProfileResponse(user)}, nil
 }
 
 func (s *Service) allowAvatarUpload(id uint64, now time.Time) bool {

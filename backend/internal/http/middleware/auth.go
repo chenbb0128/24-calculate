@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -14,8 +15,13 @@ import (
 )
 
 const userIDKey = "auth.user_id"
+const accessClaimsKey = "auth.access_claims"
 
-func RequireAuth(manager *jwtplatform.Manager) gin.HandlerFunc {
+type AccessTokenRevocationChecker interface {
+	IsAccessTokenRevoked(context.Context, string) (bool, error)
+}
+
+func RequireAuth(manager *jwtplatform.Manager, checkers ...AccessTokenRevocationChecker) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		value := c.GetHeader("Authorization")
 		parts := strings.Fields(value)
@@ -36,10 +42,44 @@ func RequireAuth(manager *jwtplatform.Manager) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		if len(checkers) > 0 && checkers[0] != nil {
+			revoked, checkErr := checkers[0].IsAccessTokenRevoked(c.Request.Context(), claims.ID)
+			if checkErr != nil {
+				response.WriteError(c, apperror.ServiceUnavailable("认证服务暂时不可用", checkErr))
+				c.Abort()
+				return
+			}
+			if revoked {
+				response.WriteError(c, apperror.New(20002, http.StatusUnauthorized, "Token 已失效", nil))
+				c.Abort()
+				return
+			}
+		}
 
 		c.Set(userIDKey, claims.UserID)
+		c.Set(accessClaimsKey, claims)
 		c.Next()
 	}
+}
+
+func AccessTokenClaims(c *gin.Context) (*jwtplatform.Claims, error) {
+	value, exists := c.Get(accessClaimsKey)
+	if !exists {
+		return nil, apperror.New(20002, http.StatusUnauthorized, "Token 无效", nil)
+	}
+	claims, ok := value.(*jwtplatform.Claims)
+	if !ok || claims == nil || claims.UserID == 0 || claims.ID == "" {
+		return nil, apperror.New(20002, http.StatusUnauthorized, "Token 无效", nil)
+	}
+	return claims, nil
+}
+
+func BearerToken(c *gin.Context) (string, error) {
+	parts := strings.Fields(c.GetHeader("Authorization"))
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return "", apperror.New(20001, http.StatusUnauthorized, "Token 缺失", nil)
+	}
+	return parts[1], nil
 }
 
 func UserID(c *gin.Context) (uint64, error) {

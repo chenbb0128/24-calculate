@@ -12,6 +12,10 @@ func RefreshTokenKey(jti string) string {
 	return fmt.Sprintf("%s:auth:refresh:%s", keyPrefix, jti)
 }
 
+func AccessTokenRevokedKey(jti string) string {
+	return fmt.Sprintf("%s:auth:access-revoked:%s", keyPrefix, jti)
+}
+
 func LoginRateKey(ip string) string {
 	digest := sha256.Sum256([]byte(ip))
 	return fmt.Sprintf("%s:rate:login:%s", keyPrefix, hex.EncodeToString(digest[:]))

@@ -30,6 +30,19 @@ var (
 	ErrFriendMatchProgressStale           = errors.New("friend match progress is stale")
 )
 
+const runExpiredRetention = 24 * time.Hour
+
+func runStorageTTL(expiresAt time.Time, fallback time.Duration) time.Duration {
+	ttl := time.Until(expiresAt) + runExpiredRetention
+	if ttl <= runExpiredRetention {
+		if fallback > 0 {
+			return fallback + runExpiredRetention
+		}
+		return runExpiredRetention
+	}
+	return ttl
+}
+
 const friendRoomJoinScript = `
 if redis.call('EXISTS', KEYS[1]) == 0 then
     return -2
@@ -646,10 +659,7 @@ func (r *FriendRoomRepository) CreateEndlessRun(ctx context.Context, run Endless
 	if err != nil {
 		return fmt.Errorf("encode endless run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = 2 * time.Hour
-	}
+	ttl := runStorageTTL(run.ExpiresAt, 2*time.Hour)
 	ok, err := r.redis.SetNX(ctx, redisplatform.EndlessRunKey(run.RunID), payload, ttl).Result()
 	if err != nil {
 		return err
@@ -686,10 +696,7 @@ func (r *FriendRoomRepository) UpdateEndlessRun(ctx context.Context, run Endless
 	if err != nil {
 		return fmt.Errorf("encode endless run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = time.Minute
-	}
+	ttl := runStorageTTL(run.ExpiresAt, time.Minute)
 	return r.redis.Set(ctx, redisplatform.EndlessRunKey(run.RunID), payload, ttl).Err()
 }
 
@@ -701,10 +708,7 @@ func (r *FriendRoomRepository) CreateCampaignRun(ctx context.Context, run Campai
 	if err != nil {
 		return fmt.Errorf("encode campaign run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = campaignRunTTL
-	}
+	ttl := runStorageTTL(run.ExpiresAt, campaignRunTTL)
 	ok, err := r.redis.SetNX(ctx, redisplatform.CampaignRunKey(run.RunID), payload, ttl).Result()
 	if err != nil {
 		return err
@@ -741,10 +745,7 @@ func (r *FriendRoomRepository) UpdateCampaignRun(ctx context.Context, run Campai
 	if err != nil {
 		return fmt.Errorf("encode campaign run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = time.Minute
-	}
+	ttl := runStorageTTL(run.ExpiresAt, time.Minute)
 	return r.redis.Set(ctx, redisplatform.CampaignRunKey(run.RunID), payload, ttl).Err()
 }
 
@@ -756,10 +757,7 @@ func (r *FriendRoomRepository) CreateDailyRun(ctx context.Context, run DailyRun)
 	if err != nil {
 		return fmt.Errorf("encode daily run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = dailyRunTTL
-	}
+	ttl := runStorageTTL(run.ExpiresAt, dailyRunTTL)
 	ok, err := r.redis.SetNX(ctx, redisplatform.DailyRunKey(run.RunID), payload, ttl).Result()
 	if err != nil {
 		return err
@@ -796,10 +794,7 @@ func (r *FriendRoomRepository) UpdateDailyRun(ctx context.Context, run DailyRun)
 	if err != nil {
 		return fmt.Errorf("encode daily run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = time.Minute
-	}
+	ttl := runStorageTTL(run.ExpiresAt, time.Minute)
 	return r.redis.Set(ctx, redisplatform.DailyRunKey(run.RunID), payload, ttl).Err()
 }
 

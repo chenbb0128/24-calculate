@@ -46,6 +46,7 @@ type Service struct {
 	matchmaking     MatchmakingStore
 	locks           DistributedLockStore
 	rankStore       RankStore
+	rankHistory     RankHistoryStore
 	dailySeedSecret string
 	matchmakingWait time.Duration
 	rankSeason      string
@@ -102,6 +103,9 @@ func (s *Service) SetMatchmakingWait(wait time.Duration) {
 func (s *Service) SetRankStore(rankStore RankStore) {
 	if s != nil {
 		s.rankStore = rankStore
+		if history, ok := rankStore.(RankHistoryStore); ok {
+			s.rankHistory = history
+		}
 	}
 }
 

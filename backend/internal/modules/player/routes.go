@@ -11,11 +11,14 @@ import (
 // former levels/{id}/complete and daily/complete endpoints accepted
 // client-controlled completion metrics and are intentionally not registered
 // in any environment.
-func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatform.Manager) {
+func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatform.Manager, revocation ...middleware.AccessTokenRevocationChecker) {
 	routes := group.Group("/player")
-	routes.Use(middleware.RequireAuth(manager))
+	routes.Use(middleware.RequireAuth(manager, revocation...))
 	routes.GET("/bootstrap", handler.Bootstrap)
 	routes.GET("/rank", handler.Rank)
+	routes.GET("/ranked/summary", handler.RankedSummary)
+	routes.GET("/ranked/matches", handler.RankedMatches)
+	routes.GET("/ranked/matches/:match_id", handler.RankedMatch)
 	routes.GET("/leaderboards/:mode", handler.Leaderboard)
 	routes.POST("/endless/runs", handler.StartEndlessRun)
 	routes.GET("/endless/runs/:run_id", handler.ResumeEndlessRun)

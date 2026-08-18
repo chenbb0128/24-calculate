@@ -66,6 +66,49 @@ func (h *Handler) Rank(c *gin.Context) {
 	response.Success(c, http.StatusOK, result)
 }
 
+func (h *Handler) RankedSummary(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	result, err := h.service.GetRankedSummary(c.Request.Context(), userID, c.Query("season_id"))
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+func (h *Handler) RankedMatches(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	result, err := h.service.ListRankedMatches(c.Request.Context(), userID, c.Query("season_id"), c.Query("cursor"), limit)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+func (h *Handler) RankedMatch(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	result, err := h.service.GetRankedMatch(c.Request.Context(), userID, c.Param("match_id"))
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
 func (h *Handler) StartEndlessRun(c *gin.Context) {
 	userID, err := middleware.UserID(c)
 	if err != nil {
@@ -323,7 +366,7 @@ func (h *Handler) LeaveFriendRoom(c *gin.Context) {
 		response.WriteError(c, err)
 		return
 	}
-	response.NoContent(c)
+	response.Success(c, http.StatusOK, map[string]bool{"left": true})
 }
 
 func (h *Handler) ReadyFriendRoom(c *gin.Context) {

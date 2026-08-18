@@ -42,21 +42,7 @@ func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
 	}
 
 	difficulty := int(absMatchmakingInt64(room.RoomSeed) % 3)
-	base := []int64{11000, 8000, 5000}[difficulty]
-	solved := 0
-	usedMS := int64(0)
-	for index := 0; index < count; index++ {
-		jitter := (absMatchmakingInt64(room.RoomSeed)+int64(index*7919))%3500 - 1750
-		duration := base + jitter
-		if duration < 3000 {
-			duration = 3000
-		}
-		usedMS += duration
-		if usedMS > elapsed {
-			break
-		}
-		solved++
-	}
+	solved, usedMS := botProgressForElapsed(previous.Solved, elapsed, count, room.RoomSeed, difficulty)
 	if solved < previous.Solved {
 		return nil
 	}
@@ -87,4 +73,45 @@ func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
 		}
 	}
 	return nil
+}
+
+func botProgressForElapsed(previousSolved int, elapsed int64, count int, seed int64, difficulty int) (int, int64) {
+	if count <= 0 || elapsed < 0 {
+		return previousSolved, 0
+	}
+	if difficulty < 0 || difficulty > 2 {
+		difficulty = 1
+	}
+	base := []int64{11000, 8000, 5000}[difficulty]
+	targetSolved := 0
+	elapsedForTarget := int64(0)
+	for index := 0; index < count; index++ {
+		jitter := (absMatchmakingInt64(seed)+int64(index*7919))%3500 - 1750
+		duration := base + jitter
+		if duration < 3000 {
+			duration = 3000
+		}
+		elapsedForTarget += duration
+		if elapsedForTarget > elapsed {
+			break
+		}
+		targetSolved++
+	}
+	previousSolved = maxInt(0, minInt(previousSolved, count))
+	solved := previousSolved
+	if targetSolved > previousSolved {
+		// Persist at most one new answer per status poll. This prevents a slow
+		// client from observing an artificial multi-question jump.
+		solved++
+	}
+	usedMS := int64(0)
+	for index := 0; index < solved; index++ {
+		jitter := (absMatchmakingInt64(seed)+int64(index*7919))%3500 - 1750
+		duration := base + jitter
+		if duration < 3000 {
+			duration = 3000
+		}
+		usedMS += duration
+	}
+	return solved, usedMS
 }

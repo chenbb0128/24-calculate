@@ -117,8 +117,8 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 		},
 		APIRoutes: func(group *gin.RouterGroup) {
 			auth.RegisterRoutes(group, authHandler, !strings.EqualFold(strings.TrimSpace(cfg.App.Env), "production"))
-			user.RegisterRoutes(group, userHandler, manager)
-			player.RegisterRoutes(group, playerHandler, manager)
+			user.RegisterRoutes(group, userHandler, manager, redisClient)
+			player.RegisterRoutes(group, playerHandler, manager, redisClient)
 		},
 	})
 	if err != nil {

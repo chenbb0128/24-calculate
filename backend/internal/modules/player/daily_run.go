@@ -50,26 +50,27 @@ type DailyRunRule struct {
 }
 
 type DailyRun struct {
-	Version        int           `json:"version"`
-	RunID          string        `json:"run_id"`
-	UserID         uint64        `json:"user_id"`
-	DateKey        string        `json:"date_key"`
-	Seed           int64         `json:"seed"`
-	Rule           DailyRunRule  `json:"rule"`
-	QuestionCount  int           `json:"question_count"`
-	TimeLimitMS    int           `json:"time_limit_ms"`
-	Questions      []DailyPuzzle `json:"questions"`
-	Status         string        `json:"status"`
-	IdempotencyKey string        `json:"idempotency_key,omitempty"`
-	QuestionIndex  int           `json:"question_index"`
-	Score          int           `json:"score"`
-	ElapsedMS      int           `json:"elapsed_ms"`
-	Mistakes       int           `json:"mistakes"`
-	HintsUsed      int           `json:"hints_used"`
-	BestCombo      int           `json:"best_combo"`
-	FinishedAt     *time.Time    `json:"finished_at,omitempty"`
-	CreatedAt      time.Time     `json:"created_at"`
-	ExpiresAt      time.Time     `json:"expires_at"`
+	Version        int                    `json:"version"`
+	RunID          string                 `json:"run_id"`
+	UserID         uint64                 `json:"user_id"`
+	DateKey        string                 `json:"date_key"`
+	Seed           int64                  `json:"seed"`
+	Rule           DailyRunRule           `json:"rule"`
+	QuestionCount  int                    `json:"question_count"`
+	TimeLimitMS    int                    `json:"time_limit_ms"`
+	Questions      []DailyPuzzle          `json:"questions"`
+	Attempts       []DailyRunAttemptInput `json:"attempts,omitempty"`
+	Status         string                 `json:"status"`
+	IdempotencyKey string                 `json:"idempotency_key,omitempty"`
+	QuestionIndex  int                    `json:"question_index"`
+	Score          int                    `json:"score"`
+	ElapsedMS      int                    `json:"elapsed_ms"`
+	Mistakes       int                    `json:"mistakes"`
+	HintsUsed      int                    `json:"hints_used"`
+	BestCombo      int                    `json:"best_combo"`
+	FinishedAt     *time.Time             `json:"finished_at,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
+	ExpiresAt      time.Time              `json:"expires_at"`
 }
 
 type DailyPuzzle struct {
@@ -93,38 +94,40 @@ type DailyPuzzlePublic struct {
 }
 
 type DailyRunResponse struct {
-	Version             int                 `json:"version"`
-	RunID               string              `json:"run_id"`
-	DateKey             string              `json:"date_key"`
-	Seed                int64               `json:"seed"`
-	Title               string              `json:"title"`
-	RuleID              string              `json:"rule_id"`
-	RuleTitle           string              `json:"rule_title"`
-	RuleText            string              `json:"rule_text"`
-	RuleIndex           int                 `json:"rule_index"`
-	TimeBonus           bool                `json:"time_bonus"`
-	RequiredOperator    string              `json:"required_operator"`
-	ForbiddenOperator   string              `json:"forbidden_operator"`
-	MaxDigit            int                 `json:"max_digit"`
-	AllowNegativeResult bool                `json:"allow_negative_intermediate"`
-	QuestionCount       int                 `json:"question_count"`
-	ElapsedMS           int                 `json:"elapsed_ms"`
-	TimeLimitSeconds    int                 `json:"time_limit"`
-	TimeLimitMS         int                 `json:"time_limit_ms"`
-	HintCount           int                 `json:"hint_count"`
-	AllowHint           bool                `json:"allow_hint"`
-	CreatedAt           time.Time           `json:"created_at"`
-	ExpiresAt           time.Time           `json:"expires_at"`
-	Puzzles             []DailyPuzzlePublic `json:"puzzles"`
-	Status              string              `json:"status"`
-	QuestionIndex       int                 `json:"question_index"`
-	Score               int                 `json:"score"`
-	Mistakes            int                 `json:"mistakes"`
-	HintsUsed           int                 `json:"hints_used"`
-	BestCombo           int                 `json:"best_combo"`
-	FinishedAt          *time.Time          `json:"finished_at,omitempty"`
-	Completed           bool                `json:"completed,omitempty"`
-	Message             string              `json:"message,omitempty"`
+	Version             int                    `json:"version"`
+	RunID               string                 `json:"run_id"`
+	DateKey             string                 `json:"date_key"`
+	Seed                int64                  `json:"seed"`
+	Title               string                 `json:"title"`
+	RuleID              string                 `json:"rule_id"`
+	RuleTitle           string                 `json:"rule_title"`
+	RuleText            string                 `json:"rule_text"`
+	RuleIndex           int                    `json:"rule_index"`
+	TimeBonus           bool                   `json:"time_bonus"`
+	RequiredOperator    string                 `json:"required_operator"`
+	ForbiddenOperator   string                 `json:"forbidden_operator"`
+	MaxDigit            int                    `json:"max_digit"`
+	AllowNegativeResult bool                   `json:"allow_negative_intermediate"`
+	QuestionCount       int                    `json:"question_count"`
+	ElapsedMS           int                    `json:"elapsed_ms"`
+	TimeLimitSeconds    int                    `json:"time_limit"`
+	TimeLimitMS         int                    `json:"time_limit_ms"`
+	HintCount           int                    `json:"hint_count"`
+	AllowHint           bool                   `json:"allow_hint"`
+	CreatedAt           time.Time              `json:"created_at"`
+	ExpiresAt           time.Time              `json:"expires_at"`
+	Puzzles             []DailyPuzzlePublic    `json:"puzzles"`
+	Questions           []DailyPuzzlePublic    `json:"questions"`
+	Attempts            []DailyRunAttemptInput `json:"attempts"`
+	Status              string                 `json:"status"`
+	QuestionIndex       int                    `json:"question_index"`
+	Score               int                    `json:"score"`
+	Mistakes            int                    `json:"mistakes"`
+	HintsUsed           int                    `json:"hints_used"`
+	BestCombo           int                    `json:"best_combo"`
+	FinishedAt          *time.Time             `json:"finished_at,omitempty"`
+	Completed           bool                   `json:"completed,omitempty"`
+	Message             string                 `json:"message,omitempty"`
 }
 
 type DailyRunAttemptInput struct {
@@ -285,6 +288,7 @@ func (s *Service) SubmitDailyRun(ctx context.Context, userID uint64, runID strin
 	run.HintsUsed = calculated.Hints
 	run.BestCombo = calculated.BestCombo
 	run.FinishedAt = &finishedAt
+	run.Attempts = append([]DailyRunAttemptInput(nil), input.Attempts...)
 	if stateStore, ok := s.dailyRuns.(DailyRunStateStore); ok {
 		if err := stateStore.UpdateDailyRun(ctx, run); err != nil {
 			return DailyRunSubmissionResponse{}, err
@@ -517,6 +521,10 @@ func publicDailyRun(run DailyRun) DailyRunResponse {
 			Rules: question.Rules, QuestionHash: question.QuestionHash, TimeLimitMS: question.TimeLimitMS,
 		}
 	}
+	attempts := run.Attempts
+	if attempts == nil {
+		attempts = make([]DailyRunAttemptInput, 0)
+	}
 	return DailyRunResponse{
 		Version: run.Version, RunID: run.RunID, DateKey: run.DateKey, Seed: run.Seed,
 		Title: "每日挑战 · 三题连战", RuleID: run.Rule.ID, RuleTitle: run.Rule.Title,
@@ -525,7 +533,7 @@ func publicDailyRun(run DailyRun) DailyRunResponse {
 		MaxDigit: run.Rule.MaxDigit, AllowNegativeResult: run.Rule.AllowNegativeResult,
 		QuestionCount: run.QuestionCount, TimeLimitSeconds: run.Rule.TimeLimitSeconds,
 		TimeLimitMS: run.TimeLimitMS, HintCount: run.Rule.HintCount, AllowHint: run.Rule.AllowHint,
-		CreatedAt: run.CreatedAt, ExpiresAt: run.ExpiresAt, Puzzles: puzzles,
+		CreatedAt: run.CreatedAt, ExpiresAt: run.ExpiresAt, Puzzles: puzzles, Questions: puzzles, Attempts: attempts,
 		Status: runStatusOrRunning(run.Status), QuestionIndex: run.QuestionIndex, Score: run.Score, ElapsedMS: run.ElapsedMS,
 		Mistakes: run.Mistakes, HintsUsed: run.HintsUsed, BestCombo: run.BestCombo, FinishedAt: run.FinishedAt,
 	}

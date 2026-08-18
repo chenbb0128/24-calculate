@@ -37,25 +37,26 @@ func campaignRunStoreFrom(value any) CampaignRunStore {
 }
 
 type CampaignRun struct {
-	Version        int              `json:"version"`
-	RunID          string           `json:"run_id"`
-	UserID         uint64           `json:"user_id"`
-	LevelID        int              `json:"level_id"`
-	QuestionCount  int              `json:"question_count"`
-	TimeLimitMS    int              `json:"time_limit_ms"`
-	AllowHint      bool             `json:"allow_hint"`
-	Questions      []CampaignPuzzle `json:"questions"`
-	Status         string           `json:"status"`
-	IdempotencyKey string           `json:"idempotency_key,omitempty"`
-	QuestionIndex  int              `json:"question_index"`
-	Score          int              `json:"score"`
-	ElapsedMS      int              `json:"elapsed_ms"`
-	Mistakes       int              `json:"mistakes"`
-	HintsUsed      int              `json:"hints_used"`
-	BestCombo      int              `json:"best_combo"`
-	FinishedAt     *time.Time       `json:"finished_at,omitempty"`
-	CreatedAt      time.Time        `json:"created_at"`
-	ExpiresAt      time.Time        `json:"expires_at"`
+	Version        int                       `json:"version"`
+	RunID          string                    `json:"run_id"`
+	UserID         uint64                    `json:"user_id"`
+	LevelID        int                       `json:"level_id"`
+	QuestionCount  int                       `json:"question_count"`
+	TimeLimitMS    int                       `json:"time_limit_ms"`
+	AllowHint      bool                      `json:"allow_hint"`
+	Questions      []CampaignPuzzle          `json:"questions"`
+	Attempts       []CampaignRunAttemptInput `json:"attempts,omitempty"`
+	Status         string                    `json:"status"`
+	IdempotencyKey string                    `json:"idempotency_key,omitempty"`
+	QuestionIndex  int                       `json:"question_index"`
+	Score          int                       `json:"score"`
+	ElapsedMS      int                       `json:"elapsed_ms"`
+	Mistakes       int                       `json:"mistakes"`
+	HintsUsed      int                       `json:"hints_used"`
+	BestCombo      int                       `json:"best_combo"`
+	FinishedAt     *time.Time                `json:"finished_at,omitempty"`
+	CreatedAt      time.Time                 `json:"created_at"`
+	ExpiresAt      time.Time                 `json:"expires_at"`
 }
 
 type CampaignPuzzle struct {
@@ -79,23 +80,25 @@ type CampaignPuzzlePublic struct {
 }
 
 type CampaignRunResponse struct {
-	Version       int                    `json:"version"`
-	RunID         string                 `json:"run_id"`
-	LevelID       int                    `json:"level_id"`
-	QuestionCount int                    `json:"question_count"`
-	TimeLimitMS   int                    `json:"time_limit_ms"`
-	AllowHint     bool                   `json:"allow_hint"`
-	CreatedAt     time.Time              `json:"created_at"`
-	ExpiresAt     time.Time              `json:"expires_at"`
-	Puzzles       []CampaignPuzzlePublic `json:"puzzles"`
-	Status        string                 `json:"status"`
-	QuestionIndex int                    `json:"question_index"`
-	Score         int                    `json:"score"`
-	ElapsedMS     int                    `json:"elapsed_ms"`
-	Mistakes      int                    `json:"mistakes"`
-	HintsUsed     int                    `json:"hints_used"`
-	BestCombo     int                    `json:"best_combo"`
-	FinishedAt    *time.Time             `json:"finished_at,omitempty"`
+	Version       int                       `json:"version"`
+	RunID         string                    `json:"run_id"`
+	LevelID       int                       `json:"level_id"`
+	QuestionCount int                       `json:"question_count"`
+	TimeLimitMS   int                       `json:"time_limit_ms"`
+	AllowHint     bool                      `json:"allow_hint"`
+	CreatedAt     time.Time                 `json:"created_at"`
+	ExpiresAt     time.Time                 `json:"expires_at"`
+	Puzzles       []CampaignPuzzlePublic    `json:"puzzles"`
+	Questions     []CampaignPuzzlePublic    `json:"questions"`
+	Attempts      []CampaignRunAttemptInput `json:"attempts"`
+	Status        string                    `json:"status"`
+	QuestionIndex int                       `json:"question_index"`
+	Score         int                       `json:"score"`
+	ElapsedMS     int                       `json:"elapsed_ms"`
+	Mistakes      int                       `json:"mistakes"`
+	HintsUsed     int                       `json:"hints_used"`
+	BestCombo     int                       `json:"best_combo"`
+	FinishedAt    *time.Time                `json:"finished_at,omitempty"`
 }
 
 type CampaignRunStartInput struct {
@@ -257,6 +260,7 @@ func (s *Service) SubmitCampaignRun(ctx context.Context, userID uint64, runID st
 	run.HintsUsed = calculated.Hints
 	run.BestCombo = calculated.BestCombo
 	run.FinishedAt = &finishedAt
+	run.Attempts = append([]CampaignRunAttemptInput(nil), input.Attempts...)
 	if stateStore, ok := s.campaignRuns.(CampaignRunStateStore); ok {
 		if err := stateStore.UpdateCampaignRun(ctx, run); err != nil {
 			return CampaignRunSubmissionResponse{}, err
@@ -456,11 +460,15 @@ func publicCampaignRun(run CampaignRun) CampaignRunResponse {
 			TimeLimitMS:  question.TimeLimitMS,
 		}
 	}
+	attempts := run.Attempts
+	if attempts == nil {
+		attempts = make([]CampaignRunAttemptInput, 0)
+	}
 	return CampaignRunResponse{
 		Version: run.Version, RunID: run.RunID, LevelID: run.LevelID,
 		QuestionCount: run.QuestionCount, TimeLimitMS: run.TimeLimitMS,
 		AllowHint: run.AllowHint, CreatedAt: run.CreatedAt, ExpiresAt: run.ExpiresAt,
-		Puzzles: puzzles, Status: runStatusOrRunning(run.Status), QuestionIndex: run.QuestionIndex,
+		Puzzles: puzzles, Questions: puzzles, Attempts: attempts, Status: runStatusOrRunning(run.Status), QuestionIndex: run.QuestionIndex,
 		Score: run.Score, ElapsedMS: run.ElapsedMS, Mistakes: run.Mistakes, HintsUsed: run.HintsUsed, BestCombo: run.BestCombo,
 		FinishedAt: run.FinishedAt,
 	}

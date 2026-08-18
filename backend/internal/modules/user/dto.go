@@ -16,9 +16,10 @@ type UpdateProfileInput struct {
 }
 
 type AvatarUploadResponse struct {
-	AvatarURL string `json:"avatar_url"`
-	AvatarKey string `json:"avatar_key"`
-	Width     int    `json:"width"`
-	Height    int    `json:"height"`
-	Format    string `json:"format"`
+	AvatarURL string          `json:"avatar_url"`
+	AvatarKey string          `json:"avatar_key"`
+	Width     int             `json:"width"`
+	Height    int             `json:"height"`
+	Format    string          `json:"format"`
+	Profile   ProfileResponse `json:"profile"`
 }
