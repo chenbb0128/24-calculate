@@ -23,6 +23,13 @@ paths:
       responses:
         '200': {description: Ready}
         '503': {$ref: '#/components/responses/Error'}
+  /metrics:
+    get:
+      tags: [system]
+      summary: Prometheus-compatible process and HTTP metrics
+      description: Intended for private production monitoring and should not be exposed publicly without access control.
+      responses:
+        '200': {description: Prometheus text exposition}
   /api/v1/auth/wechat-login:
     post:
       tags: [auth]
@@ -184,12 +191,29 @@ paths:
         content:
           application/json: {schema: {$ref: '#/components/schemas/RunSubmission'}}
       responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/friend/history:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: List the authenticated player's friend-match history
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '401': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/friend/history/{match_id}:
+    get:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Read one authenticated player's friend-match record
+      parameters:
+        - {name: match_id, in: path, required: true, schema: {type: string, maxLength: 128}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}}
   /api/v1/player/friend/rooms:
     post:
       tags: [player]
       security: [{bearerAuth: []}]
       summary: Create a casual friend room
-      description: Manual and invite-code rooms are always casual. ranked and season_id request fields are ignored.
+      description: Manual and invite-code rooms use the server-authoritative contract of 10 questions and 180 seconds. Client question-count and time-limit fields are ignored.
       requestBody:
         required: false
         content:
@@ -233,6 +257,18 @@ paths:
       summary: Start a friend room countdown
       parameters: [{$ref: '#/components/parameters/RoomCode'}]
       responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v1/player/friend/rooms/{room_code}/rematch:
+    post:
+      tags: [player]
+      security: [{bearerAuth: []}]
+      summary: Start a new isolated round in an existing friend room
+      description: The room code and members are retained, while round_id, match_id, seed, puzzle contract, readiness, and progress are regenerated. The request is idempotent.
+      parameters: [{$ref: '#/components/parameters/RoomCode'}]
+      requestBody:
+        required: false
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/FriendRematchInput'}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '403': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
   /api/v1/player/friend/rooms/{room_code}/match/progress:
     get:
       tags: [player]
@@ -393,10 +429,15 @@ components:
         avatar: {type: string, maxLength: 500, description: Built-in avatar ID or HTTPS image URL}
     FriendRoomCreateInput:
       type: object
-      description: Ranked rooms cannot be created through this public endpoint; only server-created matchmaking rooms can be ranked.
+      description: Ranked rooms cannot be created through this public endpoint. The server always uses 10 questions and 180 seconds for friend rooms.
       properties:
-        question_count: {type: integer, minimum: 1, maximum: 16, default: 8}
-        time_limit_seconds: {type: integer, minimum: 30, maximum: 600, default: 120}
+        question_count: {type: integer, description: Ignored for compatibility; server value is 10}
+        time_limit_seconds: {type: integer, description: Ignored for compatibility; server value is 180}
+    FriendRematchInput:
+      type: object
+      properties:
+        idempotency_key: {type: string, minLength: 8, maxLength: 128}
+        client_round_id: {type: string, maxLength: 128, description: Legacy client-compatible idempotency field}
     RefreshInput:
       type: object
       required: [refresh_token]

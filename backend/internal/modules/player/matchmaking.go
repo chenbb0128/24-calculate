@@ -396,6 +396,9 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 	if err := s.matchmaking.SaveMatchmakingPair(ctx, current, botTicket); err != nil {
 		return MatchmakingTicket{}, err
 	}
+	if botRooms, ok := s.rooms.(FriendBotRoomStore); ok {
+		_ = botRooms.AddFriendBotRoom(ctx, room.RoomCode)
+	}
 	return current, nil
 }
 

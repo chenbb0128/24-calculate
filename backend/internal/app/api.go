@@ -24,6 +24,9 @@ func RunAPI(ctx context.Context, cfg *config.Config) (runErr error) {
 
 	server := runtime.Server
 	logger := runtime.Logger
+	if runtime.Player != nil {
+		runtime.Player.StartFriendBotBackground(ctx)
+	}
 
 	serverErr := make(chan error, 1)
 	go func() {

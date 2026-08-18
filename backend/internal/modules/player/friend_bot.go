@@ -7,9 +7,8 @@ import (
 )
 
 // advanceFriendBot writes a bot's progress into the same Redis structures as
-// a real player. It is deliberately driven by status polling, which keeps the
-// implementation usable without a separate worker process while retaining
-// one-question-at-a-time server timing.
+// a real player while retaining one-question-at-a-time server timing. It is
+// called by both API requests and the background ticker.
 func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
 	if room.Status != FriendRoomRunning || room.StartAt <= 0 || s.rooms == nil {
 		return nil
@@ -24,7 +23,7 @@ func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
 	if !botFound {
 		return nil
 	}
-	all, err := s.rooms.GetFriendMatchProgress(ctx, room.RoomCode)
+	all, err := s.getFriendMatchProgress(ctx, room)
 	if err != nil {
 		return err
 	}
@@ -34,7 +33,7 @@ func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
 		count = len(room.Puzzles)
 	}
 	if count <= 0 {
-		count = 8
+		count = friendQuestionCount
 	}
 	elapsed := time.Now().UTC().UnixMilli() - room.StartAt
 	if elapsed < 0 {
@@ -51,21 +50,18 @@ func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
 	}
 	finished := solved >= count
 	progress := FriendMatchProgress{
-		UserID: 0, MatchID: room.MatchID, QuestionHash: room.QuestionHash,
+		UserID: 0, RoundID: room.RoundID, MatchID: room.MatchID, QuestionHash: room.QuestionHash,
 		QuestionIndex: maxInt(0, solved-1), Solved: solved,
 		Score: solved * 100, ElapsedMS: int(usedMS), Finished: finished, UpdatedAt: time.Now().UTC(),
 	}
-	if err := s.rooms.SaveFriendMatchProgress(ctx, room.RoomCode, progress); err != nil {
+	if err := s.saveFriendMatchProgress(ctx, room, progress); err != nil {
 		return err
 	}
 	if finished {
-		resultStore, ok := s.rooms.(FriendMatchResultStore)
-		if ok {
-			_ = resultStore.SaveFriendMatchSubmission(ctx, room.RoomCode, FriendMatchSubmissionRecord{
-				UserID: 0, Solved: solved, Score: progress.Score, ElapsedMS: progress.ElapsedMS,
-				CreatedAt: time.Now().UTC(),
-			})
-		}
+		_ = s.saveFriendMatchSubmission(ctx, room, FriendMatchSubmissionRecord{
+			UserID: 0, RoundID: room.RoundID, Solved: solved, Score: progress.Score, ElapsedMS: progress.ElapsedMS,
+			CreatedAt: time.Now().UTC(),
+		})
 		if lifecycle, ok := s.rooms.(FriendRoomLifecycleStore); ok {
 			if err := lifecycle.FinishFriendRoom(ctx, room.RoomCode, room.MatchID); err != nil && !errors.Is(err, ErrFriendRoomStarted) {
 				return err
@@ -73,6 +69,49 @@ func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
 		}
 	}
 	return nil
+}
+
+// StartFriendBotBackground runs the server-side bot clock independently from
+// client polling. It is intentionally attached to the API context so deploys
+// stop it cleanly, and it only touches rooms indexed by the matchmaking bot
+// path.
+func (s *Service) StartFriendBotBackground(ctx context.Context) {
+	index, ok := s.rooms.(FriendBotRoomStore)
+	if !ok {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		advance := func() {
+			roomCodes, err := index.ListFriendBotRooms(ctx)
+			if err != nil {
+				return
+			}
+			for _, roomCode := range roomCodes {
+				room, getErr := s.GetFriendRoom(ctx, roomCode)
+				if getErr != nil {
+					_ = index.RemoveFriendBotRoom(ctx, roomCode)
+					continue
+				}
+				if room.Status == FriendRoomRunning || room.Status == FriendRoomCountdown {
+					_ = s.advanceFriendBot(ctx, room)
+				}
+				if room.Status == FriendRoomFinished || friendRoomIsTerminal(room.Status) {
+					_ = index.RemoveFriendBotRoom(ctx, roomCode)
+				}
+			}
+		}
+		advance()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				advance()
+			}
+		}
+	}()
 }
 
 func botProgressForElapsed(previousSolved int, elapsed int64, count int, seed int64, difficulty int) (int, int64) {

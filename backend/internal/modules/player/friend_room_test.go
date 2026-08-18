@@ -9,9 +9,10 @@ import (
 )
 
 type friendRoomStoreFake struct {
-	created  FriendRoom
-	room     FriendRoom
-	progress map[uint64]FriendMatchProgress
+	created   FriendRoom
+	room      FriendRoom
+	progress  map[uint64]FriendMatchProgress
+	rematches map[string]FriendRoom
 }
 
 func (f *friendRoomStoreFake) CreateFriendRoom(_ context.Context, room FriendRoom) error {
@@ -73,6 +74,24 @@ func (f *friendRoomStoreFake) GetFriendMatchProgress(_ context.Context, _ string
 	return result, nil
 }
 
+func (f *friendRoomStoreFake) RematchFriendRoom(_ context.Context, roomCode string, requesterID uint64, room FriendRoom, idempotencyKey string) (FriendRoom, error) {
+	if roomCode != f.room.RoomCode || !friendRoomHasPlayer(f.room, requesterID) {
+		return FriendRoom{}, ErrFriendRoomNotMember
+	}
+	if f.rematches == nil {
+		f.rematches = make(map[string]FriendRoom)
+	}
+	if replay, ok := f.rematches[idempotencyKey]; ok {
+		return replay, nil
+	}
+	if f.room.Status != FriendRoomFinished {
+		return FriendRoom{}, ErrFriendRoomRematchNotAllowed
+	}
+	f.room = room
+	f.rematches[idempotencyKey] = room
+	return room, nil
+}
+
 func TestCreateFriendRoomBuildsServerRoom(t *testing.T) {
 	store := &friendRoomStoreFake{}
 	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, &leaderboardStore{}, store)
@@ -87,8 +106,49 @@ func TestCreateFriendRoomBuildsServerRoom(t *testing.T) {
 	if room.Status != FriendRoomWaiting || len(room.Players) != 1 || room.Players[0].UserID != 3 {
 		t.Fatalf("room = %#v, want waiting room with owner", room)
 	}
+	if room.Rules.QuestionCount != friendQuestionCount || room.Rules.TimeLimitSeconds != friendTimeLimitSecs || room.RoundID == "" {
+		t.Fatalf("room rules/round = %#v, want fixed 10 questions, 180 seconds and round id", room)
+	}
 	if store.created.RoomCode != room.RoomCode {
 		t.Fatalf("stored room code = %q, want %q", store.created.RoomCode, room.RoomCode)
+	}
+}
+
+func TestRematchFriendRoomKeepsRoomCodeAndIsIdempotent(t *testing.T) {
+	room := newFriendLifecycleRoom()
+	room.Status = FriendRoomFinished
+	room.RoundID = "old-round"
+	room.MatchID = "old-match"
+	room.Rules.QuestionCount = 8
+	room.Rules.TimeLimitSeconds = 120
+	for index := range room.Players {
+		room.Players[index].Ready = true
+	}
+	store := &friendRoomStoreFake{room: room}
+	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, &leaderboardStore{}, store)
+
+	first, err := service.RematchFriendRoom(context.Background(), 3, room.RoomCode, "rematch-001")
+	if err != nil {
+		t.Fatalf("RematchFriendRoom() error = %v", err)
+	}
+	if first.RoomCode != room.RoomCode || first.RoundID == room.RoundID || first.MatchID == room.MatchID || first.Status != FriendRoomWaiting {
+		t.Fatalf("rematched room = %#v, want same code/new round and waiting state", first)
+	}
+	if first.Rules.QuestionCount != friendQuestionCount || first.Rules.TimeLimitSeconds != friendTimeLimitSecs {
+		t.Fatalf("rematched rules = %#v, want fixed rules", first.Rules)
+	}
+	for _, player := range first.Players {
+		if player.Ready {
+			t.Fatalf("rematched player = %#v, want not ready", player)
+		}
+	}
+
+	replay, err := service.RematchFriendRoom(context.Background(), 3, room.RoomCode, "rematch-001")
+	if err != nil {
+		t.Fatalf("replayed RematchFriendRoom() error = %v", err)
+	}
+	if replay.RoundID != first.RoundID || replay.MatchID != first.MatchID {
+		t.Fatalf("replayed room = %#v, want exact same round contract", replay)
 	}
 }
 

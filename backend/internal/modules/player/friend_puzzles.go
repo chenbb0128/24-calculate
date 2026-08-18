@@ -268,7 +268,7 @@ func generateFriendPuzzleContract(roomSeed int64, count int) []FriendPuzzleContr
 
 func generateFriendPuzzleContractExcluding(roomSeed int64, count int, excluded map[string]struct{}) []FriendPuzzleContract {
 	if count <= 0 {
-		count = 8
+		count = friendQuestionCount
 	}
 	if roomSeed < 0 {
 		roomSeed = -roomSeed
