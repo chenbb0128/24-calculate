@@ -92,6 +92,7 @@ func validDailySubmission(run DailyRun) DailyRunSubmissionInput {
 		RunID:           run.RunID,
 		DateKey:         run.DateKey,
 	}
+	questionCount := len(run.Questions)
 	previousScore := 0
 	for index, question := range run.Questions {
 		steps := friendSolveDetailed(question.Numbers, 500)
@@ -112,8 +113,8 @@ func validDailySubmission(run DailyRun) DailyRunSubmissionInput {
 		})
 	}
 	input.Summary = DailyRunSummaryInput{
-		DateKey: run.DateKey, Questions: dailyQuestionCount, Score: previousScore,
-		ElapsedMS: 1200 * dailyQuestionCount, BestCombo: dailyQuestionCount,
+		DateKey: run.DateKey, Questions: questionCount, Score: previousScore,
+		ElapsedMS: 1200 * questionCount, BestCombo: questionCount,
 	}
 	return input
 }
@@ -128,6 +129,41 @@ func TestDailyGenerationHonorsEveryRule(t *testing.T) {
 		for _, question := range questions {
 			if !dailySolutionValid(question.Numbers, question.SolutionSteps, question.Rules) {
 				t.Fatalf("rule %s generated invalid question %#v", rule.ID, question)
+			}
+		}
+	}
+}
+
+func TestDailyGenerationUsesFiveQuestionDifficultyContract(t *testing.T) {
+	for index := 0; index < dailyRuleCount; index++ {
+		rule := dailyRuleForIndex(index)
+		questions := generateDailyRunQuestions("2026-08-16", int64(index+1), rule)
+		if rule.HintCount != 1 || !rule.AllowHint {
+			t.Fatalf("rule %s hint contract = %+v, want one allowed hint", rule.ID, rule)
+		}
+		wantSeconds := 75
+		if rule.TimeBonus {
+			wantSeconds = 55
+		}
+		if rule.TimeLimitSeconds != wantSeconds {
+			t.Fatalf("rule %s time limit = %d, want %d", rule.ID, rule.TimeLimitSeconds, wantSeconds)
+		}
+		if len(questions) != dailyQuestionCount || dailyQuestionCount != 5 {
+			t.Fatalf("rule %s generated %d questions, want five", rule.ID, len(questions))
+		}
+		for stage, question := range questions {
+			spec := dailyQuestionSpecForRule(rule, stage)
+			if question.Difficulty != spec.Difficulty {
+				t.Fatalf("rule %s stage %d difficulty = %q, want %q", rule.ID, stage, question.Difficulty, spec.Difficulty)
+			}
+			if !dailySolutionCountMatches(question.SolutionCount, spec) {
+				t.Fatalf("rule %s stage %d solution count = %d, want %+v", rule.ID, stage, question.SolutionCount, spec)
+			}
+			if maxNumber(question.Numbers) > rule.MaxDigit {
+				t.Fatalf("rule %s stage %d has digit above max %d: %#v", rule.ID, stage, rule.MaxDigit, question.Numbers)
+			}
+			if question.TimeLimitMS != wantSeconds*1000 {
+				t.Fatalf("rule %s stage %d time limit = %d, want %d", rule.ID, stage, question.TimeLimitMS, wantSeconds*1000)
 			}
 		}
 	}
@@ -215,6 +251,16 @@ func TestValidateDailyRunRejectsForgedScore(t *testing.T) {
 	input.Summary.Score++
 	if _, err := validateDailyRunSubmission(run, input); err == nil {
 		t.Fatal("validateDailyRunSubmission() error = nil for forged score")
+	}
+}
+
+func TestValidateDailyRunAcceptsLegacyThreeQuestionRun(t *testing.T) {
+	run := testDailyRun()
+	run.QuestionCount = dailyLegacyQuestionCount
+	run.Questions = run.Questions[:dailyLegacyQuestionCount]
+	input := validDailySubmission(run)
+	if _, err := validateDailyRunSubmission(run, input); err != nil {
+		t.Fatalf("validateDailyRunSubmission() rejected legacy run: %v", err)
 	}
 }
 

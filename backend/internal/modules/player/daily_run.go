@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	dailyRunProtocolVersion = 1
-	dailyRunTTL             = 2 * time.Hour
-	dailyQuestionCount      = 3
-	dailyRuleCount          = 8
+	dailyRunProtocolVersion  = 1
+	dailyRunTTL              = 2 * time.Hour
+	dailyQuestionCount       = 5
+	dailyLegacyQuestionCount = 3
+	dailyRuleCount           = 8
 )
 
 var ErrDailyRunNotFound = errors.New("daily run not found")
@@ -77,6 +78,7 @@ type DailyPuzzle struct {
 	PuzzleID      string                    `json:"puzzle_id"`
 	Numbers       []int                     `json:"numbers"`
 	Rules         FriendPuzzleRules         `json:"rules"`
+	Difficulty    string                    `json:"difficulty"`
 	QuestionHash  string                    `json:"question_hash"`
 	SourceSeed    string                    `json:"source_seed"`
 	SolutionCount int                       `json:"solution_count"`
@@ -89,6 +91,7 @@ type DailyPuzzlePublic struct {
 	PuzzleID     string            `json:"puzzle_id"`
 	Numbers      []int             `json:"numbers"`
 	Rules        FriendPuzzleRules `json:"rules"`
+	Difficulty   string            `json:"difficulty"`
 	QuestionHash string            `json:"question_hash"`
 	TimeLimitMS  int               `json:"time_limit_ms"`
 }
@@ -334,10 +337,11 @@ type dailyRunCalculation struct {
 }
 
 func validateDailyRunSubmission(run DailyRun, input DailyRunSubmissionInput) (dailyRunCalculation, error) {
-	if run.Version != dailyRunProtocolVersion || run.QuestionCount != dailyQuestionCount || len(run.Questions) != dailyQuestionCount {
+	questionCount := run.QuestionCount
+	if run.Version != dailyRunProtocolVersion || !isSupportedDailyQuestionCount(questionCount) || len(run.Questions) != questionCount {
 		return dailyRunCalculation{}, apperror.BadRequest("每日挑战题目合同无效", nil)
 	}
-	if len(input.Attempts) != dailyQuestionCount {
+	if len(input.Attempts) != questionCount {
 		return dailyRunCalculation{}, apperror.BadRequest("每日挑战必须完成全部题目", nil)
 	}
 	previousScore, previousCombo, previousMistakes, previousHints := 0, 0, 0, 0
@@ -359,7 +363,7 @@ func validateDailyRunSubmission(run DailyRun, input DailyRunSubmissionInput) (da
 		if attempt.Mistakes < previousMistakes || attempt.Mistakes > 10000 || attempt.Hints < previousHints || attempt.Hints < 0 || attempt.Hints > run.Rule.HintCount {
 			return dailyRunCalculation{}, apperror.BadRequest("每日挑战答题记录无效", nil)
 		}
-		if attempt.Combo != previousCombo+1 || attempt.Combo < 1 || attempt.Combo > dailyQuestionCount {
+		if attempt.Combo != previousCombo+1 || attempt.Combo < 1 || attempt.Combo > questionCount {
 			return dailyRunCalculation{}, apperror.BadRequest("每日挑战连击记录无效", nil)
 		}
 		expectedDelta := dailyScoreDelta(question.TimeLimitMS, attempt.ElapsedMS, previousCombo, attempt.Mistakes)
@@ -385,6 +389,10 @@ func validateDailyRunSubmission(run DailyRun, input DailyRunSubmissionInput) (da
 	return calculated, nil
 }
 
+func isSupportedDailyQuestionCount(count int) bool {
+	return count == dailyQuestionCount || count == dailyLegacyQuestionCount
+}
+
 func dailyAttemptOperators(attempts []DailyRunAttemptInput) []string {
 	operators := make([]string, 0)
 	for _, attempt := range attempts {
@@ -401,7 +409,7 @@ func dailyScoreDelta(timeLimitMS, elapsedMS, previousCombo, mistakes int) int {
 
 func dailyRuleForIndex(index int) DailyRunRule {
 	rules := []DailyRunRule{
-		{ID: "no_division", Title: "今日规则：禁用除法", Text: "三题都不能使用 ÷，全部答对可领取完整奖励。", MaxDigit: 9, ForbiddenOperator: "÷"},
+		{ID: "no_division", Title: "今日规则：禁用除法", Text: "五题都不能使用 ÷，全部答对可领取完整奖励。", MaxDigit: 9, ForbiddenOperator: "÷"},
 		{ID: "no_undo", Title: "今日规则：一步到底", Text: "今天不能撤销，每一步都要先想清楚。", MaxDigit: 9, HintCount: 2},
 		{ID: "big_digits", Title: "今日规则：进阶数字", Text: "题目会出现 10～13，观察数字组合再开始。", MaxDigit: 13},
 		{ID: "must_subtract", Title: "今日规则：必须减法", Text: "每题至少使用一次减法，才算完成挑战。", MaxDigit: 9, RequiredOperator: "-"},
@@ -411,13 +419,14 @@ func dailyRuleForIndex(index int) DailyRunRule {
 		{ID: "quick_start", Title: "今日规则：快速出手", Text: "每题限时更短，连续答对可以获得额外分数。", MaxDigit: 13, TimeBonus: true},
 	}
 	rule := rules[((index%len(rules))+len(rules))%len(rules)]
-	rule.TimeLimitSeconds = 150
+	rule.TimeLimitSeconds = 75
 	if rule.TimeBonus {
-		rule.TimeLimitSeconds = 105
+		rule.TimeLimitSeconds = 55
 	}
-	if rule.HintCount == 0 {
-		rule.HintCount = 1
-	}
+	// Hints are a run-level budget. Keep one hint for every rule so the
+	// challenge remains solvable without making the score depend on ads or
+	// repeated client-side hint actions.
+	rule.HintCount = 1
 	rule.AllowHint = true
 	rule.AllowNegativeResult = false
 	return rule
@@ -456,44 +465,140 @@ func generateDailyRunQuestions(dateKey string, seed int64, rule DailyRunRule) []
 	result := make([]DailyPuzzle, 0, dailyQuestionCount)
 	candidates := dailyCandidatePool()
 	start := int(seed % int64(len(candidates)))
-	tryNumbers := func(numbers []int) {
+	rules := dailyPuzzleRules(rule)
+	solutionCache := make(map[string][]friendSolution, len(candidates))
+	verifiedSolutions := func(numbers []int) []friendSolution {
+		key := friendNumberKey(numbers)
+		if solutions, exists := solutionCache[key]; exists {
+			return solutions
+		}
+		solutions := dailyVerifiedSolutions(numbers, rules, 500)
+		solutionCache[key] = solutions
+		return solutions
+	}
+	tryNumbers := func(numbers []int, stage int, strict bool) bool {
 		if len(result) >= dailyQuestionCount {
-			return
+			return true
 		}
 		key := friendNumberKey(numbers)
 		if _, exists := used[key]; exists {
-			return
+			return false
 		}
-		solutions := friendSolveDetailed(numbers, 500)
-		rules := dailyPuzzleRules(rule)
-		for _, solution := range solutions {
-			if !dailySolutionValid(numbers, solution.steps, rules) {
-				continue
+		verified := verifiedSolutions(numbers)
+		if len(verified) == 0 {
+			return false
+		}
+		spec := dailyQuestionSpecForRule(rule, stage)
+		if strict && !dailySolutionCountMatches(len(verified), spec) {
+			return false
+		}
+		difficulty := spec.Difficulty
+		if !strict {
+			difficulty = dailyDifficultyForSolutionCount(len(verified))
+		}
+		used[key] = struct{}{}
+		result = append(result, DailyPuzzle{
+			PuzzleID: fmt.Sprintf("D%s-Q%02d", strings.ReplaceAll(dateKey, "-", ""), len(result)+1),
+			Numbers:  append([]int(nil), numbers...), Rules: rules, Difficulty: difficulty,
+			QuestionHash: puzzleQuestionHash(numbers, rules, seed, len(result)),
+			SourceSeed:   fmt.Sprintf("%d", seed), SolutionCount: len(verified),
+			ShortestSteps: shortestSolutionSteps(verified), TimeLimitMS: rule.TimeLimitSeconds * 1000,
+			SolutionSteps: append([]FriendMatchSolutionStep(nil), verified[0].steps...),
+		})
+		return true
+	}
+	for stage := 0; stage < dailyQuestionCount; stage++ {
+		for offset := 0; offset < len(candidates) && len(result) <= stage; offset++ {
+			numbers := append([]int(nil), candidates[(start+offset)%len(candidates)]...)
+			if maxNumber(numbers) <= rule.MaxDigit {
+				tryNumbers(numbers, stage, true)
 			}
-			used[key] = struct{}{}
-			result = append(result, DailyPuzzle{
-				PuzzleID: fmt.Sprintf("D%s-Q%02d", strings.ReplaceAll(dateKey, "-", ""), len(result)+1),
-				Numbers:  append([]int(nil), numbers...), Rules: rules,
-				QuestionHash:  puzzleQuestionHash(numbers, rules, seed, len(result)),
-				SourceSeed:    fmt.Sprintf("%d", seed),
-				SolutionCount: len(solutions), ShortestSteps: shortestSolutionSteps(solutions),
-				TimeLimitMS:   rule.TimeLimitSeconds * 1000,
-				SolutionSteps: append([]FriendMatchSolutionStep(nil), solution.steps...),
-			})
-			return
+		}
+		for attempts := 0; len(result) <= stage && attempts < 5000; attempts++ {
+			numbers := []int{random.int(1, rule.MaxDigit), random.int(1, rule.MaxDigit), random.int(1, rule.MaxDigit), random.int(1, rule.MaxDigit)}
+			tryNumbers(numbers, stage, true)
 		}
 	}
-	for offset := 0; offset < len(candidates) && len(result) < dailyQuestionCount; offset++ {
-		numbers := append([]int(nil), candidates[(start+offset)%len(candidates)]...)
-		if maxNumber(numbers) <= rule.MaxDigit {
-			tryNumbers(numbers)
+	// A constrained operator rule can have fewer exact-difficulty candidates
+	// than the full pool. Fill only the missing stages with already verified
+	// questions, while retaining the deterministic order and uniqueness.
+	for stage := len(result); stage < dailyQuestionCount; stage++ {
+		for offset := 0; offset < len(candidates) && len(result) <= stage; offset++ {
+			numbers := append([]int(nil), candidates[(start+offset)%len(candidates)]...)
+			if maxNumber(numbers) <= rule.MaxDigit {
+				tryNumbers(numbers, stage, false)
+			}
 		}
-	}
-	for attempts := 0; len(result) < dailyQuestionCount && attempts < 5000; attempts++ {
-		numbers := []int{random.int(1, rule.MaxDigit), random.int(1, rule.MaxDigit), random.int(1, rule.MaxDigit), random.int(1, rule.MaxDigit)}
-		tryNumbers(numbers)
+		for attempts := 0; len(result) <= stage && attempts < 5000; attempts++ {
+			numbers := []int{random.int(1, rule.MaxDigit), random.int(1, rule.MaxDigit), random.int(1, rule.MaxDigit), random.int(1, rule.MaxDigit)}
+			tryNumbers(numbers, stage, false)
+		}
 	}
 	return result
+}
+
+type dailyQuestionSpec struct {
+	Difficulty   string
+	MinSolutions int
+	MaxSolutions int
+}
+
+func dailyQuestionSpecFor(index int) dailyQuestionSpec {
+	switch {
+	case index <= 0:
+		return dailyQuestionSpec{Difficulty: "warmup", MinSolutions: 8, MaxSolutions: 500}
+	case index == 1:
+		return dailyQuestionSpec{Difficulty: "advanced", MinSolutions: 4, MaxSolutions: 7}
+	case index == 2:
+		return dailyQuestionSpec{Difficulty: "challenge", MinSolutions: 2, MaxSolutions: 3}
+	case index == 3:
+		return dailyQuestionSpec{Difficulty: "hard", MinSolutions: 1, MaxSolutions: 2}
+	default:
+		return dailyQuestionSpec{Difficulty: "expert", MinSolutions: 1, MaxSolutions: 1}
+	}
+}
+
+func dailyQuestionSpecForRule(rule DailyRunRule, index int) dailyQuestionSpec {
+	spec := dailyQuestionSpecFor(index)
+	// With multiplication forbidden, the valid integer solution space has a
+	// different distribution. Reserve the narrower 4..5 solution band for the
+	// final stage instead of silently falling back to an easy question.
+	if rule.ID == "no_multiply" && index >= 3 {
+		spec.MinSolutions = 4
+		spec.MaxSolutions = 7
+		if index >= 4 {
+			spec.MaxSolutions = 5
+		}
+	}
+	return spec
+}
+
+func dailySolutionCountMatches(count int, spec dailyQuestionSpec) bool {
+	return count >= spec.MinSolutions && count <= spec.MaxSolutions
+}
+
+func dailyVerifiedSolutions(numbers []int, rules FriendPuzzleRules, maxSolutions int) []friendSolution {
+	raw := friendSolveDetailed(numbers, maxSolutions)
+	verified := make([]friendSolution, 0, len(raw))
+	for _, solution := range raw {
+		if dailySolutionValid(numbers, solution.steps, rules) {
+			verified = append(verified, solution)
+		}
+	}
+	return verified
+}
+
+func dailyDifficultyForSolutionCount(count int) string {
+	switch {
+	case count >= 8:
+		return "warmup"
+	case count >= 4:
+		return "advanced"
+	case count >= 2:
+		return "challenge"
+	default:
+		return "hard"
+	}
 }
 
 func dailyCandidatePool() [][]int {
@@ -518,7 +623,8 @@ func publicDailyRun(run DailyRun) DailyRunResponse {
 	for index, question := range run.Questions {
 		puzzles[index] = DailyPuzzlePublic{
 			PuzzleID: question.PuzzleID, Numbers: append([]int(nil), question.Numbers...),
-			Rules: question.Rules, QuestionHash: question.QuestionHash, TimeLimitMS: question.TimeLimitMS,
+			Rules: question.Rules, Difficulty: question.Difficulty,
+			QuestionHash: question.QuestionHash, TimeLimitMS: question.TimeLimitMS,
 		}
 	}
 	attempts := run.Attempts
@@ -527,7 +633,7 @@ func publicDailyRun(run DailyRun) DailyRunResponse {
 	}
 	return DailyRunResponse{
 		Version: run.Version, RunID: run.RunID, DateKey: run.DateKey, Seed: run.Seed,
-		Title: "每日挑战 · 三题连战", RuleID: run.Rule.ID, RuleTitle: run.Rule.Title,
+		Title: dailyChallengeTitle(run.QuestionCount), RuleID: run.Rule.ID, RuleTitle: run.Rule.Title,
 		RuleText: run.Rule.Text, RuleIndex: int(run.Seed % dailyRuleCount), TimeBonus: run.Rule.TimeBonus,
 		RequiredOperator: run.Rule.RequiredOperator, ForbiddenOperator: run.Rule.ForbiddenOperator,
 		MaxDigit: run.Rule.MaxDigit, AllowNegativeResult: run.Rule.AllowNegativeResult,
@@ -537,6 +643,13 @@ func publicDailyRun(run DailyRun) DailyRunResponse {
 		Status: runStatusOrRunning(run.Status), QuestionIndex: run.QuestionIndex, Score: run.Score, ElapsedMS: run.ElapsedMS,
 		Mistakes: run.Mistakes, HintsUsed: run.HintsUsed, BestCombo: run.BestCombo, FinishedAt: run.FinishedAt,
 	}
+}
+
+func dailyChallengeTitle(questionCount int) string {
+	if questionCount == dailyLegacyQuestionCount {
+		return "每日挑战 · 三题连战"
+	}
+	return "每日挑战 · 五题连战"
 }
 
 func dailyDateSeed(dateKey string) (int64, error) {
