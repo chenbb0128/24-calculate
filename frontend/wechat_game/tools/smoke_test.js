@@ -171,7 +171,8 @@ function testCampaignStaticFlow() {
   pendingLogin.isCampaignLevelUnlocked = () => true;
   pendingLogin.beginSession = function beginSessionForPendingLoginTest() { this.screen = 'game'; };
   pendingLogin.startCampaign(0);
-  check(pendingLogin.screen === 'game', '登录尚未完成时点击第一关不应被后端状态阻塞');
+  check(pendingLogin.screen === 'levels' && pendingLogin.campaignStartRequest && pendingLogin.campaignStartRequest.index === 0,
+    '正式环境登录尚未完成时应排队闯关，不能切到本地结算');
 
   const fallback = Object.create(GameApp.prototype);
   Object.assign(fallback, {
