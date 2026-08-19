@@ -41,6 +41,10 @@ type TokenStore interface {
 	AllowLogin(ctx context.Context, ip string, limit int64, window time.Duration) (bool, error)
 }
 
+type AccessTokenRevocationStore interface {
+	RevokeAccessToken(context.Context, string, time.Duration) error
+}
+
 type WelcomeEnqueuer interface {
 	EnqueueUserWelcome(ctx context.Context, userID uint64) error
 }
@@ -396,6 +400,17 @@ func (s *Service) Refresh(ctx context.Context, input RefreshInput) (TokenRespons
 	return pair, nil
 }
 
+func (s *Service) ParseAccessToken(value string) (*jwtplatform.Claims, error) {
+	claims, err := s.jwt.ParseAccessToken(strings.TrimSpace(value))
+	if errors.Is(err, jwtplatform.ErrTokenExpired) {
+		return nil, ExpiredToken(err)
+	}
+	if err != nil {
+		return nil, InvalidToken(err)
+	}
+	return claims, nil
+}
+
 func (s *Service) Logout(ctx context.Context, input LogoutInput) error {
 	claims, err := s.jwt.ParseRefreshToken(strings.TrimSpace(input.RefreshToken))
 	if errors.Is(err, jwtplatform.ErrTokenExpired) {
@@ -404,8 +419,33 @@ func (s *Service) Logout(ctx context.Context, input LogoutInput) error {
 	if err != nil {
 		return InvalidToken(err)
 	}
+	return s.tokens.RevokeRefreshToken(ctx, claims.ID)
+}
+
+func (s *Service) LogoutWithAccess(ctx context.Context, accessClaims *jwtplatform.Claims, input LogoutInput) error {
+	if accessClaims == nil || accessClaims.UserID == 0 || strings.TrimSpace(accessClaims.ID) == "" {
+		return InvalidToken(nil)
+	}
+	claims, err := s.jwt.ParseRefreshToken(strings.TrimSpace(input.RefreshToken))
+	if errors.Is(err, jwtplatform.ErrTokenExpired) {
+		return ExpiredToken(err)
+	}
+	if err != nil {
+		return InvalidToken(err)
+	}
+	if claims.UserID != accessClaims.UserID {
+		return InvalidToken(nil)
+	}
 	if err := s.tokens.RevokeRefreshToken(ctx, claims.ID); err != nil {
 		return err
+	}
+	if revoker, ok := s.tokens.(AccessTokenRevocationStore); ok && accessClaims.ExpiresAt != nil {
+		ttl := time.Until(accessClaims.ExpiresAt.Time)
+		if ttl > 0 {
+			if err := revoker.RevokeAccessToken(ctx, accessClaims.ID, ttl); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

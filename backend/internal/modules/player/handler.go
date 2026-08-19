@@ -66,18 +66,117 @@ func (h *Handler) Rank(c *gin.Context) {
 	response.Success(c, http.StatusOK, result)
 }
 
+func (h *Handler) RankedSummary(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	result, err := h.service.GetRankedSummary(c.Request.Context(), userID, c.Query("season_id"))
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+func (h *Handler) RankedMatches(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	result, err := h.service.ListRankedMatches(c.Request.Context(), userID, c.Query("season_id"), c.Query("cursor"), limit)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+func (h *Handler) RankedMatch(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	result, err := h.service.GetRankedMatch(c.Request.Context(), userID, c.Param("match_id"))
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+func (h *Handler) FriendMatchHistory(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	result, err := h.service.ListFriendMatchHistory(c.Request.Context(), userID, c.Query("cursor"), limit)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+func (h *Handler) FriendMatchHistoryDetail(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	result, err := h.service.GetFriendMatchHistory(c.Request.Context(), userID, c.Param("match_id"))
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
 func (h *Handler) StartEndlessRun(c *gin.Context) {
 	userID, err := middleware.UserID(c)
 	if err != nil {
 		response.WriteError(c, err)
 		return
 	}
-	result, err := h.service.StartEndlessRun(c.Request.Context(), userID)
+	var input EndlessRunStartInput
+	if err := c.ShouldBindJSON(&input); err != nil && err != io.EOF {
+		response.WriteError(c, apperror.BadRequest("request body is invalid", err))
+		return
+	}
+	if input.IdempotencyKey == "" {
+		input.IdempotencyKey = c.GetHeader("Idempotency-Key")
+	}
+	result, err := h.service.StartEndlessRunWithInput(c.Request.Context(), userID, input)
 	if err != nil {
 		response.WriteError(c, err)
 		return
 	}
 	response.Success(c, http.StatusCreated, result)
+}
+
+func (h *Handler) NextEndlessQuestion(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	var input EndlessNextQuestionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.WriteError(c, apperror.BadRequest("request body is invalid", err))
+		return
+	}
+	result, err := h.service.NextEndlessQuestion(c.Request.Context(), userID, c.Param("run_id"), input)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
 }
 
 func (h *Handler) SubmitEndlessRun(c *gin.Context) {
@@ -323,7 +422,7 @@ func (h *Handler) LeaveFriendRoom(c *gin.Context) {
 		response.WriteError(c, err)
 		return
 	}
-	response.NoContent(c)
+	response.Success(c, http.StatusOK, map[string]bool{"left": true})
 }
 
 func (h *Handler) ReadyFriendRoom(c *gin.Context) {
@@ -352,6 +451,29 @@ func (h *Handler) StartFriendRoom(c *gin.Context) {
 		return
 	}
 	result, err := h.service.StartFriendRoom(c.Request.Context(), userID, c.Param("room_code"))
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+func (h *Handler) RematchFriendRoom(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	var input FriendRoomRematchInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.WriteError(c, apperror.BadRequest("request body is invalid", err))
+		return
+	}
+	idempotencyKey := input.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = input.ClientRoundID
+	}
+	result, err := h.service.RematchFriendRoom(c.Request.Context(), userID, c.Param("room_code"), idempotencyKey)
 	if err != nil {
 		response.WriteError(c, err)
 		return

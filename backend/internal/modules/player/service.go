@@ -37,31 +37,46 @@ type Store interface {
 }
 
 type Service struct {
-	profiles        ProfileReader
-	store           Store
-	rooms           FriendRoomStore
-	endlessRuns     EndlessRunStore
-	campaignRuns    CampaignRunStore
-	dailyRuns       DailyRunStore
-	matchmaking     MatchmakingStore
-	locks           DistributedLockStore
-	rankStore       RankStore
-	dailySeedSecret string
-	matchmakingWait time.Duration
-	rankSeason      string
+	profiles               ProfileReader
+	store                  Store
+	rooms                  FriendRoomStore
+	endlessRuns            EndlessRunStore
+	campaignRuns           CampaignRunStore
+	dailyRuns              DailyRunStore
+	matchmaking            MatchmakingStore
+	locks                  DistributedLockStore
+	rankStore              RankStore
+	rankHistory            RankHistoryStore
+	friendHistory          FriendMatchHistoryStore
+	dailySeedSecret        string
+	campaignContentVersion string
+	campaignContentSecret  string
+	matchmakingWait        time.Duration
+	rankSeason             string
 }
 
 const defaultMatchmakingWait = 15 * time.Second
 
+const (
+	defaultCampaignContentVersion = "v1"
+	defaultCampaignContentSecret  = "development-campaign-content"
+)
+
 func NewService(profiles ProfileReader, store Store) *Service {
-	return &Service{profiles: profiles, store: store, matchmakingWait: defaultMatchmakingWait}
+	return &Service{
+		profiles: profiles, store: store, matchmakingWait: defaultMatchmakingWait,
+		campaignContentVersion: defaultCampaignContentVersion,
+		campaignContentSecret:  defaultCampaignContentSecret,
+	}
 }
 
 func NewServiceWithRoomsAndEndless(profiles ProfileReader, store Store, rooms FriendRoomStore, endlessRuns EndlessRunStore) *Service {
 	service := &Service{
 		profiles: profiles, store: store, rooms: rooms, endlessRuns: endlessRuns,
 		campaignRuns: campaignRunStoreFrom(endlessRuns), dailyRuns: dailyRunStoreFrom(endlessRuns), matchmaking: matchmakingStoreFrom(endlessRuns),
-		matchmakingWait: defaultMatchmakingWait,
+		matchmakingWait:        defaultMatchmakingWait,
+		campaignContentVersion: defaultCampaignContentVersion,
+		campaignContentSecret:  defaultCampaignContentSecret,
 	}
 	if locks, ok := rooms.(DistributedLockStore); ok {
 		service.locks = locks
@@ -93,6 +108,26 @@ func (s *Service) SetDailySeedSecret(secret string) {
 	}
 }
 
+// SetCampaignContent configures the deterministic campaign question source.
+// The production config validator requires an explicit secret. The stable
+// development fallback keeps unit tests and local development deterministic
+// without ever depending on a user, run, clock, or random value.
+func (s *Service) SetCampaignContent(version, secret string) {
+	if s == nil {
+		return
+	}
+	version = strings.TrimSpace(version)
+	if version == "" {
+		version = defaultCampaignContentVersion
+	}
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		secret = defaultCampaignContentSecret
+	}
+	s.campaignContentVersion = version
+	s.campaignContentSecret = secret
+}
+
 func (s *Service) SetMatchmakingWait(wait time.Duration) {
 	if s != nil && wait > 0 {
 		s.matchmakingWait = wait
@@ -102,6 +137,15 @@ func (s *Service) SetMatchmakingWait(wait time.Duration) {
 func (s *Service) SetRankStore(rankStore RankStore) {
 	if s != nil {
 		s.rankStore = rankStore
+		if history, ok := rankStore.(RankHistoryStore); ok {
+			s.rankHistory = history
+		}
+	}
+}
+
+func (s *Service) SetFriendHistoryStore(history FriendMatchHistoryStore) {
+	if s != nil {
+		s.friendHistory = history
 	}
 }
 

@@ -65,6 +65,7 @@ type FriendMatchSubmissionInput struct {
 type FriendMatchSubmissionResponse struct {
 	Mode                string             `json:"mode"`
 	MatchID             string             `json:"match_id"`
+	RoundID             string             `json:"round_id"`
 	Score               int                `json:"score"`
 	Questions           int                `json:"questions"`
 	ElapsedMS           int                `json:"elapsed_ms"`
@@ -95,6 +96,14 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 	if !friendRoomHasPlayer(room, userID) {
 		return FriendMatchSubmissionResponse{}, apperror.New(10004, 403, "当前用户不属于该好友房间", nil)
 	}
+	if room.Status == FriendRoomRunning {
+		if err := s.advanceFriendBot(ctx, room); err != nil {
+			return FriendMatchSubmissionResponse{}, err
+		}
+		if latest, refreshErr := s.GetFriendRoom(ctx, room.RoomCode); refreshErr == nil {
+			room = latest
+		}
+	}
 	if room.MatchID == "" || (room.Status != FriendRoomRunning && room.Status != FriendRoomFinished) {
 		return FriendMatchSubmissionResponse{}, mapFriendRoomError(errForFriendRoomStatus(room.Status))
 	}
@@ -115,33 +124,39 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 	rankSettlement := (*RankSettlementResult)(nil)
 	idempotencyReplayed := false
 	currentRecord := FriendMatchSubmissionRecord{
-		UserID: userID, Solved: calculated.Solved, Score: calculated.Score,
+		UserID: userID, RoundID: room.RoundID, Solved: calculated.Solved, Score: calculated.Score,
 		Mistakes: calculated.Mistakes, ElapsedMS: calculated.ElapsedMS,
 		IdempotencyKey: input.IdempotencyKey, CreatedAt: time.Now().UTC(),
 	}
-	if resultStore, ok := s.rooms.(FriendMatchResultStore); ok {
-		submissions, err := resultStore.GetFriendMatchSubmissions(ctx, room.RoomCode)
+	if friendMatchResultStoreAvailable(s.rooms) {
+		submissions, err := s.getFriendMatchSubmissions(ctx, room)
 		if err != nil {
 			return FriendMatchSubmissionResponse{}, err
 		}
 		if existing, exists := submissions[userID]; exists {
-			if existing.IdempotencyKey != input.IdempotencyKey {
+			if existing.IdempotencyKey != input.IdempotencyKey && (!strings.HasPrefix(existing.IdempotencyKey, "auto:") || room.Status != FriendRoomFinished) {
 				return FriendMatchSubmissionResponse{}, apperror.New(10003, 409, "该玩家已经提交过本场对局", ErrFriendMatchSubmissionAlreadyExists)
 			}
 			currentRecord = existing
 			idempotencyReplayed = true
-		} else if err := resultStore.SaveFriendMatchSubmission(ctx, room.RoomCode, currentRecord); err != nil {
+		} else if err := s.saveFriendMatchSubmission(ctx, room, currentRecord); err != nil {
 			if !errors.Is(err, ErrFriendMatchSubmissionAlreadyExists) {
 				return FriendMatchSubmissionResponse{}, err
 			}
 			idempotencyReplayed = true
 		}
-		submissions, err = resultStore.GetFriendMatchSubmissions(ctx, room.RoomCode)
+		submissions, err = s.getFriendMatchSubmissions(ctx, room)
 		if err != nil {
 			return FriendMatchSubmissionResponse{}, err
 		}
 		if stored, exists := submissions[userID]; exists {
 			currentRecord = stored
+		}
+		if currentRecord.Solved >= friendQuestionCountForRoom(room) || room.Status == FriendRoomFinished {
+			submissions, err = s.ensureImmediateFriendSubmissions(ctx, room, userID, submissions)
+			if err != nil {
+				return FriendMatchSubmissionResponse{}, err
+			}
 		}
 		if len(submissions) >= 2 {
 			var opponent FriendMatchSubmissionRecord
@@ -191,6 +206,7 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 		Metadata: map[string]any{
 			"protocol_version":  input.ProtocolVersion,
 			"match_id":          input.MatchID,
+			"round_id":          room.RoundID,
 			"question_hash":     input.QuestionHash,
 			"attempt_count":     len(input.Attempts),
 			"player_mistakes":   input.Summary.PlayerMistakes,
@@ -203,6 +219,7 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 	response := FriendMatchSubmissionResponse{
 		Mode:                leaderboard.Mode,
 		MatchID:             room.MatchID,
+		RoundID:             room.RoundID,
 		Score:               leaderboard.Score,
 		Questions:           leaderboard.Questions,
 		ElapsedMS:           leaderboard.ElapsedMS,
@@ -238,14 +255,77 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 	return response, nil
 }
 
+// ensureImmediateFriendSubmissions closes a round as soon as one player has a
+// fully validated result. A disconnected opponent is settled from the last
+// server-validated progress; unvalidated client-only heartbeats never become
+// an authoritative score.
+func (s *Service) ensureImmediateFriendSubmissions(ctx context.Context, room FriendRoom, currentUserID uint64, submissions map[uint64]FriendMatchSubmissionRecord) (map[uint64]FriendMatchSubmissionRecord, error) {
+	if len(submissions) >= len(room.Players) || len(room.Players) < 2 {
+		return submissions, nil
+	}
+	progress, err := s.getFriendMatchProgress(ctx, room)
+	if err != nil {
+		return nil, err
+	}
+	questionCount := friendQuestionCountForRoom(room)
+	timeLimitMS := friendTimeLimitForRoom(room) * 1000
+	serverElapsed := 0
+	if room.StartAt > 0 {
+		serverElapsed = int(time.Since(time.UnixMilli(room.StartAt)).Milliseconds())
+		serverElapsed = maxInt(0, minInt(serverElapsed, timeLimitMS))
+	}
+	for _, player := range room.Players {
+		if player.UserID == currentUserID {
+			continue
+		}
+		if _, exists := submissions[player.UserID]; exists {
+			continue
+		}
+		record := FriendMatchSubmissionRecord{
+			UserID: player.UserID, RoundID: room.RoundID,
+			ElapsedMS: serverElapsed, IdempotencyKey: "auto:" + roomRoundID(room) + ":" + strconv.FormatUint(player.UserID, 10), CreatedAt: time.Now().UTC(),
+		}
+		if current, exists := progress[player.UserID]; exists && current.Validated {
+			record.Solved = minInt(questionCount, maxInt(0, current.Solved))
+			record.Score = maxInt(0, current.Score)
+			record.Mistakes = maxInt(0, current.Mistakes)
+			record.ElapsedMS = maxInt(0, minInt(timeLimitMS, current.ElapsedMS))
+		}
+		// A bot has a server clocked progression even if nobody polled it. We
+		// calculate its final state from the same one-question-at-a-time plan.
+		if player.UserID == 0 {
+			record.Solved, record.ElapsedMS = friendBotFinalState(room, serverElapsed)
+			record.Score = record.Solved * 100
+		}
+		if err := s.saveFriendMatchSubmission(ctx, room, record); err != nil && !errors.Is(err, ErrFriendMatchSubmissionAlreadyExists) {
+			return nil, err
+		}
+	}
+	return s.getFriendMatchSubmissions(ctx, room)
+}
+
+func friendBotFinalState(room FriendRoom, elapsedMS int) (int, int) {
+	count := friendQuestionCountForRoom(room)
+	difficulty := int(absMatchmakingInt64(room.RoomSeed) % 3)
+	solved, used := 0, int64(0)
+	for solved < count {
+		nextSolved, nextUsed := botProgressForElapsed(solved, int64(elapsedMS), count, room.RoomSeed, difficulty)
+		if nextSolved <= solved {
+			break
+		}
+		solved, used = nextSolved, nextUsed
+	}
+	return solved, int(used)
+}
+
 func validateFriendMatchSubmission(room FriendRoom, input FriendMatchSubmissionInput) (friendMatchCalculation, error) {
 	questionCount := room.Rules.QuestionCount
 	if questionCount <= 0 {
-		questionCount = 8
+		questionCount = friendQuestionCount
 	}
 	timeLimit := room.Rules.TimeLimitSeconds
 	if timeLimit <= 0 {
-		timeLimit = 120
+		timeLimit = friendTimeLimitSecs
 	}
 	if input.ProtocolVersion != friendMatchProtocolVersion || input.Action != "submitFriendMatch" || input.ClientAuthoritative {
 		return friendMatchCalculation{}, apperror.BadRequest("friend match protocol is invalid", nil)
@@ -332,7 +412,7 @@ func validateFriendMatchSubmission(room FriendRoom, input FriendMatchSubmissionI
 				return friendMatchCalculation{}, apperror.BadRequest("friend match solution is invalid", nil)
 			}
 			expectedDelta := friendMatchScoreDelta(timeLimit, attempt.ElapsedMS, combo, attempt.Mistakes)
-			if attempt.ScoreDelta != expectedDelta || attempt.ScoreDelta > 1000 {
+			if attempt.ScoreDelta != expectedDelta || attempt.ScoreDelta > 1200 {
 				return friendMatchCalculation{}, apperror.BadRequest("friend match score calculation is invalid", nil)
 			}
 			combo++

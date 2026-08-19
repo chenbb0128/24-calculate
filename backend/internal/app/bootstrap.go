@@ -34,6 +34,7 @@ type Runtime struct {
 	MySQL  *sql.DB
 	Redis  *redisplatform.Client
 	Queue  *queueplatform.Client
+	Player *player.Service
 }
 
 func (r *Runtime) Close() error {
@@ -91,8 +92,9 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 	userService.SetAvatarRateLimiter(redisClient)
 	userHandler := user.NewHandler(userService)
 	playerRepository := player.NewRepository(queries, txManager)
-	friendRoomRepository := player.NewFriendRoomRepository(redisClient)
+	friendRoomRepository := player.NewFriendRoomRepository(redisClient, database)
 	playerService := player.NewServiceWithRoomsAndEndless(userService, playerRepository, friendRoomRepository, friendRoomRepository)
+	playerService.SetFriendHistoryStore(player.NewSQLFriendMatchHistoryRepository(database))
 	rankRepository := player.NewSQLRankRepository(database)
 	playerService.SetRankStore(rankRepository)
 	if err := playerService.SetRankSeasonID(cfg.Game.RankSeasonID); err != nil {
@@ -106,6 +108,7 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 		seedSecret = cfg.JWT.Secret
 	}
 	playerService.SetDailySeedSecret(seedSecret)
+	playerService.SetCampaignContent(cfg.Game.CampaignContentVersion, cfg.Game.CampaignContentSecret)
 	playerService.SetMatchmakingWait(time.Duration(cfg.Game.MatchmakingWaitSeconds) * time.Second)
 	playerHandler := player.NewHandler(playerService)
 
@@ -117,8 +120,8 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 		},
 		APIRoutes: func(group *gin.RouterGroup) {
 			auth.RegisterRoutes(group, authHandler, !strings.EqualFold(strings.TrimSpace(cfg.App.Env), "production"))
-			user.RegisterRoutes(group, userHandler, manager)
-			player.RegisterRoutes(group, playerHandler, manager)
+			user.RegisterRoutes(group, userHandler, manager, redisClient)
+			player.RegisterRoutes(group, playerHandler, manager, redisClient)
 		},
 	})
 	if err != nil {
@@ -138,7 +141,7 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 		MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
 	}
 
-	return &Runtime{Server: server, Logger: logger, MySQL: database, Redis: redisClient, Queue: queueClient}, nil
+	return &Runtime{Server: server, Logger: logger, MySQL: database, Redis: redisClient, Queue: queueClient, Player: playerService}, nil
 }
 
 type dependencyReadiness struct {

@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/example/go-service/internal/apperror"
+	"github.com/example/go-service/internal/http/middleware"
 	"github.com/example/go-service/internal/http/response"
 )
 
@@ -88,14 +89,24 @@ func (h *Handler) Refresh(c *gin.Context) {
 }
 
 func (h *Handler) Logout(c *gin.Context) {
+	accessToken, err := middleware.BearerToken(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	accessClaims, err := h.service.ParseAccessToken(accessToken)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
 	var input LogoutInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		response.WriteError(c, apperror.BadRequest("请求参数错误", err))
 		return
 	}
-	if err := h.service.Logout(c.Request.Context(), input); err != nil {
+	if err := h.service.LogoutWithAccess(c.Request.Context(), accessClaims, input); err != nil {
 		response.WriteError(c, err)
 		return
 	}
-	response.NoContent(c)
+	response.Success(c, http.StatusOK, map[string]bool{"revoked": true})
 }

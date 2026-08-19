@@ -69,22 +69,31 @@ function testCampaignPuzzleBank() {
 function testPuzzleRotationAndVariety() {
   check(dailyPuzzleData && dailyPuzzleData.cycle_days === 365, 'daily puzzle cycle must contain 365 days');
   check(Array.isArray(dailyPuzzleData.days) && dailyPuzzleData.days.length === 365, 'daily puzzle data is incomplete');
-  const dailyKeys = new Set();
+  const dailySchedules = new Set();
+  const annualQuestions = new Set();
   for (let offset = 0; offset < 365; offset += 1) {
     const date = new Date(Date.UTC(2026, 0, 1 + offset));
     const dateKey = date.toISOString().slice(0, 10);
     const seed = 20260000 + offset;
     const result = daily.build(puzzle, dateKey, seed);
     check(result && result.puzzles.length === daily.DAILY_QUESTION_COUNT, `daily schedule ${dateKey} is incomplete`);
+    const dayKeys = new Set();
     result.puzzles.forEach((record) => {
-      const key = puzzle.numberKey(record.numbers);
-      check(!dailyKeys.has(key), `daily schedule repeats puzzle ${key}`);
-      dailyKeys.add(key);
-      check(puzzle.isVerifiedRecord(record), `daily schedule contains an unsolved puzzle ${key}`);
-      check(record.solutionSteps.length === 3, `daily schedule solution is incomplete ${key}`);
+       const key = puzzle.numberKey(record.numbers);
+       check(!dayKeys.has(key), `daily schedule repeats puzzle ${key}`);
+       dayKeys.add(key);
+       const annualKey = `${result.rule_id}:${key}`;
+       check(!annualQuestions.has(annualKey), `daily schedule repeats puzzle in the same rule ${annualKey}`);
+       annualQuestions.add(annualKey);
+       check(puzzle.isVerifiedRecord(record), `daily schedule contains an unsolved puzzle ${key}`);
+       check(record.solutionSteps.length === 3, `daily schedule solution is incomplete ${key}`);
     });
+    const scheduleKey = `${result.rule_id}:${result.puzzles.map((record) => puzzle.numberKey(record.numbers)).join('|')}`;
+    check(!dailySchedules.has(scheduleKey), `daily schedule repeats a full day ${dateKey}`);
+    dailySchedules.add(scheduleKey);
   }
-  check(dailyKeys.size === 365 * daily.DAILY_QUESTION_COUNT, 'daily schedule uniqueness check failed');
+  check(dailySchedules.size === 365, 'daily schedule rotation contains duplicate days');
+  check(annualQuestions.size === 365 * daily.DAILY_QUESTION_COUNT, 'daily schedule annual uniqueness failed');
 
   const levels = levelCatalog.all();
   const bank = puzzle.loadCampaignPuzzleBankFromData(campaignPuzzleData, levels, 240000);
@@ -109,7 +118,8 @@ function testQuestionService() {
 
   const dailyResult = service.getDailyChallenge('2026-08-15', 20260815);
   const dailyAgain = service.getDailyChallenge('2026-08-15', 20260815);
-  check(dailyResult && dailyResult.puzzles.length === 3, 'question service daily result is incomplete');
+  check(dailyResult && dailyResult.puzzles.length === daily.DAILY_QUESTION_COUNT, 'question service daily result is incomplete');
+  check(dailyResult && dailyResult.question_count === daily.DAILY_QUESTION_COUNT, 'question service daily question_count is incomplete');
   check(JSON.stringify(dailyResult.puzzles.map((record) => record.numbers)) === JSON.stringify(dailyAgain.puzzles.map((record) => record.numbers)), 'question service daily seed is not stable');
   check(dailyResult.puzzles.every((record) => service.isVerified(record)), 'question service daily result is invalid');
 
@@ -161,7 +171,8 @@ function testCampaignStaticFlow() {
   pendingLogin.isCampaignLevelUnlocked = () => true;
   pendingLogin.beginSession = function beginSessionForPendingLoginTest() { this.screen = 'game'; };
   pendingLogin.startCampaign(0);
-  check(pendingLogin.screen === 'game', '登录尚未完成时点击第一关不应被后端状态阻塞');
+  check(pendingLogin.screen === 'levels' && pendingLogin.campaignStartRequest && pendingLogin.campaignStartRequest.index === 0,
+    '正式环境登录尚未完成时应排队闯关，不能切到本地结算');
 
   const fallback = Object.create(GameApp.prototype);
   Object.assign(fallback, {
@@ -196,6 +207,106 @@ function testDaily() {
   const titleFormatter = Object.create(GameApp.prototype);
   check(titleFormatter.formatDailyRuleTitle('今日规则：快速出手') === '快速出手', '每日规则标题不应重复显示前缀');
   check(titleFormatter.formatDailyRuleTitle('快速出手') === '快速出手', '无前缀的每日规则标题不应被改写');
+  check(result.puzzles.map((record) => record.daily_stage_name).join('|') === '热身题|进阶题|高难题|挑战题|极限题', '每日五题阶段名称不完整');
+
+  const resumed = Object.create(GameApp.prototype);
+  Object.assign(resumed, {
+    gameRequestToken: 0,
+    popup: '',
+    hintPopup: null,
+    resultHelpPopup: false,
+    mode: 'home',
+    levels: levelCatalog.all(),
+    progress: storage.normalize({ tutorial_seen: true }),
+    backendAuth: { status: 'ready' },
+    dailyChallenge: null,
+    dailyRun: null,
+    dailyAttempts: [],
+    dailyRunLoading: false,
+    dailyHintsUsed: 0,
+    status: '',
+    beginSession() { this.sessionStarted = true; },
+    savePendingRunCheckpoint() {},
+    triggerFeedback() {},
+  });
+  const dailyRun = {
+    run_id: 'daily-resume-test',
+    date_key: '2026-08-15',
+    question_index: 3,
+    score: 240,
+    mistakes: 1,
+    hints_used: 1,
+    best_combo: 3,
+    hint_count: 2,
+    allow_hint: true,
+    puzzles: result.puzzles,
+    attempts: result.puzzles.slice(0, 3).map((record, index) => ({ puzzle_id: record.puzzleId, question_index: index, solved: true })),
+  };
+  check(resumed.applyResumedRun({ status: 'active', pending: { mode: 'daily', run_id: dailyRun.run_id, hints_used: 1 }, run: dailyRun }), '每日挑战恢复失败');
+  check(resumed.currentQuestion === 3 && resumed.puzzles.length === 5, '每日挑战未恢复到第 4 题');
+  check(resumed.hintsUsed === 1 && resumed.dailyChallenge.hint_count === 2, '每日挑战恢复后提示次数不正确');
+
+  const hintApp = Object.create(GameApp.prototype);
+  Object.assign(hintApp, {
+    mode: 'daily',
+    dailyChallenge: { allow_hint: true, hint_count: 2 },
+    currentPuzzle: { firstStep: { first: 1, second: 2, operator: '+' } },
+    freeHint: true,
+    hintUsed: false,
+    hintsUsed: 0,
+    hintPopup: null,
+    status: '',
+    triggerFeedback() {},
+    showRewarded(type, callback) { this.rewardedType = type; this.rewardedCallback = callback; },
+  });
+  hintApp.hint();
+  check(hintApp.hintsUsed === 1 && hintApp.freeHint === false, '每日第一次提示没有正确计数');
+  hintApp.hint();
+  check(hintApp.rewardedType === 'hint' && typeof hintApp.rewardedCallback === 'function', '每日第二次提示没有进入广告流程');
+  hintApp.rewardedCallback();
+  check(hintApp.hintsUsed === 2 && hintApp.questionHintsUsed === 2, '每日第二次提示没有正确计数');
+  hintApp.hint();
+  check(hintApp.hintsUsed === 2 && String(hintApp.status).includes('用完'), '每日提示超过服务端次数仍可使用');
+
+  const originalSubmitDailyRun = apiClient.submitDailyRun;
+  let submittedDailyPayload = null;
+  apiClient.submitDailyRun = (runID, payload) => {
+    submittedDailyPayload = { runID, payload };
+    return {
+      then(callback) {
+        callback({ validated: true, score: 432, reward_coins: 7, streak: 4, progress: {} });
+        return { catch() {} };
+      },
+    };
+  };
+  const submitApp = Object.create(GameApp.prototype);
+  Object.assign(submitApp, {
+    backendAuth: { status: 'ready' },
+    dailyRun: { run_id: 'daily-submit-test', date_key: '2026-08-15' },
+    dailyAttempts: result.puzzles.map((record, index) => ({
+      puzzle_id: record.puzzleId || `D${index}`,
+      question_index: index,
+      elapsed_ms: 12000,
+      solved: true,
+      mistakes: 0,
+      hints: index === 0 ? 1 : 0,
+      score: (index + 1) * 20,
+      score_delta: 20,
+      combo: index + 1,
+      solution_steps: record.solutionSteps,
+    })),
+    hintsUsed: 1,
+    maxCombo: 5,
+    leaderboardRemote: {},
+    leaderboardRemoteFailedAt: {},
+    progress: storage.normalize({ tutorial_seen: true }),
+    result: { score: 100, rewardCoins: 0, serverSubmitPending: true, serverVerified: false, serverSubmitError: false, serverStreak: null, bonusLabels: [] },
+  });
+  submitApp.submitDailyChallengeCompletion(100);
+  apiClient.submitDailyRun = originalSubmitDailyRun;
+  check(submittedDailyPayload && submittedDailyPayload.payload.attempts.length === 5, '每日挑战提交没有包含 5 条 attempts');
+  check(submittedDailyPayload.payload.summary.questions === 5 && submittedDailyPayload.payload.summary.hints_used === 1, '每日挑战提交摘要没有使用动态题数或提示总数');
+  check(submitApp.result.score === 432 && submitApp.result.rewardCoins === 7 && submitApp.result.serverStreak === 4 && submitApp.result.serverVerified, '每日挑战结果没有应用服务端结算');
 }
 
 function testExecutableSolutions() {
@@ -907,7 +1018,7 @@ function testFriendProtocol() {
     score: (index + 1) * 100,
     score_delta: 100,
   }));
-  const submission = matchData.createResultSubmission(matchContract, attempts, { player_solved: 8, player_score: 800 });
+  const submission = matchData.createResultSubmission(matchContract, attempts, { player_solved: puzzles.length, player_score: puzzles.length * 100 });
   check(matchData.validateResultSubmission(submission), '好友成绩提交合同校验失败');
   const tampered = JSON.parse(JSON.stringify(submission));
   tampered.attempts[0].room_seed += 1;

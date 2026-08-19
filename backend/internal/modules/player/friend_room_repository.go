@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,7 +29,21 @@ var (
 	ErrFriendRoomAlreadyStarted           = errors.New("friend room has already been started")
 	ErrFriendMatchSubmissionAlreadyExists = errors.New("friend match submission already exists")
 	ErrFriendMatchProgressStale           = errors.New("friend match progress is stale")
+	ErrFriendRoomRematchNotAllowed        = errors.New("friend room rematch is not allowed")
 )
+
+const runExpiredRetention = 24 * time.Hour
+
+func runStorageTTL(expiresAt time.Time, fallback time.Duration) time.Duration {
+	ttl := time.Until(expiresAt) + runExpiredRetention
+	if ttl <= runExpiredRetention {
+		if fallback > 0 {
+			return fallback + runExpiredRetention
+		}
+		return runExpiredRetention
+	}
+	return ttl
+}
 
 const friendRoomJoinScript = `
 if redis.call('EXISTS', KEYS[1]) == 0 then
@@ -127,11 +142,16 @@ return 1
 `
 
 type FriendRoomRepository struct {
-	redis *redisplatform.Client
+	redis    *redisplatform.Client
+	database *sql.DB
 }
 
-func NewFriendRoomRepository(redis *redisplatform.Client) *FriendRoomRepository {
-	return &FriendRoomRepository{redis: redis}
+func NewFriendRoomRepository(redis *redisplatform.Client, databases ...*sql.DB) *FriendRoomRepository {
+	var database *sql.DB
+	if len(databases) > 0 {
+		database = databases[0]
+	}
+	return &FriendRoomRepository{redis: redis, database: database}
 }
 
 func (r *FriendRoomRepository) AcquireDistributedLock(ctx context.Context, scope string, ttl time.Duration) (string, bool, error) {
@@ -206,6 +226,31 @@ func (r *FriendRoomRepository) RecordFriendPuzzleHashes(ctx context.Context, use
 		return err
 	}
 	return r.redis.Expire(ctx, key, ttl).Err()
+}
+
+func (r *FriendRoomRepository) AddFriendBotRoom(ctx context.Context, roomCode string) error {
+	if r == nil || r.redis == nil || r.redis.Client == nil {
+		return fmt.Errorf("friend room redis repository is not initialized")
+	}
+	key := redisplatform.FriendBotRoomsKey()
+	if err := r.redis.SAdd(ctx, key, roomCode).Err(); err != nil {
+		return err
+	}
+	return r.redis.Expire(ctx, key, friendRoomTTL).Err()
+}
+
+func (r *FriendRoomRepository) ListFriendBotRooms(ctx context.Context) ([]string, error) {
+	if r == nil || r.redis == nil || r.redis.Client == nil {
+		return nil, fmt.Errorf("friend room redis repository is not initialized")
+	}
+	return r.redis.SMembers(ctx, redisplatform.FriendBotRoomsKey()).Result()
+}
+
+func (r *FriendRoomRepository) RemoveFriendBotRoom(ctx context.Context, roomCode string) error {
+	if r == nil || r.redis == nil || r.redis.Client == nil {
+		return fmt.Errorf("friend room redis repository is not initialized")
+	}
+	return r.redis.SRem(ctx, redisplatform.FriendBotRoomsKey(), roomCode).Err()
 }
 
 func (r *FriendRoomRepository) TouchFriendRoomPlayer(ctx context.Context, roomCode string, userID uint64) error {
@@ -525,6 +570,72 @@ func (r *FriendRoomRepository) FinishFriendRoom(ctx context.Context, roomCode st
 	return err
 }
 
+// RematchFriendRoom atomically replaces the room's current round contract and
+// records the result under the caller's idempotency key. Old round keys are
+// intentionally retained until their normal TTL so history/debugging can read
+// them, while all new progress writes use the new RoundID.
+func (r *FriendRoomRepository) RematchFriendRoom(ctx context.Context, roomCode string, requesterID uint64, room FriendRoom, idempotencyKey string) (FriendRoom, error) {
+	if r == nil || r.redis == nil || r.redis.Client == nil {
+		return FriendRoom{}, fmt.Errorf("friend room redis repository is not initialized")
+	}
+	if idempotencyKey == "" {
+		return FriendRoom{}, fmt.Errorf("friend rematch idempotency key is required")
+	}
+	rematchKey := redisplatform.FriendRoomRematchKey(roomCode, idempotencyKey)
+	if encoded, err := r.redis.Get(ctx, rematchKey).Bytes(); err == nil {
+		var replay FriendRoom
+		if unmarshalErr := json.Unmarshal(encoded, &replay); unmarshalErr != nil {
+			return FriendRoom{}, fmt.Errorf("decode friend rematch replay: %w", unmarshalErr)
+		}
+		return replay, nil
+	} else if !errors.Is(err, goRedis.Nil) {
+		return FriendRoom{}, err
+	}
+	current, err := r.GetFriendRoom(ctx, roomCode)
+	if err != nil {
+		return FriendRoom{}, err
+	}
+	if !friendRoomHasPlayer(current, requesterID) {
+		return FriendRoom{}, ErrFriendRoomNotMember
+	}
+	if current.Status != FriendRoomFinished {
+		return FriendRoom{}, ErrFriendRoomRematchNotAllowed
+	}
+	if room.RoundID == "" || room.MatchID == "" {
+		return FriendRoom{}, fmt.Errorf("friend rematch round contract is incomplete")
+	}
+	payload, err := json.Marshal(room)
+	if err != nil {
+		return FriendRoom{}, fmt.Errorf("encode rematched friend room: %w", err)
+	}
+	ttl := time.Until(room.ExpiresAt)
+	if ttl <= 0 {
+		return FriendRoom{}, ErrFriendRoomExpired
+	}
+	pipe := r.redis.TxPipeline()
+	pipe.Set(ctx, redisplatform.FriendRoomKey(roomCode), payload, ttl)
+	pipe.Set(ctx, redisplatform.FriendRoomStateKey(roomCode), FriendRoomWaiting, ttl)
+	pipe.Del(ctx, redisplatform.FriendRoomReadyKey(roomCode))
+	for _, player := range room.Players {
+		playerPayload, marshalErr := json.Marshal(player)
+		if marshalErr != nil {
+			return FriendRoom{}, fmt.Errorf("encode rematched friend room player: %w", marshalErr)
+		}
+		playerKey := strconv.FormatUint(player.UserID, 10)
+		pipe.HSet(ctx, redisplatform.FriendRoomPlayersKey(roomCode), playerKey, playerPayload)
+		pipe.HSet(ctx, redisplatform.FriendRoomReadyKey(roomCode), playerKey, "0")
+		pipe.HSet(ctx, redisplatform.FriendRoomLastSeenKey(roomCode), playerKey, player.LastSeenAt.UnixMilli())
+	}
+	pipe.Expire(ctx, redisplatform.FriendRoomPlayersKey(roomCode), ttl)
+	pipe.Expire(ctx, redisplatform.FriendRoomReadyKey(roomCode), ttl)
+	pipe.Expire(ctx, redisplatform.FriendRoomLastSeenKey(roomCode), ttl)
+	pipe.Set(ctx, rematchKey, payload, ttl)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return FriendRoom{}, err
+	}
+	return room, nil
+}
+
 func (r *FriendRoomRepository) RemoveFriendRoomPlayer(ctx context.Context, roomCode string, userID uint64) error {
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return fmt.Errorf("friend room redis repository is not initialized")
@@ -563,6 +674,10 @@ func (r *FriendRoomRepository) DeleteFriendRoom(ctx context.Context, roomCode st
 }
 
 func (r *FriendRoomRepository) SaveFriendMatchProgress(ctx context.Context, roomCode string, progress FriendMatchProgress) error {
+	return r.SaveFriendMatchProgressRound(ctx, roomCode, "", progress)
+}
+
+func (r *FriendRoomRepository) SaveFriendMatchProgressRound(ctx context.Context, roomCode, roundID string, progress FriendMatchProgress) error {
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return fmt.Errorf("friend match progress redis repository is not initialized")
 	}
@@ -570,24 +685,28 @@ func (r *FriendRoomRepository) SaveFriendMatchProgress(ctx context.Context, room
 	if err != nil {
 		return fmt.Errorf("encode friend match progress: %w", err)
 	}
-	key := redisplatform.FriendRoomMatchProgressKey(roomCode)
+	key := redisplatform.FriendRoomMatchProgressRoundKey(roomCode, roundID)
 	if err := r.redis.HSet(ctx, key, strconv.FormatUint(progress.UserID, 10), payload).Err(); err != nil {
 		return err
 	}
 	state := progressStateValue(progress)
-	if err := r.redis.HSet(ctx, redisplatform.FriendRoomMatchProgressStateKey(roomCode), strconv.FormatUint(progress.UserID, 10), state).Err(); err != nil {
+	if err := r.redis.HSet(ctx, redisplatform.FriendRoomMatchProgressStateRoundKey(roomCode, roundID), strconv.FormatUint(progress.UserID, 10), state).Err(); err != nil {
 		return err
 	}
 	_ = r.redis.HSet(ctx, redisplatform.FriendRoomLastSeenKey(roomCode), strconv.FormatUint(progress.UserID, 10), progress.UpdatedAt.UnixMilli()).Err()
 	if err := r.redis.Expire(ctx, key, friendRoomTTL).Err(); err != nil {
 		return err
 	}
-	_ = r.redis.Expire(ctx, redisplatform.FriendRoomMatchProgressStateKey(roomCode), friendRoomTTL).Err()
+	_ = r.redis.Expire(ctx, redisplatform.FriendRoomMatchProgressStateRoundKey(roomCode, roundID), friendRoomTTL).Err()
 	_ = r.redis.Expire(ctx, redisplatform.FriendRoomLastSeenKey(roomCode), friendRoomTTL).Err()
 	return nil
 }
 
 func (r *FriendRoomRepository) SaveFriendMatchProgressEvent(ctx context.Context, roomCode string, progress FriendMatchProgress) (bool, error) {
+	return r.SaveFriendMatchProgressEventRound(ctx, roomCode, "", progress)
+}
+
+func (r *FriendRoomRepository) SaveFriendMatchProgressEventRound(ctx context.Context, roomCode, roundID string, progress FriendMatchProgress) (bool, error) {
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return false, fmt.Errorf("friend match progress redis repository is not initialized")
 	}
@@ -596,9 +715,9 @@ func (r *FriendRoomRepository) SaveFriendMatchProgressEvent(ctx context.Context,
 		return false, fmt.Errorf("encode friend match progress: %w", err)
 	}
 	result, err := r.redis.Eval(ctx, friendMatchProgressScript, []string{
-		redisplatform.FriendRoomMatchProgressKey(roomCode),
-		redisplatform.FriendRoomMatchProgressStateKey(roomCode),
-		redisplatform.FriendRoomMatchProgressEventsKey(roomCode),
+		redisplatform.FriendRoomMatchProgressRoundKey(roomCode, roundID),
+		redisplatform.FriendRoomMatchProgressStateRoundKey(roomCode, roundID),
+		redisplatform.FriendRoomMatchProgressEventsRoundKey(roomCode, roundID),
 	}, strconv.FormatUint(progress.UserID, 10), string(payload), progressStateValue(progress), int64(friendRoomTTL/time.Second), progress.EventID,
 		progress.QuestionIndex, progress.Solved, progress.Score, progress.ElapsedMS, boolToInt(progress.Finished)).Int64()
 	if err != nil {
@@ -616,10 +735,14 @@ func (r *FriendRoomRepository) SaveFriendMatchProgressEvent(ctx context.Context,
 }
 
 func (r *FriendRoomRepository) GetFriendMatchProgress(ctx context.Context, roomCode string) (map[uint64]FriendMatchProgress, error) {
+	return r.GetFriendMatchProgressRound(ctx, roomCode, "")
+}
+
+func (r *FriendRoomRepository) GetFriendMatchProgressRound(ctx context.Context, roomCode, roundID string) (map[uint64]FriendMatchProgress, error) {
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return nil, fmt.Errorf("friend match progress redis repository is not initialized")
 	}
-	values, err := r.redis.HGetAll(ctx, redisplatform.FriendRoomMatchProgressKey(roomCode)).Result()
+	values, err := r.redis.HGetAll(ctx, redisplatform.FriendRoomMatchProgressRoundKey(roomCode, roundID)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -639,6 +762,9 @@ func (r *FriendRoomRepository) GetFriendMatchProgress(ctx context.Context, roomC
 }
 
 func (r *FriendRoomRepository) CreateEndlessRun(ctx context.Context, run EndlessRun) error {
+	if r != nil && r.database != nil {
+		return r.createEndlessRunMySQL(ctx, run)
+	}
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return fmt.Errorf("endless run redis repository is not initialized")
 	}
@@ -646,10 +772,7 @@ func (r *FriendRoomRepository) CreateEndlessRun(ctx context.Context, run Endless
 	if err != nil {
 		return fmt.Errorf("encode endless run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = 2 * time.Hour
-	}
+	ttl := runStorageTTL(run.ExpiresAt, 2*time.Hour)
 	ok, err := r.redis.SetNX(ctx, redisplatform.EndlessRunKey(run.RunID), payload, ttl).Result()
 	if err != nil {
 		return err
@@ -661,6 +784,9 @@ func (r *FriendRoomRepository) CreateEndlessRun(ctx context.Context, run Endless
 }
 
 func (r *FriendRoomRepository) GetEndlessRun(ctx context.Context, runID string) (EndlessRun, error) {
+	if r != nil && r.database != nil {
+		return r.getEndlessRunMySQL(ctx, runID)
+	}
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return EndlessRun{}, fmt.Errorf("endless run redis repository is not initialized")
 	}
@@ -679,6 +805,9 @@ func (r *FriendRoomRepository) GetEndlessRun(ctx context.Context, runID string) 
 }
 
 func (r *FriendRoomRepository) UpdateEndlessRun(ctx context.Context, run EndlessRun) error {
+	if r != nil && r.database != nil {
+		return r.updateEndlessRunMySQL(ctx, run)
+	}
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return fmt.Errorf("endless run redis repository is not initialized")
 	}
@@ -686,10 +815,7 @@ func (r *FriendRoomRepository) UpdateEndlessRun(ctx context.Context, run Endless
 	if err != nil {
 		return fmt.Errorf("encode endless run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = time.Minute
-	}
+	ttl := runStorageTTL(run.ExpiresAt, time.Minute)
 	return r.redis.Set(ctx, redisplatform.EndlessRunKey(run.RunID), payload, ttl).Err()
 }
 
@@ -701,10 +827,7 @@ func (r *FriendRoomRepository) CreateCampaignRun(ctx context.Context, run Campai
 	if err != nil {
 		return fmt.Errorf("encode campaign run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = campaignRunTTL
-	}
+	ttl := runStorageTTL(run.ExpiresAt, campaignRunTTL)
 	ok, err := r.redis.SetNX(ctx, redisplatform.CampaignRunKey(run.RunID), payload, ttl).Result()
 	if err != nil {
 		return err
@@ -741,10 +864,7 @@ func (r *FriendRoomRepository) UpdateCampaignRun(ctx context.Context, run Campai
 	if err != nil {
 		return fmt.Errorf("encode campaign run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = time.Minute
-	}
+	ttl := runStorageTTL(run.ExpiresAt, time.Minute)
 	return r.redis.Set(ctx, redisplatform.CampaignRunKey(run.RunID), payload, ttl).Err()
 }
 
@@ -756,10 +876,7 @@ func (r *FriendRoomRepository) CreateDailyRun(ctx context.Context, run DailyRun)
 	if err != nil {
 		return fmt.Errorf("encode daily run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = dailyRunTTL
-	}
+	ttl := runStorageTTL(run.ExpiresAt, dailyRunTTL)
 	ok, err := r.redis.SetNX(ctx, redisplatform.DailyRunKey(run.RunID), payload, ttl).Result()
 	if err != nil {
 		return err
@@ -796,14 +913,15 @@ func (r *FriendRoomRepository) UpdateDailyRun(ctx context.Context, run DailyRun)
 	if err != nil {
 		return fmt.Errorf("encode daily run: %w", err)
 	}
-	ttl := time.Until(run.ExpiresAt)
-	if ttl <= 0 {
-		ttl = time.Minute
-	}
+	ttl := runStorageTTL(run.ExpiresAt, time.Minute)
 	return r.redis.Set(ctx, redisplatform.DailyRunKey(run.RunID), payload, ttl).Err()
 }
 
 func (r *FriendRoomRepository) SaveFriendMatchSubmission(ctx context.Context, roomCode string, submission FriendMatchSubmissionRecord) error {
+	return r.SaveFriendMatchSubmissionRound(ctx, roomCode, "", submission)
+}
+
+func (r *FriendRoomRepository) SaveFriendMatchSubmissionRound(ctx context.Context, roomCode, roundID string, submission FriendMatchSubmissionRecord) error {
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return fmt.Errorf("friend match result redis repository is not initialized")
 	}
@@ -811,7 +929,7 @@ func (r *FriendRoomRepository) SaveFriendMatchSubmission(ctx context.Context, ro
 	if err != nil {
 		return fmt.Errorf("encode friend match submission: %w", err)
 	}
-	key := redisplatform.FriendRoomMatchResultsKey(roomCode)
+	key := redisplatform.FriendRoomMatchResultsRoundKey(roomCode, roundID)
 	ok, err := r.redis.HSetNX(ctx, key, strconv.FormatUint(submission.UserID, 10), payload).Result()
 	if err != nil {
 		return err
@@ -826,10 +944,14 @@ func (r *FriendRoomRepository) SaveFriendMatchSubmission(ctx context.Context, ro
 }
 
 func (r *FriendRoomRepository) GetFriendMatchSubmissions(ctx context.Context, roomCode string) (map[uint64]FriendMatchSubmissionRecord, error) {
+	return r.GetFriendMatchSubmissionsRound(ctx, roomCode, "")
+}
+
+func (r *FriendRoomRepository) GetFriendMatchSubmissionsRound(ctx context.Context, roomCode, roundID string) (map[uint64]FriendMatchSubmissionRecord, error) {
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return nil, fmt.Errorf("friend match result redis repository is not initialized")
 	}
-	values, err := r.redis.HGetAll(ctx, redisplatform.FriendRoomMatchResultsKey(roomCode)).Result()
+	values, err := r.redis.HGetAll(ctx, redisplatform.FriendRoomMatchResultsRoundKey(roomCode, roundID)).Result()
 	if err != nil {
 		return nil, err
 	}

@@ -22,6 +22,9 @@ func (s *Service) ResumeCampaignRun(ctx context.Context, userID uint64, runID st
 	if run.UserID != userID {
 		return CampaignRunResponse{}, apperror.New(10004, 403, "you cannot access this run", nil)
 	}
+	if run.Status == RunExpired {
+		return CampaignRunResponse{}, apperror.New(10005, 410, "campaign run has expired", nil)
+	}
 	if time.Now().UTC().After(run.ExpiresAt) && !runStatusTerminal(run.Status) {
 		run.Status = RunExpired
 		if stateStore, ok := s.campaignRuns.(CampaignRunStateStore); ok {
@@ -45,6 +48,9 @@ func (s *Service) ResumeDailyRun(ctx context.Context, userID uint64, runID strin
 	}
 	if run.UserID != userID {
 		return DailyRunResponse{}, apperror.New(10004, 403, "you cannot access this run", nil)
+	}
+	if run.Status == RunExpired {
+		return DailyRunResponse{}, apperror.New(10005, 410, "daily run has expired", nil)
 	}
 	if time.Now().UTC().After(run.ExpiresAt) && !runStatusTerminal(run.Status) {
 		run.Status = RunExpired
@@ -73,12 +79,23 @@ func (s *Service) ResumeEndlessRun(ctx context.Context, userID uint64, runID str
 	if run.UserID != userID {
 		return EndlessRunResponse{}, apperror.New(10004, 403, "you cannot access this run", nil)
 	}
+	if run.Status == RunExpired {
+		return EndlessRunResponse{}, apperror.New(10005, 410, "endless run has expired", nil)
+	}
 	if time.Now().UTC().After(run.ExpiresAt) && !runStatusTerminal(run.Status) {
 		run.Status = RunExpired
 		if stateStore, ok := s.endlessRuns.(EndlessRunStateStore); ok {
 			_ = stateStore.UpdateEndlessRun(ctx, run)
 		}
 		return EndlessRunResponse{}, apperror.New(10005, 410, "endless run has expired", nil)
+	}
+	if run.Status == RunRunning && !run.DeadlineAt.IsZero() && !time.Now().UTC().Before(run.DeadlineAt) {
+		finishEndlessRun(&run, time.Now().UTC())
+		if stateStore, ok := s.endlessRuns.(EndlessRunStateStore); ok {
+			if err := stateStore.UpdateEndlessRun(ctx, run); err != nil {
+				return EndlessRunResponse{}, err
+			}
+		}
 	}
 	return publicEndlessRun(run), nil
 }

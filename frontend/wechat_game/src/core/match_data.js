@@ -47,6 +47,7 @@ function createRoomContract(room) {
     type: 'friend_room',
     room_id: String(source.room_id || ''),
     room_code: String(source.room_code || ''),
+    match_id: String(source.match_id || source.matchId || source.round_id || source.roundId || ''),
     room_seed: Math.abs(safeInteger(source.room_seed)),
     status: String(source.status || 'waiting'),
     owner: clone(source.owner || {}),
@@ -74,7 +75,7 @@ function createMatchContract(room, puzzles) {
   return {
     protocol_version: PROTOCOL_VERSION,
     type: 'friend_match',
-    match_id: String(roomContract.room_id || `friend-${roomContract.room_code}`),
+    match_id: String(roomContract.match_id || roomContract.room_id || `friend-${roomContract.room_code}`),
     room_id: roomContract.room_id,
     room_code: roomContract.room_code,
     room_seed: roomContract.room_seed,

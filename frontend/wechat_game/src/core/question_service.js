@@ -237,14 +237,14 @@ class QuestionService {
       }, 3000 + stage, stage, this.seedFor('daily-fallback', dateSeed, stage));
       if (!record) return null;
       record.daily_stage = stage;
-      record.daily_stage_name = ['热身题', '进阶题', '高难题'][stage];
+      record.daily_stage_name = dailyChallenge.DAILY_STAGE_NAMES[stage];
       record.daily_rule_id = rule.id;
       puzzles.push(record);
     }
     return {
       date_key: dateKey,
       seed: normalizeSeed(dateSeed),
-      title: '每日挑战 · 三题连战',
+      title: '每日挑战 · 五题连战',
       rule_id: rule.id,
       rule_title: rule.title,
       rule_text: rule.text,
@@ -325,13 +325,31 @@ class QuestionService {
   getFriendQuestions(roomSeed, options = {}) {
     const seed = normalizeSeed(roomSeed);
     const count = Math.max(1, Number(options.count || friendMatch.QUESTION_COUNT));
-    const cacheKey = `friend:${seed}:${count}`;
+    const roundKey = String(options.roundKey || options.round_id || options.match_id || '').trim();
+    const generationSeed = roundKey ? hashSeed('friend-round', seed, roundKey) : seed;
+    const cacheKey = `friend:${seed}:${count}:${roundKey}`;
     if (this.cache[cacheKey]) return clone(this.cache[cacheKey]);
     const scope = `friend:${seed}`;
-    let records = friendMatch.generatePuzzles(this.generator, seed).slice(0, count);
+    const previousRoundKeys = this.scopeSet(scope);
+    let records = [];
+    // If the same room starts another round, reroll against the room's recent
+    // local history so a rematch is not just the previous list in a new order.
+    for (let attempt = 0; attempt < 8 && records.length < count; attempt += 1) {
+      const candidateSeed = attempt === 0 ? generationSeed : hashSeed(generationSeed, 'reroll', attempt);
+      const candidate = friendMatch.generatePuzzles(this.generator, seed, candidateSeed, count);
+      const fresh = candidate.filter((record) => !previousRoundKeys.has(this.key(record.numbers)));
+      if (fresh.length > records.length) records = fresh.slice(0, count);
+      if (records.length === count) break;
+    }
     if (records.length !== count || records.some((record) => !this.isVerified(record))) {
       const config = Object.assign({ min_digit: 1, max_digit: 9, min_solutions: 1, max_solutions: 12 }, options.config || {});
-      records = this.generator.generatePuzzleSet(config, seed % 97, count, seed, this.scopeSet(scope));
+      records = this.generator.generatePuzzleSet(
+        Object.assign({}, config, { shuffle_candidates: true }),
+        generationSeed % 100000,
+        count,
+        generationSeed,
+        new Set(previousRoundKeys),
+      );
     }
     const keys = new Set();
     if (records.length !== count || records.some((record) => {
@@ -344,6 +362,7 @@ class QuestionService {
       return [];
     }
     const prepared = records.map((record) => this.withGenerationMeta(record, 'seeded_friend_generation', seed, scope));
+    prepared.forEach((record) => previousRoundKeys.add(this.key(record.numbers)));
     this.cache[cacheKey] = prepared;
     return clone(prepared);
   }

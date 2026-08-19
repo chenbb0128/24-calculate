@@ -80,6 +80,16 @@ func TestValidateRankedMatchSettlementRejectsClientInconsistency(t *testing.T) {
 	}
 }
 
+func TestValidateRankedMatchSettlementAllowsServerGeneratedBotResult(t *testing.T) {
+	settlement := RankedMatchSettlement{
+		MatchID: "match-bot", SeasonID: "2026-S3",
+		Players: []RankMatchPlayer{{UserID: 7, Outcome: "win", IdempotencyKey: "human-result"}},
+	}
+	if err := validateRankedMatchSettlement(settlement); err != nil {
+		t.Fatalf("server-generated bot settlement rejected: %v", err)
+	}
+}
+
 type rankStoreFake struct {
 	profile        RankProfile
 	result         map[uint64]RankSettlementResult

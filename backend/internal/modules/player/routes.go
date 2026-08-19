@@ -11,14 +11,20 @@ import (
 // former levels/{id}/complete and daily/complete endpoints accepted
 // client-controlled completion metrics and are intentionally not registered
 // in any environment.
-func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatform.Manager) {
+func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatform.Manager, revocation ...middleware.AccessTokenRevocationChecker) {
 	routes := group.Group("/player")
-	routes.Use(middleware.RequireAuth(manager))
+	routes.Use(middleware.RequireAuth(manager, revocation...))
 	routes.GET("/bootstrap", handler.Bootstrap)
 	routes.GET("/rank", handler.Rank)
+	routes.GET("/ranked/summary", handler.RankedSummary)
+	routes.GET("/ranked/matches", handler.RankedMatches)
+	routes.GET("/ranked/matches/:match_id", handler.RankedMatch)
+	routes.GET("/friend/history", handler.FriendMatchHistory)
+	routes.GET("/friend/history/:match_id", handler.FriendMatchHistoryDetail)
 	routes.GET("/leaderboards/:mode", handler.Leaderboard)
 	routes.POST("/endless/runs", handler.StartEndlessRun)
 	routes.GET("/endless/runs/:run_id", handler.ResumeEndlessRun)
+	routes.POST("/endless/runs/:run_id/next-question", handler.NextEndlessQuestion)
 	routes.POST("/endless/runs/:run_id/submit", handler.SubmitEndlessRun)
 	routes.POST("/campaign/runs", handler.StartCampaignRun)
 	routes.GET("/campaign/runs/:run_id", handler.ResumeCampaignRun)
@@ -35,6 +41,7 @@ func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatfo
 	routes.DELETE("/friend/rooms/:room_code", handler.LeaveFriendRoom)
 	routes.POST("/friend/rooms/:room_code/ready", handler.ReadyFriendRoom)
 	routes.POST("/friend/rooms/:room_code/start", handler.StartFriendRoom)
+	routes.POST("/friend/rooms/:room_code/rematch", handler.RematchFriendRoom)
 	routes.POST("/friend/rooms/:room_code/match/progress", handler.UpdateFriendMatchProgress)
 	routes.GET("/friend/rooms/:room_code/match/progress", handler.GetFriendMatchProgress)
 	routes.POST("/friend/rooms/:room_code/match/submit", handler.SubmitFriendMatch)

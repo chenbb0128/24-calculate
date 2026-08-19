@@ -41,6 +41,9 @@ type FriendMatchSolutionStep struct {
 	First         int    `json:"first"`
 	Second        int    `json:"second"`
 	Operator      string `json:"operator"`
+	Left          *int   `json:"left,omitempty"`
+	Right         *int   `json:"right,omitempty"`
+	Result        *int   `json:"result,omitempty"`
 }
 
 type friendSolution struct {
@@ -265,7 +268,7 @@ func generateFriendPuzzleContract(roomSeed int64, count int) []FriendPuzzleContr
 
 func generateFriendPuzzleContractExcluding(roomSeed int64, count int, excluded map[string]struct{}) []FriendPuzzleContract {
 	if count <= 0 {
-		count = 8
+		count = friendQuestionCount
 	}
 	if roomSeed < 0 {
 		roomSeed = -roomSeed

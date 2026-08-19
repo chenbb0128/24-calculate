@@ -30,6 +30,7 @@ type RouterOptions struct {
 	Readiness        ReadinessChecker
 	APIRoutes        func(*gin.RouterGroup)
 	AvatarStorageDir string
+	Metrics          *Metrics
 }
 
 func NewRouter(cfg *config.Config, logger *slog.Logger, options RouterOptions) (*gin.Engine, error) {
@@ -53,12 +54,17 @@ func NewRouter(cfg *config.Config, logger *slog.Logger, options RouterOptions) (
 		return nil, errors.New("configure trusted proxies: " + err.Error())
 	}
 
+	metrics := options.Metrics
+	if metrics == nil {
+		metrics = NewMetrics()
+	}
 	router.Use(
 		middleware.RequestID(),
 		middleware.AccessLog(logger),
 		middleware.Recovery(logger),
 		middleware.Security(cfg),
 		middleware.CORS(cfg),
+		metrics.Middleware(),
 	)
 
 	router.GET("/health", func(c *gin.Context) {
@@ -72,6 +78,7 @@ func NewRouter(cfg *config.Config, logger *slog.Logger, options RouterOptions) (
 		}
 		response.Success(c, http.StatusOK, gin.H{"status": "ready"})
 	})
+	router.GET("/metrics", metrics.Handler)
 
 	api := router.Group("/api/v1")
 	if options.APIRoutes != nil {

@@ -19,6 +19,8 @@
 **/*.db
 **/*.db-*
 **/*.ldb
+/backend/api
+/backend/worker
 
 # JavaScript dependencies and build output
 **/node_modules/

@@ -192,3 +192,35 @@ func TestSubmitFriendMatchRejectsTamperedScoreAndQuestionOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestSubmitFriendMatchFinishesImmediatelyWhenPlayerCompletesRound(t *testing.T) {
+	room := testFriendMatchRoom()
+	room.Rules.QuestionCount = 1
+	room.Rules.TimeLimitSeconds = friendTimeLimitSecs
+	room.Puzzles = generateFriendPuzzleContract(room.RoomSeed, 1)
+	room.QuestionHash, room.PuzzleIDs, room.Puzzles = friendRoomContract(room)
+	rooms := &friendLifecycleStoreFake{room: room}
+	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, &leaderboardStore{}, rooms)
+	solution := friendSolveDetailed(room.Puzzles[0].Numbers, 1)[0].steps
+	score := friendMatchScoreDelta(friendTimeLimitSecs, 1000, 0, 0)
+	result, err := service.SubmitFriendMatch(context.Background(), 3, room.RoomCode, FriendMatchSubmissionInput{
+		ProtocolVersion: 2, Action: "submitFriendMatch", IdempotencyKey: "immediate-001",
+		MatchID: room.MatchID, RoomID: room.RoomID, RoomSeed: room.RoomSeed,
+		QuestionCount: 1, QuestionHash: room.QuestionHash, PuzzleIDs: room.PuzzleIDs,
+		Attempts: []FriendMatchAttemptInput{{
+			ProtocolVersion: 2, PuzzleID: room.PuzzleIDs[0], QuestionIndex: 0,
+			ElapsedMS: 1000, Solved: true, Mistakes: 0, Score: score, ScoreDelta: score,
+			RoomSeed: room.RoomSeed, QuestionHash: room.QuestionHash, EventID: "immediate-001:0", SolutionSteps: solution,
+		}},
+		Summary: FriendMatchSummaryInput{PlayerSolved: 1, PlayerScore: score, PlayerElapsed: 1},
+	})
+	if err != nil {
+		t.Fatalf("SubmitFriendMatch() error = %v", err)
+	}
+	if result.Pending || result.MatchResult == nil || rooms.room.Status != FriendRoomFinished {
+		t.Fatalf("result = %#v, room = %#v, want immediate settled result", result, rooms.room)
+	}
+	if result.MatchResult.Outcome != "win" {
+		t.Fatalf("match result = %#v, want win against non-submitting opponent", result.MatchResult)
+	}
+}

@@ -350,7 +350,7 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 	if current.Status != "searching" {
 		return current, nil
 	}
-	room, err := s.createBotFriendRoom(ctx, ticket.UserID)
+	room, err := s.createBotFriendRoom(ctx, ticket.UserID, ticket.Ranked, ticket.SeasonID)
 	if err != nil {
 		return MatchmakingTicket{}, err
 	}
@@ -362,6 +362,10 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 	if err != nil {
 		return MatchmakingTicket{}, err
 	}
+	// Match source is an internal decision. The client receives the same
+	// matchmaking contract for a human or fallback opponent and must not be
+	// able to distinguish the bot path from this field.
+	room.MatchSource = "matchmaking"
 	room.MatchID = room.RoomID
 	room.Status = FriendRoomReady
 	for index := range room.Players {
@@ -384,14 +388,16 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 	difficulty := difficulties[int(absMatchmakingInt64(room.RoomSeed))%len(difficulties)]
 	botTicket := MatchmakingTicket{
 		TicketID: "bot_" + ticket.TicketID, UserID: 0, Mode: ticket.Mode, RulesVersion: ticket.RulesVersion,
-		Region: ticket.Region, Player: bot, Status: "matched", MatchID: room.MatchID, Room: &room,
+		Region: ticket.Region, Ranked: room.Ranked, SeasonID: room.SeasonID, Player: bot, Status: "matched", MatchID: room.MatchID, Room: &room,
 		Opponent: &ticket.Player, CreatedAt: ticket.CreatedAt, ExpiresAt: time.Now().UTC().Add(matchmakingRetention),
 		IsBot: true, BotDifficulty: difficulty,
 	}
 	current.Status, current.MatchID, current.Room, current.Opponent = "matched", room.MatchID, &room, &bot
-	current.Ranked, current.SeasonID, current.RankRating, current.RankTier, current.RankDivision, current.RankStars = false, "", 0, "", 0, 0
 	if err := s.matchmaking.SaveMatchmakingPair(ctx, current, botTicket); err != nil {
 		return MatchmakingTicket{}, err
+	}
+	if botRooms, ok := s.rooms.(FriendBotRoomStore); ok {
+		_ = botRooms.AddFriendBotRoom(ctx, room.RoomCode)
 	}
 	return current, nil
 }
@@ -413,13 +419,21 @@ func absMatchmakingInt64(value int64) int64 {
 }
 
 func publicMatchmakingResponse(ticket MatchmakingTicket) MatchmakingResponse {
+	room := ticket.Room
+	if room != nil {
+		copyRoom := *room
+		if copyRoom.MatchSource == "bot" {
+			copyRoom.MatchSource = "matchmaking"
+		}
+		room = &copyRoom
+	}
 	waitingSeconds := 0
 	if ticket.Status == "searching" && !ticket.CreatedAt.IsZero() {
 		waitingSeconds = maxInt(0, int(time.Since(ticket.CreatedAt)/time.Second))
 	}
 	return MatchmakingResponse{
 		TicketID: ticket.TicketID, Mode: ticket.Mode, Status: ticket.Status,
-		MatchID: ticket.MatchID, Room: ticket.Room, Opponent: ticket.Opponent,
+		MatchID: ticket.MatchID, Room: room, Opponent: ticket.Opponent,
 		CreatedAt: ticket.CreatedAt, ExpiresAt: ticket.ExpiresAt, WaitingSeconds: waitingSeconds,
 		Ranked: ticket.Ranked, SeasonID: ticket.SeasonID,
 		RankSnapshot: func() *RankView {

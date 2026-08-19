@@ -24,6 +24,8 @@ const (
 	FriendRoomExpired   = "expired"
 	FriendRoomCancelled = "cancelled"
 	friendRoomTTL       = 30 * time.Minute
+	friendQuestionCount = 10
+	friendTimeLimitSecs = 180
 )
 
 var friendRoomCodePattern = regexp.MustCompile(`^\d{6}$`)
@@ -50,6 +52,30 @@ type FriendMatchProgressEventStore interface {
 	SaveFriendMatchProgressEvent(ctx context.Context, roomCode string, progress FriendMatchProgress) (bool, error)
 }
 
+// FriendMatchRoundStore is implemented by persistent stores that can isolate
+// progress and result data per round. The legacy FriendRoomStore methods are
+// intentionally kept for old rooms and small test stores.
+type FriendMatchRoundStore interface {
+	SaveFriendMatchProgressRound(ctx context.Context, roomCode, roundID string, progress FriendMatchProgress) error
+	GetFriendMatchProgressRound(ctx context.Context, roomCode, roundID string) (map[uint64]FriendMatchProgress, error)
+	SaveFriendMatchProgressEventRound(ctx context.Context, roomCode, roundID string, progress FriendMatchProgress) (bool, error)
+	SaveFriendMatchSubmissionRound(ctx context.Context, roomCode, roundID string, submission FriendMatchSubmissionRecord) error
+	GetFriendMatchSubmissionsRound(ctx context.Context, roomCode, roundID string) (map[uint64]FriendMatchSubmissionRecord, error)
+}
+
+// FriendRoomRematchStore provides an atomic, idempotent room reset. Keeping
+// this optional lets old in-memory stores continue to serve legacy tests while
+// production Redis stores get the full rematch guarantees.
+type FriendRoomRematchStore interface {
+	RematchFriendRoom(ctx context.Context, roomCode string, requesterID uint64, room FriendRoom, idempotencyKey string) (FriendRoom, error)
+}
+
+type FriendBotRoomStore interface {
+	AddFriendBotRoom(context.Context, string) error
+	ListFriendBotRooms(context.Context) ([]string, error)
+	RemoveFriendBotRoom(context.Context, string) error
+}
+
 type FriendRoomRateLimitStore interface {
 	AllowFriendRoomAction(ctx context.Context, userID uint64, action string, limit int64, window time.Duration) (bool, error)
 }
@@ -70,6 +96,7 @@ type FriendMatchResultStore interface {
 
 type FriendMatchSubmissionRecord struct {
 	UserID         uint64    `json:"user_id"`
+	RoundID        string    `json:"round_id,omitempty"`
 	Solved         int       `json:"solved"`
 	Score          int       `json:"score"`
 	Mistakes       int       `json:"mistakes"`
@@ -82,6 +109,7 @@ type FriendRoom struct {
 	Version        int                    `json:"version"`
 	RoomID         string                 `json:"room_id"`
 	RoomCode       string                 `json:"room_code"`
+	RoundID        string                 `json:"round_id"`
 	MatchID        string                 `json:"match_id,omitempty"`
 	Ranked         bool                   `json:"ranked"`
 	SeasonID       string                 `json:"season_id,omitempty"`
@@ -127,16 +155,21 @@ type FriendRoomPlayer struct {
 }
 
 type FriendMatchProgress struct {
-	UserID        uint64    `json:"user_id"`
-	MatchID       string    `json:"match_id,omitempty"`
-	QuestionHash  string    `json:"question_hash,omitempty"`
-	EventID       string    `json:"event_id,omitempty"`
-	QuestionIndex int       `json:"question_index"`
-	Solved        int       `json:"solved"`
-	Score         int       `json:"score"`
-	ElapsedMS     int       `json:"elapsed_ms"`
-	Finished      bool      `json:"finished"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	UserID        uint64                    `json:"user_id"`
+	RoundID       string                    `json:"round_id,omitempty"`
+	MatchID       string                    `json:"match_id,omitempty"`
+	QuestionHash  string                    `json:"question_hash,omitempty"`
+	EventID       string                    `json:"event_id,omitempty"`
+	QuestionIndex int                       `json:"question_index"`
+	Solved        int                       `json:"solved"`
+	Score         int                       `json:"score"`
+	Mistakes      int                       `json:"mistakes"`
+	Combo         int                       `json:"combo"`
+	Validated     bool                      `json:"validated"`
+	Attempts      []FriendMatchAttemptInput `json:"attempts,omitempty"`
+	ElapsedMS     int                       `json:"elapsed_ms"`
+	Finished      bool                      `json:"finished"`
+	UpdatedAt     time.Time                 `json:"updated_at"`
 }
 
 type FriendMatchProgressInput struct {
@@ -149,6 +182,11 @@ type FriendMatchProgressInput struct {
 	QuestionHash  string                   `json:"question_hash"`
 	EventID       string                   `json:"event_id"`
 	Attempt       *FriendMatchAttemptInput `json:"attempt,omitempty"`
+}
+
+type FriendRoomRematchInput struct {
+	IdempotencyKey string `json:"idempotency_key"`
+	ClientRoundID  string `json:"client_round_id,omitempty"`
 }
 
 type FriendRoomReadyInput struct {
@@ -165,6 +203,7 @@ type FriendMatchStartResponse struct {
 	MatchID        string                 `json:"match_id"`
 	RoomID         string                 `json:"room_id"`
 	RoomCode       string                 `json:"room_code"`
+	RoundID        string                 `json:"round_id"`
 	Ranked         bool                   `json:"ranked"`
 	SeasonID       string                 `json:"season_id,omitempty"`
 	RankedEligible bool                   `json:"ranked_eligible"`
@@ -196,6 +235,7 @@ type FriendMatchPlayerState struct {
 type FriendMatchProgressResponse struct {
 	RoomID      string                   `json:"room_id"`
 	RoomCode    string                   `json:"room_code"`
+	RoundID     string                   `json:"round_id"`
 	Status      string                   `json:"status"`
 	Players     []FriendMatchPlayerState `json:"players"`
 	MatchResult *FriendMatchResult       `json:"match_result,omitempty"`
@@ -232,6 +272,68 @@ func (s *Service) CreateFriendRoom(ctx context.Context, userID uint64) (FriendRo
 	return s.CreateFriendRoomWithRules(ctx, userID, FriendRoomCreateInput{})
 }
 
+// RematchFriendRoom keeps the room membership and room code, but starts a new
+// server-owned round contract. The repository performs the final idempotent
+// compare-and-set so retries cannot reset the room twice.
+func (s *Service) RematchFriendRoom(ctx context.Context, userID uint64, roomCode, idempotencyKey string) (FriendRoom, error) {
+	if err := s.allowFriendRoomAction(ctx, userID, "rematch", 5, time.Minute); err != nil {
+		return FriendRoom{}, err
+	}
+	if s.rooms == nil {
+		return FriendRoom{}, apperror.ServiceUnavailable("好友房间服务暂不可用", nil)
+	}
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" || len(idempotencyKey) > 128 {
+		return FriendRoom{}, apperror.BadRequest("idempotency_key is required", nil)
+	}
+	room, err := s.GetFriendRoom(ctx, roomCode)
+	if err != nil {
+		return FriendRoom{}, err
+	}
+	if !friendRoomHasPlayer(room, userID) {
+		return FriendRoom{}, apperror.New(10004, 403, "当前用户不属于该好友房间", ErrFriendRoomNotMember)
+	}
+	rematchStore, ok := s.rooms.(FriendRoomRematchStore)
+	if !ok {
+		return FriendRoom{}, apperror.ServiceUnavailable("好友房间 rematch 服务暂不可用", nil)
+	}
+	release, lockErr := s.acquireSettlementLock(ctx, "friend-rematch:"+room.RoomCode)
+	if lockErr != nil {
+		return FriendRoom{}, lockErr
+	}
+	defer release()
+
+	code, seed, err := newFriendRoomIdentifiers()
+	if err != nil {
+		return FriendRoom{}, err
+	}
+	// The room code remains stable. A fresh round gets a fresh seed, match id,
+	// puzzle contract and isolated progress/result namespace.
+	room.RoundID = newFriendRoundID(code, seed)
+	room.MatchID = "match-" + room.RoundID
+	room.RoomSeed = seed
+	room.StartAt = 0
+	room.Status = FriendRoomWaiting
+	room.Rules.QuestionCount = friendQuestionCount
+	room.Rules.TimeLimitSeconds = friendTimeLimitSecs
+	room.Rules.Target = 24
+	room.Rules.NoHint = true
+	room.Rules.UseSameSeed = true
+	room.Rules.IntegerIntermediate = true
+	room.QuestionHash, room.PuzzleIDs, room.Puzzles = friendRoomContract(room)
+	now := time.Now().UTC()
+	for index := range room.Players {
+		room.Players[index].Ready = false
+		room.Players[index].LastSeenAt = now
+		room.Players[index].Disconnected = false
+	}
+	updated, err := rematchStore.RematchFriendRoom(ctx, room.RoomCode, userID, room, idempotencyKey)
+	if err != nil {
+		return FriendRoom{}, mapFriendRoomError(err)
+	}
+	return s.GetFriendRoom(ctx, updated.RoomCode)
+}
+
 func (s *Service) CreateFriendRoomWithRules(ctx context.Context, userID uint64, input FriendRoomCreateInput) (FriendRoom, error) {
 	// Public room creation is always casual. Ranked rooms are created only by
 	// the server's matchmaking path below; client-supplied ranked and season
@@ -246,8 +348,8 @@ func (s *Service) createMatchmakingFriendRoom(ctx context.Context, userID uint64
 	}, true, "matchmaking")
 }
 
-func (s *Service) createBotFriendRoom(ctx context.Context, userID uint64) (FriendRoom, error) {
-	return s.createFriendRoomWithRules(ctx, userID, FriendRoomCreateInput{}, false, "bot")
+func (s *Service) createBotFriendRoom(ctx context.Context, userID uint64, ranked bool, seasonID string) (FriendRoom, error) {
+	return s.createFriendRoomWithRules(ctx, userID, FriendRoomCreateInput{Ranked: ranked, SeasonID: seasonID}, ranked, "matchmaking")
 }
 
 func (s *Service) createFriendRoomWithRules(ctx context.Context, userID uint64, input FriendRoomCreateInput, allowRanked bool, trustedSource string) (FriendRoom, error) {
@@ -261,20 +363,11 @@ func (s *Service) createFriendRoomWithRules(ctx context.Context, userID uint64, 
 	if err != nil {
 		return FriendRoom{}, err
 	}
-	questionCount := input.QuestionCount
-	if questionCount == 0 {
-		questionCount = 8
-	}
-	if questionCount < 1 || questionCount > 16 {
-		return FriendRoom{}, apperror.BadRequest("question_count must be between 1 and 16", nil)
-	}
-	timeLimitSeconds := input.TimeLimitSeconds
-	if timeLimitSeconds == 0 {
-		timeLimitSeconds = 120
-	}
-	if timeLimitSeconds < 30 || timeLimitSeconds > 600 {
-		return FriendRoom{}, apperror.BadRequest("time_limit_seconds must be between 30 and 600", nil)
-	}
+	// Friend matches have one server-owned contract. Client supplied values are
+	// ignored so a caller cannot create a shorter/easier match or change the
+	// scoring window.
+	questionCount := friendQuestionCount
+	timeLimitSeconds := friendTimeLimitSecs
 	ranked := allowRanked && input.Ranked
 	seasonID := ""
 	if ranked {
@@ -303,6 +396,7 @@ func (s *Service) createFriendRoomWithRules(ctx context.Context, userID uint64, 
 			Version:        1,
 			RoomID:         "friend-" + code,
 			RoomCode:       code,
+			RoundID:        newFriendRoundID(code, seed),
 			Ranked:         ranked,
 			SeasonID:       seasonID,
 			RankedEligible: ranked && matchSource == "matchmaking",
@@ -488,7 +582,7 @@ func (s *Service) startFriendRoom(ctx context.Context, userID uint64, roomCode s
 	}
 
 	questionHash, puzzleIDs, puzzles := friendRoomContract(room)
-	room.MatchID = room.RoomID
+	room.MatchID = friendMatchID(room)
 	room.QuestionHash = questionHash
 	room.PuzzleIDs = puzzleIDs
 	room.Puzzles = puzzles
@@ -507,11 +601,11 @@ func friendMatchStartResponse(room FriendRoom) FriendMatchStartResponse {
 		questionCount = len(room.PuzzleIDs)
 	}
 	if questionCount <= 0 {
-		questionCount = 8
+		questionCount = friendQuestionCount
 	}
 	timeLimit := room.Rules.TimeLimitSeconds
 	if timeLimit <= 0 {
-		timeLimit = 120
+		timeLimit = friendTimeLimitSecs
 	}
 	matchID := room.MatchID
 	if matchID == "" {
@@ -519,12 +613,33 @@ func friendMatchStartResponse(room FriendRoom) FriendMatchStartResponse {
 	}
 	return FriendMatchStartResponse{
 		MatchID: matchID, RoomID: room.RoomID, RoomCode: room.RoomCode,
-		Ranked: room.Ranked, SeasonID: room.SeasonID, RankedEligible: room.RankedEligible,
+		RoundID: roomRoundID(room),
+		Ranked:  room.Ranked, SeasonID: room.SeasonID, RankedEligible: room.RankedEligible,
 		RoomSeed: room.RoomSeed, QuestionHash: room.QuestionHash,
 		PuzzleIDs: append([]string(nil), room.PuzzleIDs...), QuestionCount: questionCount,
 		Puzzles:   append([]FriendPuzzleContract(nil), room.Puzzles...),
 		TimeLimit: timeLimit, StartAt: room.StartAt, Status: room.Status,
 	}
+}
+
+func roomRoundID(room FriendRoom) string {
+	if strings.TrimSpace(room.RoundID) != "" {
+		return strings.TrimSpace(room.RoundID)
+	}
+	if strings.TrimSpace(room.MatchID) != "" {
+		return strings.TrimSpace(room.MatchID)
+	}
+	return strings.TrimSpace(room.RoomID)
+}
+
+func friendMatchID(room FriendRoom) string {
+	if strings.TrimSpace(room.MatchID) != "" {
+		return strings.TrimSpace(room.MatchID)
+	}
+	if strings.TrimSpace(room.RoundID) != "" {
+		return "match-" + strings.TrimSpace(room.RoundID)
+	}
+	return room.RoomID
 }
 
 func (s *Service) GetFriendRoomForUser(ctx context.Context, userID uint64, roomCode string) (FriendRoom, error) {
@@ -621,7 +736,13 @@ func (s *Service) UpdateFriendMatchProgress(ctx context.Context, userID uint64, 
 	if room.MatchID == "" || (room.Status != FriendRoomCountdown && room.Status != FriendRoomRunning) {
 		return FriendMatchProgressResponse{}, mapFriendRoomError(errForFriendRoomStatus(room.Status))
 	}
-	if existingProgress, progressErr := s.rooms.GetFriendMatchProgress(ctx, room.RoomCode); progressErr == nil {
+	if err := s.advanceFriendBot(ctx, room); err != nil {
+		return FriendMatchProgressResponse{}, err
+	}
+	if latest, refreshErr := s.GetFriendRoom(ctx, room.RoomCode); refreshErr == nil {
+		room = latest
+	}
+	if existingProgress, progressErr := s.getFriendMatchProgress(ctx, room); progressErr == nil {
 		for playerID, current := range existingProgress {
 			if playerID != userID && current.Finished {
 				return FriendMatchProgressResponse{}, apperror.New(10003, 409, "对手已完成本局，不能继续提交", ErrFriendRoomAlreadyStarted)
@@ -633,7 +754,7 @@ func (s *Service) UpdateFriendMatchProgress(ctx context.Context, userID uint64, 
 	}
 	questionCount := room.Rules.QuestionCount
 	if questionCount <= 0 {
-		questionCount = 8
+		questionCount = friendQuestionCount
 	}
 	if input.QuestionIndex < 0 || input.QuestionIndex >= questionCount {
 		return FriendMatchProgressResponse{}, apperror.BadRequest("question_index is out of range", nil)
@@ -644,12 +765,12 @@ func (s *Service) UpdateFriendMatchProgress(ctx context.Context, userID uint64, 
 	if input.Score < 0 || input.Score > 50000000 {
 		return FriendMatchProgressResponse{}, apperror.BadRequest("score is out of range", nil)
 	}
-	if input.Score > input.Solved*1000 {
+	if input.Score > input.Solved*1200 {
 		return FriendMatchProgressResponse{}, apperror.BadRequest("score is outside the server range", nil)
 	}
 	timeLimit := room.Rules.TimeLimitSeconds
 	if timeLimit <= 0 {
-		timeLimit = 120
+		timeLimit = friendTimeLimitSecs
 	}
 	if input.ElapsedMS < 0 || input.ElapsedMS > timeLimit*1000 {
 		return FriendMatchProgressResponse{}, apperror.BadRequest("elapsed_ms is out of range", nil)
@@ -657,37 +778,49 @@ func (s *Service) UpdateFriendMatchProgress(ctx context.Context, userID uint64, 
 	if input.EventID != "" && len(input.EventID) > 256 {
 		return FriendMatchProgressResponse{}, apperror.BadRequest("event_id is invalid", nil)
 	}
-	if input.Attempt != nil {
-		if err := validateFriendProgressAttempt(room, input); err != nil {
-			return FriendMatchProgressResponse{}, err
-		}
-	}
 	previous, exists, err := s.friendMatchPlayerProgress(ctx, room.RoomCode, userID)
 	if err != nil {
 		return FriendMatchProgressResponse{}, err
+	}
+	finished := input.Finished && (input.Solved >= questionCount || input.QuestionIndex >= questionCount-1)
+	combo := previous.Combo
+	attempts := append([]FriendMatchAttemptInput(nil), previous.Attempts...)
+	validated := previous.Validated
+	mistakes := previous.Mistakes
+	if input.Attempt != nil {
+		combo, attempts, validated, mistakes, err = validateFriendProgressAttemptState(room, input, previous, exists)
+		if err != nil {
+			return FriendMatchProgressResponse{}, err
+		}
+	} else if exists && (input.QuestionIndex != previous.QuestionIndex || input.Solved != previous.Solved || input.Score != previous.Score) {
+		return FriendMatchProgressResponse{}, apperror.BadRequest("friend match progress requires a validated attempt", nil)
 	}
 	if exists {
 		if input.QuestionIndex < previous.QuestionIndex ||
 			input.Solved < previous.Solved ||
 			input.Score < previous.Score ||
 			input.ElapsedMS < previous.ElapsedMS ||
-			(previous.Finished && !input.Finished) {
+			(previous.Finished && !finished) {
 			return FriendMatchProgressResponse{}, apperror.BadRequest("friend match progress cannot move backwards", nil)
 		}
 	}
 
 	progress := FriendMatchProgress{
-		UserID: userID, MatchID: room.MatchID, QuestionHash: room.QuestionHash,
+		UserID: userID, RoundID: room.RoundID, MatchID: room.MatchID, QuestionHash: room.QuestionHash,
 		EventID:       strings.TrimSpace(input.EventID),
 		QuestionIndex: input.QuestionIndex,
 		Solved:        input.Solved,
 		Score:         input.Score,
+		Mistakes:      mistakes,
+		Combo:         combo,
+		Validated:     validated,
+		Attempts:      attempts,
 		ElapsedMS:     input.ElapsedMS,
-		Finished:      input.Finished,
+		Finished:      finished,
 		UpdatedAt:     time.Now().UTC(),
 	}
 	if eventStore, ok := s.rooms.(FriendMatchProgressEventStore); ok {
-		accepted, saveErr := eventStore.SaveFriendMatchProgressEvent(ctx, room.RoomCode, progress)
+		accepted, saveErr := s.saveFriendMatchProgressEvent(ctx, room, eventStore, progress)
 		if saveErr != nil {
 			if errors.Is(saveErr, ErrFriendMatchProgressStale) {
 				return FriendMatchProgressResponse{}, apperror.BadRequest("friend match progress cannot move backwards", saveErr)
@@ -701,11 +834,11 @@ func (s *Service) UpdateFriendMatchProgress(ctx context.Context, userID uint64, 
 		if exists && input.EventID != "" && input.EventID == previous.EventID {
 			return FriendMatchProgressResponse{}, apperror.BadRequest("friend match event_id has already been processed", nil)
 		}
-		if err := s.rooms.SaveFriendMatchProgress(ctx, room.RoomCode, progress); err != nil {
+		if err := s.saveFriendMatchProgress(ctx, room, progress); err != nil {
 			return FriendMatchProgressResponse{}, err
 		}
 	}
-	if input.Finished {
+	if finished {
 		if lifecycle, ok := s.rooms.(FriendRoomLifecycleStore); ok {
 			if finishErr := lifecycle.FinishFriendRoom(ctx, room.RoomCode, room.MatchID); finishErr != nil && !errors.Is(finishErr, ErrFriendRoomStarted) {
 				return FriendMatchProgressResponse{}, finishErr
@@ -716,13 +849,125 @@ func (s *Service) UpdateFriendMatchProgress(ctx context.Context, userID uint64, 
 	return s.friendMatchProgressResponse(ctx, userID, room)
 }
 
+// validateFriendProgressAttemptState validates the incremental contract used
+// by the live progress endpoint. Every score/solve change must be backed by a
+// server-verified attempt and the same scoring formula as final submission.
+func validateFriendProgressAttemptState(room FriendRoom, input FriendMatchProgressInput, previous FriendMatchProgress, exists bool) (int, []FriendMatchAttemptInput, bool, int, error) {
+	if err := validateFriendProgressAttempt(room, input); err != nil {
+		return 0, nil, false, 0, err
+	}
+	attempt := *input.Attempt
+	previousScore, previousSolved, previousMistakes, comboBefore := 0, 0, 0, 0
+	expectedIndex := 0
+	attempts := []FriendMatchAttemptInput(nil)
+	if exists {
+		previousScore = previous.Score
+		previousSolved = previous.Solved
+		previousMistakes = previous.Mistakes
+		comboBefore = previous.Combo
+		expectedIndex = previous.QuestionIndex
+		attempts = append(attempts, previous.Attempts...)
+		if len(attempts) > 0 && attempts[len(attempts)-1].Solved {
+			expectedIndex++
+		}
+	}
+	if attempt.QuestionIndex != expectedIndex || input.QuestionIndex != attempt.QuestionIndex || input.ElapsedMS != attempt.ElapsedMS {
+		return 0, nil, false, 0, apperror.BadRequest("friend match attempt sequence is invalid", nil)
+	}
+	if attempt.ElapsedMS < previous.ElapsedMS || attempt.Mistakes < previousMistakes {
+		return 0, nil, false, 0, apperror.BadRequest("friend match attempt time or mistakes are invalid", nil)
+	}
+	if attempt.Solved {
+		expectedDelta := friendMatchScoreDelta(friendTimeLimitForRoom(room), attempt.ElapsedMS, comboBefore, attempt.Mistakes)
+		if attempt.ScoreDelta != expectedDelta || input.Score != previousScore+expectedDelta || input.Solved != previousSolved+1 {
+			return 0, nil, false, 0, apperror.BadRequest("friend match progress score is invalid", nil)
+		}
+		comboBefore++
+	} else if attempt.ScoreDelta != 0 || input.Score != previousScore || input.Solved != previousSolved {
+		return 0, nil, false, 0, apperror.BadRequest("friend match unsolved progress is invalid", nil)
+	} else {
+		comboBefore = 0
+	}
+	attempts = append(attempts, attempt)
+	return comboBefore, attempts, true, attempt.Mistakes, nil
+}
+
+func friendTimeLimitForRoom(room FriendRoom) int {
+	if room.Rules.TimeLimitSeconds > 0 {
+		return room.Rules.TimeLimitSeconds
+	}
+	return friendTimeLimitSecs
+}
+
+func friendQuestionCountForRoom(room FriendRoom) int {
+	if room.Rules.QuestionCount > 0 {
+		return room.Rules.QuestionCount
+	}
+	return friendQuestionCount
+}
+
 func (s *Service) friendMatchPlayerProgress(ctx context.Context, roomCode string, userID uint64) (FriendMatchProgress, bool, error) {
-	progress, err := s.rooms.GetFriendMatchProgress(ctx, roomCode)
+	room, err := s.GetFriendRoom(ctx, roomCode)
+	if err != nil {
+		return FriendMatchProgress{}, false, err
+	}
+	progress, err := s.getFriendMatchProgress(ctx, room)
 	if err != nil {
 		return FriendMatchProgress{}, false, err
 	}
 	current, exists := progress[userID]
 	return current, exists, nil
+}
+
+func (s *Service) getFriendMatchProgress(ctx context.Context, room FriendRoom) (map[uint64]FriendMatchProgress, error) {
+	if roundStore, ok := s.rooms.(FriendMatchRoundStore); ok && strings.TrimSpace(room.RoundID) != "" {
+		return roundStore.GetFriendMatchProgressRound(ctx, room.RoomCode, room.RoundID)
+	}
+	return s.rooms.GetFriendMatchProgress(ctx, room.RoomCode)
+}
+
+func (s *Service) saveFriendMatchProgress(ctx context.Context, room FriendRoom, progress FriendMatchProgress) error {
+	if roundStore, ok := s.rooms.(FriendMatchRoundStore); ok && strings.TrimSpace(room.RoundID) != "" {
+		return roundStore.SaveFriendMatchProgressRound(ctx, room.RoomCode, room.RoundID, progress)
+	}
+	return s.rooms.SaveFriendMatchProgress(ctx, room.RoomCode, progress)
+}
+
+func (s *Service) saveFriendMatchProgressEvent(ctx context.Context, room FriendRoom, eventStore FriendMatchProgressEventStore, progress FriendMatchProgress) (bool, error) {
+	if roundStore, ok := s.rooms.(FriendMatchRoundStore); ok && strings.TrimSpace(room.RoundID) != "" {
+		return roundStore.SaveFriendMatchProgressEventRound(ctx, room.RoomCode, room.RoundID, progress)
+	}
+	return eventStore.SaveFriendMatchProgressEvent(ctx, room.RoomCode, progress)
+}
+
+func (s *Service) getFriendMatchSubmissions(ctx context.Context, room FriendRoom) (map[uint64]FriendMatchSubmissionRecord, error) {
+	if roundStore, ok := s.rooms.(FriendMatchRoundStore); ok && strings.TrimSpace(room.RoundID) != "" {
+		return roundStore.GetFriendMatchSubmissionsRound(ctx, room.RoomCode, room.RoundID)
+	}
+	resultStore, ok := s.rooms.(FriendMatchResultStore)
+	if !ok {
+		return nil, nil
+	}
+	return resultStore.GetFriendMatchSubmissions(ctx, room.RoomCode)
+}
+
+func (s *Service) saveFriendMatchSubmission(ctx context.Context, room FriendRoom, submission FriendMatchSubmissionRecord) error {
+	if roundStore, ok := s.rooms.(FriendMatchRoundStore); ok && strings.TrimSpace(room.RoundID) != "" {
+		return roundStore.SaveFriendMatchSubmissionRound(ctx, room.RoomCode, room.RoundID, submission)
+	}
+	resultStore, ok := s.rooms.(FriendMatchResultStore)
+	if !ok {
+		return apperror.ServiceUnavailable("好友对战结算服务暂不可用", nil)
+	}
+	return resultStore.SaveFriendMatchSubmission(ctx, room.RoomCode, submission)
+}
+
+func friendMatchResultStoreAvailable(rooms FriendRoomStore) bool {
+	if _, ok := rooms.(FriendMatchResultStore); ok {
+		return true
+	}
+	_, ok := rooms.(FriendMatchRoundStore)
+	return ok
 }
 
 func (s *Service) GetFriendMatchProgress(ctx context.Context, userID uint64, roomCode string) (FriendMatchProgressResponse, error) {
@@ -775,11 +1020,12 @@ func (s *Service) GetFriendMatchProgress(ctx context.Context, userID uint64, roo
 }
 
 func (s *Service) resolveFriendMatchForUser(ctx context.Context, userID uint64, room FriendRoom) (*FriendMatchResult, int, json.RawMessage, error) {
-	resultStore, ok := s.rooms.(FriendMatchResultStore)
-	if !ok {
-		return nil, 0, nil, nil
+	if _, ok := s.rooms.(FriendMatchResultStore); !ok {
+		if _, roundOK := s.rooms.(FriendMatchRoundStore); !roundOK {
+			return nil, 0, nil, nil
+		}
 	}
-	submissions, err := resultStore.GetFriendMatchSubmissions(ctx, room.RoomCode)
+	submissions, err := s.getFriendMatchSubmissions(ctx, room)
 	if err != nil || len(submissions) < 2 {
 		return nil, 0, nil, err
 	}
@@ -834,7 +1080,7 @@ func (s *Service) resolveFriendMatchForUser(ctx context.Context, userID uint64, 
 }
 
 func (s *Service) friendMatchProgressResponse(ctx context.Context, userID uint64, room FriendRoom) (FriendMatchProgressResponse, error) {
-	progress, err := s.rooms.GetFriendMatchProgress(ctx, room.RoomCode)
+	progress, err := s.getFriendMatchProgress(ctx, room)
 	if err != nil {
 		return FriendMatchProgressResponse{}, err
 	}
@@ -859,6 +1105,7 @@ func (s *Service) friendMatchProgressResponse(ctx context.Context, userID uint64
 	return FriendMatchProgressResponse{
 		RoomID:   room.RoomID,
 		RoomCode: room.RoomCode,
+		RoundID:  room.RoundID,
 		Status:   room.Status,
 		Players:  players,
 	}, nil
@@ -927,6 +1174,8 @@ func mapFriendRoomError(err error) error {
 		return apperror.New(10004, 403, "当前用户不属于该好友房间", err)
 	case errors.Is(err, ErrFriendRoomNotReady):
 		return apperror.New(10003, 409, "双方准备后才能开始对战", err)
+	case errors.Is(err, ErrFriendRoomRematchNotAllowed):
+		return apperror.New(10003, 409, "上一轮对局尚未结束，暂时不能 rematch", err)
 	default:
 		return err
 	}
@@ -976,4 +1225,11 @@ func newFriendRoomIdentifiers() (string, int64, error) {
 		return "", 0, fmt.Errorf("generate friend room seed: %w", err)
 	}
 	return strconv.FormatInt(100000+codeValue.Int64(), 10), seedValue.Int64(), nil
+}
+
+func newFriendRoundID(roomCode string, seed int64) string {
+	// The seed is already generated with crypto/rand. Combining it with the
+	// stable room code gives a compact, opaque identifier without exposing any
+	// user data in Redis keys or API responses.
+	return fmt.Sprintf("%s-%x", strings.TrimSpace(roomCode), uint64(seed))
 }

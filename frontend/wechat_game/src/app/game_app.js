@@ -6,6 +6,7 @@ const matchData = require('../core/match_data.js');
 const skinCatalog = require('../core/skin_catalog.js');
 const storage = require('../services/storage.js');
 const rankService = require('../services/rank_service.js');
+const rankHistoryService = require('../services/rank_history_service.js');
 const diagnostics = require('../services/diagnostics.js');
 const apiClient = require('../services/api_client.js');
 const platform = require('../services/platform.js');
@@ -70,6 +71,15 @@ class GameApp {
     this.progress = backendConfigured ? storage.normalize({}) : storage.load();
     this.storageLoadInfo = storage.getLastLoadInfo ? storage.getLastLoadInfo() : {};
     this.backendAuth = { status: 'pending', user: null, error: null };
+    // Avoid overlapping login/bootstrap attempts when the player taps a level
+    // repeatedly while the account session is still being initialized.
+    this.backendLoginInFlight = false;
+    // Pending daily runs are checked during bootstrap, but they must not
+    // change the first screen on their own. The player can resume one from
+    // the Daily Challenge entry after the account session is ready.
+    this.pendingResumeRuns = {};
+    this.pendingRunsRestoreReady = !backendConfigured;
+    this.pendingRunsRestorePromise = null;
     if (backendConfigured) this.startBackendLogin();
     else this.backendAuth = { status: 'offline', user: null, error: '后端地址尚未配置，当前使用本地模式' };
     // 先初始化，再领取登录奖励。不要在后面把已领取的奖励重置为 0，
@@ -155,6 +165,9 @@ class GameApp {
     this.friendRoomRequestInFlight = false;
     this.friendRoomExpired = false;
     this.friendRoomError = '';
+    this.friendRematchWaiting = false;
+    this.friendRematchRequestInFlight = false;
+    this.friendRematchPreviousMatchID = '';
     this.menuPage = clamp(Math.floor(safeNumber(this.progress.unlocked_level, 0) / 20), 0, 9);
     this.currentLevel = 0;
     // 每次切换模式、重开或返回首页都会递增。旧的网络响应即使晚到，也不能覆盖当前这一局。
@@ -178,6 +191,8 @@ class GameApp {
     this.freeUndo = true;
     this.freeHint = true;
     this.hintUsed = false;
+    this.hintsUsed = 0;
+    this.questionHintsUsed = 0;
     this.status = '';
     this.result = null;
     this.shopNotice = '';
@@ -216,6 +231,9 @@ class GameApp {
     this.endlessUsedKeys = {};
     this.campaignRun = null;
     this.campaignAttempts = [];
+    this.campaignPrefetch = null;
+    this.campaignNextRequested = false;
+    this.campaignStartRequest = null;
     this.campaignRunLoading = false;
     this.dailyRun = null;
     this.dailyAttempts = [];
@@ -237,6 +255,8 @@ class GameApp {
     this.leaderboardRemote = {};
     this.leaderboardRemoteLoading = {};
     this.leaderboardRemoteFailedAt = {};
+    this.recordsTab = 'ranked';
+    this.rankHistoryState = this.createRankHistoryState();
     this.loop = this.loop.bind(this);
     wx.onTouchStart((event) => this.onTouch(event));
     if (wx.onKeyboardInput) wx.onKeyboardInput((event) => this.onFriendKeyboardInput(event));
@@ -257,9 +277,35 @@ class GameApp {
     this.loop();
   }
 
+  createRankHistoryState() {
+    return {
+      summary: null,
+      matches: [],
+      nextCursor: '',
+      hasMore: false,
+      loading: false,
+      loadingMore: false,
+      loaded: false,
+      error: '',
+      unavailable: false,
+      selectedMatch: null,
+    };
+  }
+
+  resetRankHistoryState() {
+    this.rankHistoryState = this.createRankHistoryState();
+  }
+
   activateBackendAccount(user) {
     const accountID = user && (user.id !== undefined ? user.id : user.user_id);
     if (accountID === undefined || accountID === null || String(accountID).trim() === '') return false;
+    const previousAccountID = storage.getActiveAccountID ? String(storage.getActiveAccountID() || '') : '';
+    if (previousAccountID && previousAccountID !== String(accountID)) {
+      this.resetRankHistoryState();
+      this.campaignPrefetch = null;
+      this.campaignNextRequested = false;
+      this.campaignStartRequest = null;
+    }
     if (storage.setAccount) this.progress = storage.setAccount(accountID);
     this.storageLoadInfo = storage.getLastLoadInfo ? storage.getLastLoadInfo() : {};
     if (this.audio && this.progress.audio && this.audio.applySettings) this.audio.applySettings(this.progress.audio);
@@ -291,6 +337,8 @@ class GameApp {
   }
 
   startBackendLogin() {
+    if (this.backendLoginInFlight) return false;
+    this.backendLoginInFlight = true;
     apiClient.ensureLogin().then((user) => {
       this.activateBackendAccount(user);
       this.syncProfileFromBackend(user);
@@ -306,14 +354,30 @@ class GameApp {
         }
         this.loginReward = Math.max(0, Number(bootstrap && bootstrap.login_reward || 0));
         this.backendAuth = { status: 'ready', user: accountUser, error: null };
-        // 普通 Run 的恢复必须发生在 bootstrap 完成并确定账号之后。好友房
-        // 仍由现有 reconnect 链路接管，不能被这里的恢复流程抢走。
-        this.restorePendingRuns().then(() => this.syncFriendRoomWithBackend()).catch((restoreError) => {
+        // Run 状态只在 bootstrap 确定账号后检查；启动时不自动进入任何
+        // 普通模式，好友房继续由现有 reconnect 链路接管。
+        this.pendingRunsRestoreReady = false;
+        const restorePromise = this.restorePendingRuns();
+        this.pendingRunsRestorePromise = restorePromise;
+        restorePromise.then(() => {
+          this.pendingRunsRestoreReady = true;
+          if (this.pendingRunsRestorePromise === restorePromise) this.pendingRunsRestorePromise = null;
+          this.syncFriendRoomWithBackend();
+          this.startQueuedCampaign();
+          this.backendLoginInFlight = false;
+        }).catch((restoreError) => {
+          this.pendingRunsRestoreReady = true;
+          if (this.pendingRunsRestorePromise === restorePromise) this.pendingRunsRestorePromise = null;
           this.status = '暂时无法恢复上次对局，请稍后重试';
           try { if (typeof console !== 'undefined' && console.warn) console.warn('[game-pending-run-restore]', restoreError); } catch (logError) { /* visible status is enough */ }
+          // 恢复检查失败不代表账号登录失败；仍然允许排队中的闯关进入，
+          // 但不会使用本地结算替代服务端 Run。
+          this.startQueuedCampaign();
+          this.backendLoginInFlight = false;
         });
       }).catch((bootstrapError) => {
         this.backendAuth = { status: 'offline', user: null, error: String(bootstrapError && bootstrapError.message || bootstrapError || 'bootstrap failed') };
+        this.backendLoginInFlight = false;
         if (this.screen === 'friend_lobby') {
           this.friendLocalFallback = false;
           this.friendRoomBackendStatus = 'error';
@@ -326,6 +390,7 @@ class GameApp {
       });
     }).catch((error) => {
       this.backendAuth = { status: 'offline', user: null, error: String(error && error.message || error || 'login failed') };
+      this.backendLoginInFlight = false;
       if (this.screen === 'friend_lobby' && !this.isBackendRequired()) this.activateLocalFriendRoom(this.friendRoom && this.friendRoom.room_code);
       else if (this.screen === 'friend_lobby') {
         this.friendLocalFallback = false;
@@ -337,6 +402,16 @@ class GameApp {
         if (typeof console !== 'undefined' && console.warn) console.warn('[game-backend-login]', this.backendAuth.error);
       } catch (logError) { /* 日志失败不影响游戏 */ }
     });
+  }
+
+  startQueuedCampaign() {
+    const request = this.campaignStartRequest;
+    if (!request) return false;
+    if (request.token !== this.gameRequestToken || this.screen !== 'levels'
+      || !this.backendAuth || this.backendAuth.status !== 'ready') return false;
+    this.campaignStartRequest = null;
+    this.startCampaign(request.index, request.options || {});
+    return true;
   }
 
   pendingRunAPI(mode) {
@@ -377,7 +452,9 @@ class GameApp {
       question_index: options.question_index !== undefined ? options.question_index : this.currentQuestion,
       score: options.score !== undefined ? options.score : this.score,
       mistakes: options.mistakes !== undefined ? options.mistakes : this.mistakes,
-      hints_used: options.hints_used !== undefined ? options.hints_used : (this.hintUsed ? 1 : 0),
+      hints_used: options.hints_used !== undefined
+        ? options.hints_used
+        : Math.max(0, Math.floor(Number(this.hintsUsed) || 0)),
       best_combo: options.best_combo !== undefined ? options.best_combo : this.maxCombo,
       attempts,
       attempts_complete: options.attempts_complete !== false,
@@ -500,15 +577,22 @@ class GameApp {
     this.freeUndo = true;
     this.freeHint = true;
     this.hintUsed = false;
+    this.hintsUsed = Math.max(0, Math.floor(Number(run.hints_used !== undefined ? run.hints_used : record.pending.hints_used) || 0));
+    this.questionHintsUsed = 0;
     this.transitioning = false;
     this.settling = false;
     this.autoNextAt = 0;
-    this.puzzles = run.puzzles.map((puzzleRecord) => ({
-      ...puzzleRecord,
-      puzzleId: puzzleRecord.puzzleId || puzzleRecord.puzzle_id,
-      puzzle_id: puzzleRecord.puzzle_id || puzzleRecord.puzzleId,
-      target: 24,
-    }));
+    this.puzzles = run.puzzles.map((puzzleRecord, puzzleIndex) => {
+      if (mode === 'campaign' && typeof this.normalizeCampaignPuzzle === 'function') {
+        return this.normalizeCampaignPuzzle(puzzleRecord, Number(run.level_id || record.pending.level_id || 0), puzzleIndex);
+      }
+      return {
+        ...puzzleRecord,
+        puzzleId: puzzleRecord.puzzleId || puzzleRecord.puzzle_id,
+        puzzle_id: puzzleRecord.puzzle_id || puzzleRecord.puzzleId,
+        target: 24,
+      };
+    });
     if (mode === 'campaign') {
       this.currentLevel = Math.max(0, Math.floor(Number(run.level_id !== undefined ? run.level_id : record.pending.level_id) || 0));
       this.campaignRun = run;
@@ -528,6 +612,8 @@ class GameApp {
         rule_text: run.rule_text || run.ruleText || '',
         time_limit: Number(run.time_limit || run.timeLimitSeconds || 150),
         time_limit_ms: Number(run.time_limit_ms || run.timeLimitMS || 150000),
+        question_count: Number(run.question_count || run.questionCount || this.puzzles.length),
+        hint_count: run.hint_count !== undefined ? Number(run.hint_count) : Number(run.hintCount !== undefined ? run.hintCount : 1),
         allow_hint: run.allow_hint !== undefined ? Boolean(run.allow_hint) : true,
         puzzles: this.puzzles,
       };
@@ -560,14 +646,22 @@ class GameApp {
   restorePendingRuns() {
     if (!this.backendAuth || this.backendAuth.status !== 'ready') return Promise.resolve(false);
     if (this.friendRoomFromInvite || this.mode === 'friend' || ['friend_lobby', 'friend_matchmaking'].includes(this.screen)) return Promise.resolve(false);
+    this.pendingResumeRuns = {};
     const pending = storage.getPendingRuns ? Object.values(storage.getPendingRuns()) : [];
     if (!pending.length) return Promise.resolve(false);
     return Promise.all(pending.map((record) => this.resumeOnePendingRun(record))).then((results) => {
       const active = results.filter((item) => item && item.status === 'active')
         .sort((left, right) => Number(right.pending.saved_at || 0) - Number(left.pending.saved_at || 0));
+      // Never change the startup screen from a background restore. Every
+      // active run is kept for the matching mode entry to consume explicitly.
+      active.forEach((item) => {
+        const mode = String(item.pending.mode || '').toLowerCase();
+        if (['campaign', 'daily', 'endless'].includes(mode) && !this.pendingResumeRuns[mode]) {
+          this.pendingResumeRuns[mode] = item;
+        }
+      });
       const blocked = results.find((item) => item && item.status === 'incomplete');
       const expired = results.find((item) => item && item.status === 'expired');
-      if (active.length) return this.applyResumedRun(active[0]);
       if (blocked) {
         this.status = '上次对局记录不完整，请重新开始本模式';
         this.triggerFeedback('error', this.status);
@@ -591,7 +685,10 @@ class GameApp {
     this.friendRoomBackendLoading = true;
     this.friendRoomBackendStatus = 'loading';
     const requestToken = this.gameRequestToken;
-    apiClient.createFriendRoom().then((room) => {
+    apiClient.createFriendRoom({
+      question_count: friendMatch.QUESTION_COUNT,
+      time_limit_seconds: friendMatch.TIME_LIMIT,
+    }).then((room) => {
       if (requestToken !== this.gameRequestToken || this.screen !== 'friend_lobby') return;
       if (room && room.room_code) {
         if (!this.applyFriendRoomPayload(room)) return;
@@ -727,12 +824,25 @@ class GameApp {
 
   applyFriendRoomPayload(room) {
     if (!room || !room.room_code) return false;
+    const incomingStatus = String(room.status || room.state || '').toLowerCase();
+    const incomingMatchID = String(room.match_id || room.matchId || room.round_id || room.roundId || '');
+    // While the rematch request is in flight, an old room poll can still return
+    // the finished previous round. Do not feed that stale state into the new
+    // waiting room or auto-start the old match again.
+    if (this.friendRematchWaiting
+      && this.friendRematchRequestInFlight
+      && incomingStatus === friendMatch.ROOM_STATUS.FINISHED
+      && (!incomingMatchID || incomingMatchID === this.friendRematchPreviousMatchID)) return true;
     if (this.isFriendRoomTerminal(room)) {
       this.markFriendRoomExpired(String(room.status || room.state || 'expired'));
       return false;
     }
     this.friendRoom = friendMatch.normalizeRoom(room, this.friendRoom);
     this.friendRules = Object.assign({}, friendMatch.rules(), this.friendRoom.rules || {});
+    if (this.friendRematchWaiting && incomingStatus !== friendMatch.ROOM_STATUS.FINISHED) {
+      if (incomingMatchID && incomingMatchID !== this.friendRematchPreviousMatchID) this.friendRematchWaiting = false;
+      else if (incomingStatus === friendMatch.ROOM_STATUS.WAITING) this.friendRematchWaiting = false;
+    }
     this.friendRoomLastPollAt = Date.now();
     this.maybeAutoStartFriendRoom();
     return true;
@@ -746,6 +856,7 @@ class GameApp {
       && Boolean(this.friendSelfReady);
     if (!allReady) return;
     const status = String(this.friendRoom.status || '').toLowerCase();
+    if (this.friendRematchWaiting && status === friendMatch.ROOM_STATUS.FINISHED) return;
     if (status === friendMatch.ROOM_STATUS.COUNTDOWN || status === friendMatch.ROOM_STATUS.RUNNING) {
       this.friendServerStartAt = Number(this.friendRoom.start_at || this.friendRoom.startAt || 0) || Date.now();
       this.startFriend();
@@ -1122,6 +1233,75 @@ class GameApp {
     this.loadRemoteLeaderboard(mode, scope);
   }
 
+  loadRankHistory(options = {}) {
+    if (!this.rankHistoryState || typeof this.rankHistoryState !== 'object') this.resetRankHistoryState();
+    const state = this.rankHistoryState;
+    const append = Boolean(options.append);
+    const refresh = Boolean(options.refresh);
+    if (refresh && !state.loading && !state.loadingMore) {
+      this.resetRankHistoryState();
+      return this.loadRankHistory();
+    }
+    if (!this.backendAuth || this.backendAuth.status !== 'ready'
+      || !apiClient.getRankedSummary || !apiClient.getRankedMatches) {
+      state.loaded = true;
+      state.unavailable = true;
+      state.error = '排位战绩服务尚未连接，请登录后重试';
+      return Promise.resolve(false);
+    }
+    if (append && (!state.hasMore || state.loadingMore || state.loading)) return Promise.resolve(false);
+    if (!append && (state.loading || (state.loaded && !state.unavailable))) return Promise.resolve(false);
+    if (append) state.loadingMore = true;
+    else state.loading = true;
+    state.unavailable = false;
+    state.error = '';
+    const rank = rankService.normalize(this.progress && this.progress.rank);
+    const seasonID = String(rank.season_id || rankService.seasonId());
+    const request = append
+      ? apiClient.getRankedMatches({ season_id: seasonID, cursor: state.nextCursor, limit: 20 }).then((payload) => ({ summary: null, page: payload }))
+      : Promise.all([
+        apiClient.getRankedSummary(seasonID),
+        apiClient.getRankedMatches({ season_id: seasonID, limit: 20 }),
+      ]).then(([summary, page]) => ({ summary, page }));
+    return request.then((result) => {
+      const page = rankHistoryService.normalizePage(result.page);
+      if (result.summary) state.summary = rankHistoryService.normalizeSummary(result.summary, rank);
+      state.matches = append ? state.matches.concat(page.matches) : page.matches;
+      state.nextCursor = page.next_cursor;
+      state.hasMore = page.has_more;
+      state.loaded = true;
+      state.unavailable = false;
+      state.error = '';
+      return true;
+    }).catch((error) => {
+      state.loaded = true;
+      state.unavailable = false;
+      state.error = Number(error && error.statusCode) === 404
+        ? '排位战绩服务尚未开放，请先完成后端接口配置'
+        : String(error && error.message || '排位战绩加载失败，请稍后重试');
+      return false;
+    }).finally(() => {
+      state.loading = false;
+      state.loadingMore = false;
+    });
+  }
+
+  refreshRankHistory() {
+    if (!this.rankHistoryState || this.rankHistoryState.loading || this.rankHistoryState.loadingMore) return;
+    this.loadRankHistory({ refresh: true });
+  }
+
+  loadMoreRankHistory() {
+    if (!this.rankHistoryState || !this.rankHistoryState.hasMore) return;
+    this.loadRankHistory({ append: true });
+  }
+
+  selectRankedMatch(match) {
+    if (!this.rankHistoryState) this.resetRankHistoryState();
+    const currentID = this.rankHistoryState.selectedMatch && this.rankHistoryState.selectedMatch.match_id;
+    this.rankHistoryState.selectedMatch = currentID === match.match_id ? null : match;
+  }
+
   markServerSubmissionFailed(mode, error) {
     if (!this.isBackendRequired()) return;
     const message = '服务器未确认，进度未保存，请重试';
@@ -1129,6 +1309,12 @@ class GameApp {
       this.result.serverSubmitPending = false;
       this.result.serverVerified = false;
       this.result.serverSubmitError = true;
+      if (mode === 'campaign') {
+        this.result.nextLevelPending = false;
+        this.result.campaignNextRequested = false;
+        this.result.nextLevelLoading = false;
+        this.campaignNextRequested = false;
+      }
     }
     this.status = message;
     this.triggerFeedback('error', message);
@@ -1137,31 +1323,116 @@ class GameApp {
     } catch (logError) { /* visible feedback is sufficient */ }
   }
 
+  startRequestedCampaignNext(levelID) {
+    const nextLevel = Math.max(0, Math.floor(Number(levelID) || 0));
+    const result = this.result;
+    if (!result || this.mode !== 'campaign' || this.screen !== 'result'
+      || !result.levelComplete || !result.next || !result.campaignNextRequested
+      || result.nextLevelLoading) return false;
+    result.nextLevelLoading = true;
+    result.nextLevelPending = true;
+    this.campaignNextRequested = true;
+    this.status = '下一关准备中，马上开始';
+    const runPromise = typeof this.prefetchCampaignRun === 'function'
+      ? this.prefetchCampaignRun(nextLevel)
+      : null;
+    if (!runPromise) {
+      result.nextLevelLoading = false;
+      result.nextLevelPending = false;
+      result.campaignNextRequested = false;
+      this.campaignNextRequested = false;
+      this.status = '下一关暂时无法准备，请重试';
+      return false;
+    }
+    Promise.resolve(runPromise).then((run) => {
+      const isCurrentRequest = this.screen === 'result' && this.mode === 'campaign' && this.result
+        && this.result.campaignNextRequested && this.currentLevel + 1 === nextLevel;
+      if (!isCurrentRequest) return;
+      if (!run) {
+        this.result.nextLevelLoading = false;
+        this.result.nextLevelPending = false;
+        this.result.campaignNextRequested = false;
+        this.campaignNextRequested = false;
+        this.status = '下一关准备失败，请再点一次';
+        this.triggerFeedback('error', '下一关暂时无法准备，请重试');
+        return;
+      }
+      this.result.campaignNextRequested = false;
+      this.result.nextLevelLoading = false;
+      this.result.nextLevelPending = false;
+      this.campaignNextRequested = false;
+      this.startCampaign(nextLevel);
+    }).catch((error) => {
+      if (!this.result || this.screen !== 'result' || this.mode !== 'campaign') return;
+      this.result.nextLevelLoading = false;
+      this.result.nextLevelPending = false;
+      this.result.campaignNextRequested = false;
+      this.campaignNextRequested = false;
+      this.status = '下一关准备失败，请再点一次';
+      try { if (typeof console !== 'undefined' && console.warn) console.warn('[campaign-next]', error); } catch (logError) { /* retry remains available */ }
+    });
+    return true;
+  }
+
   submitCampaignLevelCompletion(levelID, score, stars) {
     if (!this.backendAuth || this.backendAuth.status !== 'ready') return;
     const applyServerResult = (serverResult) => {
       if (!serverResult) return;
       this.leaderboardRemote = {};
       this.leaderboardRemoteFailedAt = {};
-      const serverLevelID = String(Number(serverResult.level_id));
-      const serverProgress = serverResult.progress && typeof serverResult.progress === 'object'
+      const serverAccepted = serverResult.validated !== undefined ? Boolean(serverResult.validated) : true;
+      const completedLevelID = Number(serverResult.level_id !== undefined ? serverResult.level_id : levelID);
+      const serverLevelID = String(Number.isFinite(completedLevelID) ? completedLevelID : Math.max(0, Number(levelID) || 0));
+      const rawProgress = serverResult.progress && typeof serverResult.progress === 'object'
         ? serverResult.progress
-        : {
-          coins: Number(serverResult.coins || 0),
-          unlocked_level: Number(serverResult.unlocked_level || 0),
-          levels: {
-            [serverLevelID]: {
-              stars: Number(serverResult.stars || 0),
-              best_score: Number(serverResult.best_score || serverResult.score || 0),
-              completed: true,
-            },
-          },
-          level_rewards: Number(serverResult.reward_coins || 0) > 0 ? { [serverLevelID]: true } : {},
+        : null;
+      // Some deployed API versions return a partial progress object. Keep the
+      // full server snapshot when present, but always add the server-validated
+      // level completion so the level page cannot see an unlocked count with a
+      // missing previous-level record.
+      const hasProgressSnapshot = rawProgress && (
+        Object.prototype.hasOwnProperty.call(rawProgress, 'unlocked_level')
+        || Object.prototype.hasOwnProperty.call(rawProgress, 'levels')
+        || Object.prototype.hasOwnProperty.call(rawProgress, 'coins')
+      );
+      const serverProgress = hasProgressSnapshot ? { ...rawProgress } : {
+        coins: Number(serverResult.coins || 0),
+        unlocked_level: Number(serverResult.unlocked_level || 0),
+        levels: {},
+        level_rewards: Number(serverResult.reward_coins || 0) > 0 ? { [serverLevelID]: true } : {},
+      };
+      serverProgress.levels = serverProgress.levels && typeof serverProgress.levels === 'object'
+        ? { ...serverProgress.levels }
+        : {};
+      if (serverAccepted && Number.isFinite(completedLevelID) && completedLevelID >= 0) {
+        const previousLevel = serverProgress.levels[serverLevelID] && typeof serverProgress.levels[serverLevelID] === 'object'
+          ? serverProgress.levels[serverLevelID]
+          : {};
+        serverProgress.levels[serverLevelID] = {
+          ...previousLevel,
+          stars: Math.max(Number(previousLevel.stars || 0), Number(serverResult.stars || 0)),
+          best_score: Math.max(Number(previousLevel.best_score || 0), Number(serverResult.best_score || serverResult.score || 0)),
+          completed: true,
         };
+        serverProgress.unlocked_level = Math.max(
+          Number(serverProgress.unlocked_level || 0),
+          Number(serverResult.unlocked_level || 0),
+          completedLevelID + 1,
+        );
+        serverProgress.last_level = Math.max(Number(serverProgress.last_level || 0), completedLevelID);
+      }
       this.progress = storage.mergeServerProgress(this.progress, serverProgress, { authoritative: true });
       if (this.result) {
         this.result.serverSubmitPending = false;
-        this.result.serverVerified = serverResult.validated !== undefined ? Boolean(serverResult.validated) : true;
+        this.result.serverVerified = serverAccepted;
+        if (this.result.levelComplete && this.mode === 'campaign') {
+          const nextLevel = completedLevelID + 1;
+          const hasNextLevel = nextLevel < (Array.isArray(this.levels) ? this.levels.length : 0);
+          const unlocked = serverAccepted && hasNextLevel && this.isCampaignLevelUnlocked(nextLevel);
+          this.result.next = this.result.passed && unlocked;
+          this.result.nextLevelPending = false;
+          if (this.result.next) this.status = `第 ${nextLevel + 1} 关已解锁`;
+        }
       }
       if (this.result && serverResult.validated !== undefined) {
         this.result.rewardCoins = Number(serverResult.reward_coins || 0);
@@ -1169,14 +1440,34 @@ class GameApp {
           this.result.bonusLabels.push(`闯关服务端奖励 +${this.result.rewardCoins}`);
         }
       }
+      if (this.result && this.result.next && typeof this.prefetchCampaignRun === 'function') {
+        this.prefetchCampaignRun(completedLevelID + 1);
+        if (this.result.campaignNextRequested) {
+          this.startRequestedCampaignNext(completedLevelID + 1);
+        }
+      }
       this.clearPendingRunCheckpoint('campaign', serverResult.run_id || runID);
     };
+
+    // A very fast player may finish before createCampaignRun returns. Wait
+    // for the authoritative run instead of silently dropping the submission.
+    if (!this.campaignRun && this.campaignRunLoading && this.campaignRunReadyPromise) {
+      const pendingRun = this.campaignRunReadyPromise;
+      pendingRun.then(() => {
+        if (this.currentLevel !== Number(levelID) || !this.result || !this.result.levelComplete) return;
+        this.submitCampaignLevelCompletion(levelID, score, stars);
+      }).catch((error) => {
+        this.markServerSubmissionFailed('campaign', error);
+      });
+      return;
+    }
 
     if (this.campaignRun && apiClient.submitCampaignRun) {
       const runID = String(this.campaignRun.run_id || this.campaignRun.runId || '');
       if (!runID) return;
       const attempts = (Array.isArray(this.campaignAttempts) ? this.campaignAttempts : []).map((attempt) => ({
         puzzle_id: String(attempt.puzzle_id || ''),
+        question_hash: String(attempt.question_hash || ''),
         question_index: Math.max(0, Math.floor(Number(attempt.question_index) || 0)),
         elapsed_ms: Math.max(0, Math.floor(Number(attempt.elapsed_ms) || 0)),
         solved: Boolean(attempt.solved),
@@ -1200,7 +1491,7 @@ class GameApp {
           score: Math.max(0, Math.min(100, Math.floor(Number(score) || 0))),
           elapsed_ms: elapsedMS,
           mistakes: Math.max(0, Math.floor(Number(lastAttempt.mistakes) || 0)),
-          hints: Math.max(0, Math.floor(Number(lastAttempt.hints) || 0)),
+           hints: Math.max(0, Math.floor(Number(lastAttempt.hints) || 0)),
           best_combo: Math.max(0, Math.floor(Number(this.maxCombo) || 0)),
           stars: Math.max(1, Math.min(3, Math.floor(Number(stars) || 1))),
         },
@@ -1249,7 +1540,8 @@ class GameApp {
           score: Math.max(0, Math.floor(Number(score) || 0)),
           elapsed_ms: elapsedMS,
           mistakes: Math.max(0, Math.floor(Number(lastAttempt.mistakes) || 0)),
-          hints: Math.max(0, Math.floor(Number(lastAttempt.hints) || 0)),
+          hints: Math.max(0, Math.floor(Number(this.hintsUsed) || 0)),
+          hints_used: Math.max(0, Math.floor(Number(this.hintsUsed) || 0)),
           best_combo: Math.max(0, Math.floor(Number(this.maxCombo) || 0)),
         },
         client_authoritative: false,
@@ -1275,8 +1567,10 @@ class GameApp {
           this.result.serverSubmitPending = false;
           this.result.serverVerified = serverResult.validated !== undefined ? Boolean(serverResult.validated) : true;
         }
-        if (this.result && serverResult.validated !== undefined) {
-          this.result.rewardCoins = Number(serverResult.reward_coins || 0);
+        if (this.result) {
+          if (serverResult.score !== undefined && this.result.serverVerified) this.result.score = Math.max(0, Number(serverResult.score) || 0);
+          if (serverResult.reward_coins !== undefined) this.result.rewardCoins = Math.max(0, Number(serverResult.reward_coins) || 0);
+          if (serverResult.streak !== undefined) this.result.serverStreak = Math.max(0, Number(serverResult.streak) || 0);
           if (this.result.rewardCoins > 0 && Array.isArray(this.result.bonusLabels)) {
             this.result.bonusLabels.push(`每日挑战服务端奖励 +${this.result.rewardCoins}`);
           }
@@ -1675,7 +1969,12 @@ class GameApp {
     const solved = clamp(Math.floor(Number(solvedQuestions) || 0), 0, totalQuestions);
     const base = (100 * solved) / totalQuestions;
     const mistakePenalty = Math.max(0, Math.floor(safeNumber(this.mistakes))) * 20;
-    const hintPenalty = this.hintUsed ? 10 : 0;
+    // Campaign validation uses the cumulative hint count across the run;
+    // `hintUsed` is reset when the next question starts and is only a
+    // per-question display flag.
+    const hintPenalty = this.mode === 'campaign'
+      ? (Math.max(0, Math.floor(Number(this.hintsUsed) || 0)) > 0 ? 10 : 0)
+      : this.hintUsed ? 10 : 0;
     return clamp(Math.round(base - mistakePenalty - hintPenalty), 0, 100);
   }
 
@@ -2971,6 +3270,17 @@ class GameApp {
 
   drawHeroLogo(time) {
     const ctx = this.ctx;
+    const centerX = this.width / 2;
+    const titleY = 585;
+    const titleWidth = Math.min(this.width - 132, 430);
+
+    // Brand lockup: a quiet glass badge keeps the title readable on every
+    // phone background without adding another line of explanatory text.
+    this.drawGlassCard(centerX - titleWidth / 2, titleY - 32, titleWidth, 64, 32,
+      'rgba(255,255,255,0.90)', 'rgba(53,201,209,0.52)', {
+        shadowColor: 'rgba(53,201,209,0.18)', shadowBlur: 16, shadowOffsetY: 3, innerAlpha: 0.32,
+      });
+
     const glow = 0.24 + Math.sin(time * 2.2) * 0.05;
     ctx.save();
     ctx.shadowColor = `rgba(49,201,209,${glow})`;
@@ -2981,18 +3291,20 @@ class GameApp {
     ctx.lineJoin = 'round';
     ctx.lineWidth = 10;
     ctx.strokeStyle = '#FFFFFF';
-    ctx.strokeText('24', 375, 470);
+    ctx.strokeText('24', centerX, 470);
     ctx.lineWidth = 3;
     ctx.strokeStyle = '#55C9D3';
-    ctx.strokeText('24', 375, 470);
+    ctx.strokeText('24', centerX, 470);
     const fill = ctx.createLinearGradient(0, 360, 0, 560);
     fill.addColorStop(0, '#46C9D2');
     fill.addColorStop(0.52, '#75CFE4');
     fill.addColorStop(1, '#907FE6');
     ctx.fillStyle = fill;
-    ctx.fillText('24', 375, 470);
+    ctx.fillText('24', centerX, 470);
     ctx.restore();
-    this.drawFitText(HOME_TITLE, this.width / 2, 550, this.width - 100, uiFont(36, 900), GAME_UI.text);
+    this.drawFitText(HOME_TITLE, centerX, titleY, titleWidth - 36, uiFont(36, 900), GAME_UI.text);
+    this.drawSparkle(centerX - titleWidth / 2 + 22, titleY, 5, '#35C9D1', 0.72);
+    this.drawSparkle(centerX + titleWidth / 2 - 22, titleY, 5, '#907FE6', 0.72);
   }
 
   getPlayerProfile() {
@@ -3252,10 +3564,8 @@ class GameApp {
     // a reference while the new layout is exercised; all hit areas still use
     // the shared card helpers above.
     this.drawHeroLogo(time);
-    this.drawFitText('4 个数字，算出 24', this.width / 2, 600, this.width - 120, uiFont(28, 900), GAME_UI.text);
-    this.drawFitText('每天一局，越算越快', this.width / 2, 642, this.width - 120, uiFont(17, 600), GAME_UI.secondary);
 
-    const primaryY = 700;
+    const primaryY = 650;
     const primaryWidth = this.width - 96;
     const primaryHeight = 124;
     this.drawPrimaryModeCard('campaign', 48, primaryY, primaryWidth, primaryHeight, {
@@ -3268,7 +3578,7 @@ class GameApp {
       top: '#F0EAFF', bottom: '#DCD2FA', stroke: '#B7A9F0', shadow: 'rgba(141,120,230,0.20)', shadowBlur: 14,
     }, (cx, cy) => this.drawInfinityIcon(cx, cy, 0.48), '无尽模式', '题目不断，挑战连击', () => this.startEndless());
 
-    const secondaryY = 1140;
+    const secondaryY = 1090;
     const secondaryWidth = 204;
     const secondaryHeight = 142;
     this.drawSecondaryCard('daily', 36, secondaryY, secondaryWidth, secondaryHeight, {
@@ -3383,12 +3693,23 @@ class GameApp {
     const blockIndex = Math.floor(chapterStart / 100);
     const previousBlockScore = blockIndex > 0 ? this.campaignBlockScore(blockIndex - 1) : 0;
     const blockGatePassed = this.isCampaignBlockUnlocked(blockIndex);
+    const backendStatus = String(this.backendAuth && this.backendAuth.status || '').toLowerCase();
+    const campaignPending = Boolean(this.campaignStartRequest) && backendStatus !== 'ready';
+    const backendError = String(this.backendAuth && this.backendAuth.error || '')
+      .replace(/^Error:\s*/i, '')
+      .replace(/[\r\n]+/g, ' ')
+      .trim();
     const unlockedInChapter = clamp(safeNumber(this.progress.unlocked_level) - chapterStart, 0, 20);
     this.drawFitText(`章节进度 ${unlockedInChapter} / 20 · ${chapter[4] || '整数与明显解法'}`, 64, chapterY + 119, w - 100, uiFont(16, 500), GAME_UI.secondary, 'left');
     this.drawFitText(
-      blockIndex === 0 ? '第一大章节 · 完成前 100 关后进入下一阶段' : `前 100 关累计 ${previousBlockScore} / ${this.campaignBlockGateScore()} 分 · ${blockGatePassed ? '已开放' : '未达到门槛'}`,
-      64, chapterY + 144, w - 100, uiFont(13, 700), blockIndex === 0 || blockGatePassed ? GAME_UI.cyanLight : GAME_UI.gold, 'left',
+      campaignPending
+        ? (backendStatus === 'pending' || backendStatus === 'syncing' ? '正在连接服务器，第一关马上开始…' : '服务器连接失败，再点一次第一关即可重试')
+        : (blockIndex === 0 ? '第一大章节 · 完成前 100 关后进入下一阶段' : `前 100 关累计 ${previousBlockScore} / ${this.campaignBlockGateScore()} 分 · ${blockGatePassed ? '已开放' : '未达到门槛'}`),
+      64, chapterY + 144, w - 100, uiFont(13, 700), campaignPending ? GAME_UI.gold : (blockIndex === 0 || blockGatePassed ? GAME_UI.cyanLight : GAME_UI.gold), 'left',
     );
+    if (campaignPending && backendStatus === 'offline' && backendError) {
+      this.drawFitText(`原因：${backendError} · 请重试`, 64, chapterY + 166, w - 100, uiFont(12, 600), GAME_UI.secondary, 'left');
+    }
     this.drawFitText('操作：数字 → 运算符 → 第二个数字 · 每道题程序验证有解', 36, chapterY + 196, w - 72, uiFont(17, 500), GAME_UI.secondary, 'left');
     this.drawText('选择关卡', 36, chapterY + 236, uiFont(23, 900), GAME_UI.gold, 'left');
 
@@ -3458,16 +3779,45 @@ class GameApp {
       this.drawFitText('不会使用本地题目替代', this.width / 2, panelY + 184, panelWidth - 80, uiFont(15, 500), GAME_UI.cyanLight);
       return;
     }
+    if (this.campaignRunLoading && this.mode === 'campaign' && !this.currentPuzzle) {
+      const panelWidth = Math.min(590, this.width - 84);
+      const panelX = (this.width - panelWidth) / 2;
+      const panelY = this.modalTop(250);
+      this.drawGamePanel(panelX, panelY, panelWidth, 250, 'cyan', { radius: 28, shadowBlur: 18, shadowOffsetY: 0 });
+      this.drawFitText('正在准备闯关题目', this.width / 2, panelY + 82, panelWidth - 80, uiFont(28, 900), GAME_UI.text);
+      this.drawFitText('正在同步本关题目，请稍候片刻', this.width / 2, panelY + 138, panelWidth - 80, uiFont(17, 600), GAME_UI.secondary);
+      this.drawFitText('题目验证完成后立即开始', this.width / 2, panelY + 184, panelWidth - 80, uiFont(15, 500), GAME_UI.cyanLight);
+      return;
+    }
+    if (this.dailyRunLoading && this.mode === 'daily' && !this.dailyChallenge) {
+      const panelWidth = Math.min(590, this.width - 84);
+      const panelX = (this.width - panelWidth) / 2;
+      const panelY = this.modalTop(250);
+      this.drawGamePanel(panelX, panelY, panelWidth, 250, 'gold', { radius: 28, shadowBlur: 18, shadowOffsetY: 0 });
+      this.drawFitText('正在准备每日挑战', this.width / 2, panelY + 82, panelWidth - 80, uiFont(28, 900), GAME_UI.text);
+      this.drawFitText('正在领取今日题目，请稍候一下', this.width / 2, panelY + 138, panelWidth - 80, uiFont(17, 600), GAME_UI.secondary);
+      this.drawFitText('题目验证完成后立即开始', this.width / 2, panelY + 184, panelWidth - 80, uiFont(15, 500), GAME_UI.goldDark);
+      return;
+    }
     const progressRatio = this.mode === 'endless' ? ((this.currentQuestion % 3) + 1) / 3 : (this.currentQuestion + 1) / Math.max(1, this.puzzles.length);
     const questionTitle = `第 ${this.currentQuestion + 1} / ${this.mode === 'endless' ? '∞' : this.puzzles.length} 题`;
     const ratio = clamp(this.timeLeft / Math.max(1, this.timerLimit), 0, 1);
     const timerY = layout.contentY;
     const compact = this.visibleHeight < 1500;
-    const timerWidth = compact ? 300 : 330;
-    this.drawGameTimer(timerY, `${Math.ceil(Math.max(0, this.timeLeft))} 秒`, ratio < 0.22, 44, timerWidth);
-    this.drawGamePanel(368, timerY, 338, 72, 'violet', { radius: 28, shadowBlur: 8, shadowOffsetY: 0 });
-    this.drawFitText(questionTitle, 537, timerY + 27, 300, uiFont(22, 900), GAME_UI.text);
-    this.drawFitText(`得分 ${this.score} · 连击 ${this.combo}`, 537, timerY + 53, 300, uiFont(14, 700), GAME_UI.secondary);
+    // 顶部 HUD 使用同一条自适应网格，给两张卡片保留明确的视觉间距。
+    // 之前使用固定 x/width，在手机缩放后阴影会把计时卡和题目信息卡连成一块。
+    const hudEdge = 32;
+    const hudGap = compact ? 30 : 28;
+    const hudWidth = Math.max(0, this.width - hudEdge * 2);
+    const preferredTimerWidth = compact ? 300 : 330;
+    const timerWidth = Math.min(preferredTimerWidth, Math.max(180, hudWidth - hudGap - 260));
+    const questionWidth = Math.max(260, hudWidth - timerWidth - hudGap);
+    const timerX = hudEdge;
+    const questionX = timerX + timerWidth + hudGap;
+    this.drawGameTimer(timerY, `${Math.ceil(Math.max(0, this.timeLeft))} 秒`, ratio < 0.22, timerX, timerWidth);
+    this.drawGamePanel(questionX, timerY, questionWidth, 72, 'violet', { radius: 28, shadowBlur: 8, shadowOffsetY: 0 });
+    this.drawFitText(questionTitle, questionX + questionWidth / 2, timerY + 27, questionWidth - 24, uiFont(22, 900), GAME_UI.text);
+    this.drawFitText(`得分 ${this.score} · 连击 ${this.combo}`, questionX + questionWidth / 2, timerY + 53, questionWidth - 24, uiFont(14, 700), GAME_UI.secondary);
 
     if (this.mode === 'daily' && this.dailyChallenge) {
       const ruleTitle = this.formatDailyRuleTitle(this.dailyChallenge.rule_title);
@@ -3538,10 +3888,13 @@ class GameApp {
     const actionY = layout.actionY;
     const actionWidth = (this.width - 112 - 18 * 3) / 4;
     const undoDisabled = this.mode === 'daily' && this.dailyChallenge && this.dailyChallenge.rule_id === 'no_undo';
+    const dailyHintLimit = this.mode === 'daily' && typeof this.dailyHintLimit === 'function' ? this.dailyHintLimit() : 0;
+    const dailyHintsRemaining = this.mode === 'daily' && typeof this.dailyHintsRemaining === 'function' ? this.dailyHintsRemaining() : 0;
+    const dailyHintDisabled = this.mode === 'daily' && (dailyHintLimit <= 0 || dailyHintsRemaining <= 0);
     const utilityY = layout.bottomY;
     const utilityLabels = [
       undoDisabled ? '撤销' : `撤销${this.freeUndo ? '·免费' : ''}`,
-      friend ? '提示' : `提示${this.freeHint ? '·免费' : ''}`,
+      friend ? '提示' : this.mode === 'daily' ? `提示·剩余${dailyHintsRemaining}` : `提示${this.freeHint ? '·免费' : ''}`,
       '重置',
       '重开',
     ];
@@ -3557,7 +3910,7 @@ class GameApp {
       this.drawGameUtilityButton(x, utilityY, actionWidth, layout.bottomButtonHeight, label, utilityActions[index], utilityVariants[index], {
         fontSize: compact ? 15 : 16,
         radius: 16,
-        disabled: index === 0 ? undoDisabled : index === 1 && friend,
+        disabled: index === 0 ? undoDisabled : index === 1 && (friend || dailyHintDisabled),
         key: ['game-undo', 'game-hint', 'game-reset', 'game-restart'][index],
       });
     });
@@ -3657,7 +4010,7 @@ class GameApp {
     const primaryY = panelY + panelHeight + 30;
     this.drawNeonButton(48, primaryY, this.width - 96, primaryHeight, pending ? '等待服务端结算' : '再来一局', () => {
       if (pending) this.triggerFeedback('info', '正在等待服务端确认结果');
-      else this.restartMode();
+      else this.requestFriendRematch();
     }, outcome === 'win' ? 'cyan' : 'violet', { fontSize: 23, radius: 25, disabled: pending, key: 'friend-result-retry' });
     const secondaryY = primaryY + primaryHeight + 16;
     this.drawNeonButton(48, secondaryY, (this.width - 114) / 2, secondaryHeight, '返回好友对战', () => this.showFriendLobby(), 'magenta', { fontSize: 18, radius: 20, key: 'friend-result-lobby' });
@@ -3722,7 +4075,9 @@ class GameApp {
     let noteY = statY + 116;
     if (this.mode !== 'friend') {
       const verificationLabel = result.serverVerified
-        ? '服务端已校验'
+        ? this.mode === 'daily' && result.serverStreak !== null
+          ? `服务端已校验 · 连续挑战 ${safeNumber(result.serverStreak)} 天`
+          : '服务端已校验'
         : result.serverSubmitPending
           ? '等待服务端确认'
           : result.serverSubmitError
@@ -3759,20 +4114,53 @@ class GameApp {
     }
     const primaryY = panelY + resultPanelHeight + 42;
     const pendingFriendResult = this.mode === 'friend' && result.matchResult && result.matchResult.outcome === 'pending';
-    this.drawNeonButton(48, primaryY, this.width - 96, resultPrimaryHeight, pendingFriendResult ? '等待对手结算' : result.next ? (result.levelComplete ? '下一关' : '下一题') : '返回首页', () => {
+    const hasCampaignNextLevel = this.mode === 'campaign'
+      && result.levelComplete
+      && this.currentLevel < (Array.isArray(this.levels) ? this.levels.length - 1 : 0);
+    const waitingForCampaignUnlock = this.mode === 'campaign' && result.levelComplete && result.nextLevelPending && !result.next;
+    const campaignNextRequested = this.mode === 'campaign'
+      && result.levelComplete
+      && (result.campaignNextRequested || result.nextLevelLoading);
+    this.drawNeonButton(48, primaryY, this.width - 96, resultPrimaryHeight,
+      pendingFriendResult ? '等待对手结算' : campaignNextRequested ? '正在进入下一关…' : result.next ? (result.levelComplete ? '下一关' : '下一题') : hasCampaignNextLevel ? '下一关' : waitingForCampaignUnlock ? '正在解锁下一关…' : '返回首页', () => {
       if (pendingFriendResult) {
         this.triggerFeedback('info', '正在等待服务端确认结果');
+      } else if (hasCampaignNextLevel && result.next) {
+        this.startCampaign(this.currentLevel + 1);
+      } else if (hasCampaignNextLevel && result.serverSubmitError) {
+        if (!this.campaignRun) {
+          // 兼容旧版本在登录完成前已经开始的本地闯关。该局没有
+          // 服务端 run_id，不能伪造结算，直接重新以服务端 Run 开始本关。
+          this.triggerFeedback('info', '本局未建立服务端记录，正在重新开始本关');
+          this.restartMode();
+          return;
+        }
+        // A failed submit can be retried from the visible “下一关” action.
+        // The next level is still guarded by the server-confirmed progress.
+        result.serverSubmitPending = true;
+        result.serverSubmitError = false;
+        result.nextLevelPending = true;
+        this.submitCampaignLevelCompletion(this.currentLevel, result.score, result.stars);
+        this.triggerFeedback('info', '正在重试保存通关记录');
+      } else if (hasCampaignNextLevel || waitingForCampaignUnlock) {
+        if (!result.campaignNextRequested && !result.nextLevelLoading) {
+          result.campaignNextRequested = true;
+          result.nextLevelPending = true;
+          this.campaignNextRequested = true;
+          this.status = '下一关准备中，马上开始';
+          this.triggerFeedback('info', '已记住，确认后自动进入下一关');
+        }
       } else if (!result.next) this.goHome();
       else if (result.levelComplete) this.startCampaign(this.currentLevel + 1);
       else this.nextQuestion();
-    }, result.passed ? 'cyan' : 'violet', { fontSize: 24, radius: 26, disabled: pendingFriendResult, key: 'result-primary' });
+    }, result.passed ? 'cyan' : 'violet', { fontSize: 24, radius: 26, disabled: pendingFriendResult || campaignNextRequested, key: 'result-primary' });
     const resultActionY = primaryY + resultPrimaryHeight + 18;
     const dailyCompleted = this.mode === 'daily' && storage.isDailyCompleted(this.progress, storage.todayKey());
     this.drawNeonButton(48, resultActionY, (this.width - 114) / 2, resultSecondaryHeight, pendingFriendResult ? '返回好友对战' : dailyCompleted ? '今日已完成' : '再来一局', () => {
       if (pendingFriendResult) this.showFriendLobby();
       else if (dailyCompleted) this.goHome();
       else this.restartMode();
-    }, 'magenta', { fontSize: 20, radius: 21, key: 'result-retry' });
+    }, 'magenta', { fontSize: 20, radius: 21, disabled: waitingForCampaignUnlock, key: 'result-retry' });
     this.drawNeonButton(66 + (this.width - 114) / 2, resultActionY, (this.width - 114) / 2, resultSecondaryHeight, '分享成绩', () => {
       if (this.mode === 'friend' && result.matchResult) this.sharePayload(shareService.createMatchResultPayload(result.matchResult, this.friendRoom));
       else this.sharePayload({ title: '来挑战《三火算术练习》！' });
@@ -4031,16 +4419,19 @@ class GameApp {
       && friendMatch.isRoomReady(room)
       && selfReady
       && opponentReady;
-    const panelY = this.screenContentTop(92);
     // 房间信息卡在手机上采用更紧凑的纵向比例，避免“已准备”贴到卡片底边或被裁切。
     const compact = this.visibleHeight < 1500;
+    const panelY = this.screenContentTop(compact ? 64 : 76);
     const roomPanelHeight = compact ? 344 : 372;
-    const titleOffset = compact ? 60 : 72;
-    const subtitleOffset = compact ? 101 : 118;
-    const codeOffset = compact ? 181 : 210;
-    const metaOffset = compact ? 230 : 265;
-    const rulesOffset = compact ? 278 : 322;
-    const statusOffset = compact ? 320 : 364;
+    // Keep the room card's bottom status away from the rounded edge on small
+    // phones. The card and hit areas stay unchanged; only text baselines move
+    // upward and the vertical rhythm becomes slightly more compact.
+    const titleOffset = compact ? 48 : 60;
+    const subtitleOffset = compact ? 88 : 104;
+    const codeOffset = compact ? 165 : 192;
+    const metaOffset = compact ? 210 : 244;
+    const rulesOffset = compact ? 252 : 296;
+    const statusOffset = compact ? 292 : 332;
     this.drawGamePanel(58, panelY, this.width - 116, roomPanelHeight, 'magenta', {
       radius: 31,
       stroke: 'rgba(255,80,205,0.86)',
@@ -4058,7 +4449,7 @@ class GameApp {
     this.ctx.shadowBlur = 18;
     this.drawText(room.room_code, this.width / 2, panelY + codeOffset, uiFont(compact ? 52 : 55, 900), GAME_UI.text);
     this.ctx.restore();
-    this.drawFitText(`${roomRules.question_count || 8} 道题 · ${roomRules.time_limit || 120} 秒 · ${localMode ? '本地演示房间' : '服务端同题房间'}`, this.width / 2, panelY + metaOffset, this.width - 150, uiFont(compact ? 14 : 15, 500), GAME_UI.secondary);
+    this.drawFitText(`${roomRules.question_count || 8} 道题 · ${roomRules.time_limit || friendMatch.TIME_LIMIT} 秒 · ${localMode ? '本地演示房间' : '服务端同题房间'}`, this.width / 2, panelY + metaOffset, this.width - 150, uiFont(compact ? 14 : 15, 500), GAME_UI.secondary);
     this.drawFitText('同一套题目 · 禁止提示 · 答错扣 5 秒', this.width / 2, panelY + rulesOffset, this.width - 150, uiFont(compact ? 16 : 18, 900), GAME_UI.text);
     const selfReadyLabel = selfReady ? '\u4f60\uff1a\u5df2\u51c6\u5907' : '\u4f60\uff1a\u5f85\u51c6\u5907';
     const opponentReadyLabel = opponentPlayer
@@ -4644,6 +5035,7 @@ class GameApp {
       this.popup = '';
       this.friendRoom = null;
       this.friendMatch = null;
+      this.resetRankHistoryState();
       this.screen = 'home';
       this.status = '已退出登录，点击资料卡重新登录';
       this.triggerFeedback('info', this.status);
@@ -4936,19 +5328,18 @@ class GameApp {
     }
     if (this.popup === 'settings') {
       width = 446;
-      height = 650;
+      height = 576;
       x = (this.width - width) / 2;
       y = this.modalTop(height);
-      this.drawModalFrame(x, y, width, height, '设置', '音效设置会自动保存。', 'cyan');
+      this.drawModalFrame(x, y, width, height, '设置', '主页与关卡音乐会自动切换。', 'cyan');
       const audio = this.audio.settings();
       const musicOn = audio.music_enabled !== false;
       const sfxOn = audio.sfx_enabled !== false;
-      this.drawSettingsToggleRow(x + 24, y + 128, width - 48, 84, '背景音乐', `当前曲目 · ${this.audio.getMusicTrackName()}`, musicOn, () => { this.audio.setMusicEnabled(!musicOn); this.saveAudioSettings(); }, 'settings-music', 'cyan');
+      this.drawSettingsToggleRow(x + 24, y + 128, width - 48, 84, '背景音乐', '主页播放 · 进入答题自动切换关卡音乐', musicOn, () => { this.audio.setMusicEnabled(!musicOn); this.saveAudioSettings(); }, 'settings-music', 'cyan');
       this.drawSettingVolumeBlock(x + 24, y + 226, width - 48, '背景音乐音量', safeNumber(audio.music_volume, 0.42), 'cyan');
-      this.drawNeonButton(x + 24, y + 318, width - 48, 54, `更换音乐 · ${this.audio.getMusicTrackName()}`, () => { this.audio.setMusicTrack(audio.music_track + 1); this.saveAudioSettings(); }, 'violet', { fontSize: 16, radius: 18, key: 'settings-track', shadowBlur: 8 });
-      this.drawSettingsToggleRow(x + 24, y + 392, width - 48, 84, '按键音效', '点击、合成、倒计时反馈', sfxOn, () => { this.audio.setSfxEnabled(!sfxOn); this.saveAudioSettings(); }, 'settings-sfx', 'magenta');
-      this.drawSettingVolumeBlock(x + 24, y + 490, width - 48, '按键音效音量', safeNumber(audio.sfx_volume, 0.72), 'magenta');
-      this.drawNeonButton(x + 24, y + 580, width - 48, 52, '存档与设备诊断', () => { this.popup = 'diagnostics'; this.diagnosticsEnabled = true; }, 'cyan', { fontSize: 16, radius: 18, key: 'settings-diagnostics' });
+      this.drawSettingsToggleRow(x + 24, y + 318, width - 48, 84, '按键音效', '点击、合成、倒计时反馈', sfxOn, () => { this.audio.setSfxEnabled(!sfxOn); this.saveAudioSettings(); }, 'settings-sfx', 'magenta');
+      this.drawSettingVolumeBlock(x + 24, y + 416, width - 48, '按键音效音量', safeNumber(audio.sfx_volume, 0.72), 'magenta');
+      this.drawNeonButton(x + 24, y + 506, width - 48, 52, '存档与设备诊断', () => { this.popup = 'diagnostics'; this.diagnosticsEnabled = true; }, 'cyan', { fontSize: 16, radius: 18, key: 'settings-diagnostics' });
       return;
     }
     if (this.popup === 'diagnostics') {
@@ -5007,10 +5398,10 @@ class GameApp {
       this.drawText('1', cx - 18, cy - 20, uiFont(13, 900), accent);
       this.ctx.restore();
     }, () => { this.popup = ''; this.screen = 'leaderboard'; });
-    this.drawFeatureMenuCard('more-records', rightX, bottomY, cardW, cardH, '挑战记录', '数据 · 统计', 'cyan', (cx, cy, accent) => {
+    this.drawFeatureMenuCard('more-records', rightX, bottomY, cardW, cardH, '个人战绩', '排位 · 挑战', 'cyan', (cx, cy, accent) => {
       this.drawTargetIcon(cx, cy, 0.45, accent);
     }, () => { this.popup = ''; this.screen = 'records'; });
-    this.drawFitText('所有数据保存在本机，后续可接入微信云同步。', this.width / 2, y + height - 32, width - 80, uiFont(12, 500), GAME_UI.muted);
+    this.drawFitText('排位记录由服务端保存，挑战数据保存在当前账号。', this.width / 2, y + height - 32, width - 80, uiFont(12, 500), GAME_UI.muted);
   }
 
   shopItemsForTab() {
@@ -5371,11 +5762,134 @@ class GameApp {
     this.drawFitText(footer, this.width / 2, listY + 738, this.width - 96, uiFont(13, 500), GAME_UI.secondary);
   }
 
+  drawRankedRecords(startY) {
+    const state = this.rankHistoryState || this.createRankHistoryState();
+    const localRank = rankService.summary(this.progress && this.progress.rank);
+    const summary = state.summary || localRank;
+    const width = this.width - 64;
+    const winRate = Math.round(Math.max(0, Math.min(1, Number(summary.win_rate) || 0)) * 100);
+    this.drawGamePanel(32, startY, width, 220, 'violet', {
+      radius: 26,
+      shadowColor: 'rgba(154,100,255,0.26)',
+      shadowBlur: 16,
+      shadowOffsetY: 0,
+      hotspot: { x: 112, y: startY + 28, r: 210, color: 'rgba(154,100,255,0.10)' },
+    });
+    this.drawText('本赛季排位', 60, startY + 38, uiFont(21, 900), GAME_UI.violetLight, 'left');
+    this.drawFitText(summary.season_id || localRank.season_id, 690, startY + 36, 190, uiFont(13, 600), GAME_UI.secondary, 'right');
+    this.drawFitText(summary.label || localRank.label, 60, startY + 88, 290, uiFont(31, 900), GAME_UI.text, 'left');
+    this.drawFitText(`积分 ${safeNumber(summary.rating)} · ${summary.stars_label || localRank.stars_label}`, 60, startY + 122, 300, uiFont(15, 700), GAME_UI.cyanLight, 'left');
+    this.drawDashboardMetric(390, startY + 56, (cx, cy, scale, color) => this.drawTargetIcon(cx, cy, scale, color), '总场次', String(safeNumber(summary.ranked_matches)), 'cyan');
+    this.drawDashboardMetric(390, startY + 112, (cx, cy, scale, color) => this.drawLightningIcon(cx, cy, scale, color), '胜率', `${winRate}%`, 'gold');
+    this.drawFitText(`胜 ${safeNumber(summary.wins)}  ·  负 ${safeNumber(summary.losses)}  ·  平 ${safeNumber(summary.draws)}`, 60, startY + 190, 330, uiFont(14, 700), GAME_UI.secondary, 'left');
+    this.drawFitText(`当前连胜 ${safeNumber(summary.current_streak)}  ·  最佳 ${safeNumber(summary.best_streak)}`, 390, startY + 190, 270, uiFont(13, 600), GAME_UI.secondary, 'left');
+
+    const listY = startY + 240;
+    const listHeight = 616;
+    this.drawGamePanel(32, listY, width, listHeight, 'cyan', {
+      radius: 26,
+      shadowColor: 'rgba(40,233,255,0.20)',
+      shadowBlur: 14,
+      shadowOffsetY: 0,
+    });
+    this.drawText('最近排位对局', 60, listY + 38, uiFont(21, 900), GAME_UI.cyan, 'left');
+    this.drawNeonButton(568, listY + 16, 116, 42, '刷新', () => this.refreshRankHistory(), 'dark', {
+      fontSize: 15,
+      radius: 18,
+      key: 'rank-history-refresh',
+      disabled: Boolean(state.loading || state.loadingMore),
+    });
+    this.drawFitText('点击任意一场查看详情', 60, listY + 62, width - 180, uiFont(13, 500), GAME_UI.secondary, 'left');
+
+    const matches = Array.isArray(state.matches) ? state.matches : [];
+    if (state.loading && !matches.length) {
+      this.drawFitText('正在读取服务端排位记录…', this.width / 2, listY + 250, width - 80, uiFont(20, 800), GAME_UI.secondary);
+    } else if (state.error && !matches.length) {
+      this.drawGamePanel(58, listY + 112, width - 52, 168, 'dark', { radius: 22, shadow: false, stroke: 'rgba(154,100,255,0.30)' });
+      this.drawFitText(state.error, this.width / 2, listY + 176, width - 110, uiFont(17, 800), GAME_UI.text);
+      this.drawFitText('完成后端排位战绩接口后，记录会自动显示在这里', this.width / 2, listY + 220, width - 110, uiFont(13, 500), GAME_UI.secondary);
+    } else if (!matches.length) {
+      this.drawFitText('还没有排位对局记录', this.width / 2, listY + 238, width - 80, uiFont(20, 800), GAME_UI.secondary);
+      this.drawFitText('完成一场快速匹配后，就能在这里查看战绩', this.width / 2, listY + 278, width - 90, uiFont(14, 500), GAME_UI.secondary);
+    } else {
+      const rowX = 50;
+      const rowWidth = width - 36;
+      const rowStart = listY + 84;
+      const rowHeight = 86;
+      matches.slice(0, 5).forEach((match, index) => {
+        const rowY = rowStart + index * rowHeight;
+        const accent = match.outcome === 'win' ? GAME_UI.success : match.outcome === 'lose' ? GAME_UI.magentaLight : GAME_UI.gold;
+        const variant = match.outcome === 'win' ? 'cyan' : match.outcome === 'lose' ? 'magenta' : 'gold';
+        this.drawGamePanel(rowX, rowY, rowWidth, 72, variant, { radius: 20, shadowBlur: 7, shadowOffsetY: 0 });
+        this.addHitArea(rowX, rowY, rowWidth, 72, () => this.selectRankedMatch(match), { key: `rank-history-row-${match.match_id}` });
+        this.drawFitText(rankHistoryService.outcomeLabel(match.outcome), 70, rowY + 30, 70, uiFont(19, 900), accent, 'left');
+        this.drawFitText(match.opponent_name || '对手', 156, rowY + 27, 210, uiFont(17, 800), GAME_UI.text, 'left');
+        this.drawFitText(`${rankHistoryService.modeLabel(match.mode)} · ${match.solved}${match.question_count ? `/${match.question_count}` : ''} 题`, 156, rowY + 53, 240, uiFont(12, 500), GAME_UI.secondary, 'left');
+        const delta = Number(match.rating_delta) || 0;
+        const deltaLabel = delta > 0 ? `+${delta}` : String(delta);
+        this.drawFitText(deltaLabel, 676, rowY + 28, 82, uiFont(21, 900), delta > 0 ? GAME_UI.success : delta < 0 ? GAME_UI.magentaLight : GAME_UI.secondary, 'right');
+        const seconds = match.elapsed_ms > 0 ? `${(match.elapsed_ms / 1000).toFixed(1)}秒` : '—';
+        this.drawFitText(seconds, 676, rowY + 53, 82, uiFont(12, 500), GAME_UI.secondary, 'right');
+      });
+      if (state.hasMore) {
+        this.drawNeonButton(218, listY + listHeight - 62, 314, 44, state.loadingMore ? '正在加载…' : '加载更多', () => this.loadMoreRankHistory(), 'violet', {
+          fontSize: 16,
+          radius: 18,
+          key: 'rank-history-more',
+          disabled: state.loadingMore,
+        });
+      } else {
+        this.drawFitText('已显示最近排位记录', this.width / 2, listY + listHeight - 34, width - 100, uiFont(13, 500), GAME_UI.secondary);
+      }
+    }
+    if (state.selectedMatch) this.drawRankedMatchDetail(state.selectedMatch);
+  }
+
+  drawRankedMatchDetail(match) {
+    this.addHitArea(0, 0, this.width, this.height, () => { this.rankHistoryState.selectedMatch = null; }, { key: 'rank-history-overlay' });
+    this.ctx.save();
+    this.ctx.fillStyle = 'rgba(30,41,66,0.26)';
+    this.ctx.fillRect(0, 0, this.width, this.height);
+    const width = Math.min(620, this.width - 72);
+    const height = 500;
+    const x = (this.width - width) / 2;
+    const y = this.modalTop(height);
+    const outcome = rankHistoryService.outcomeLabel(match.outcome);
+    const accent = match.outcome === 'win' ? GAME_UI.success : match.outcome === 'lose' ? GAME_UI.magentaLight : GAME_UI.gold;
+    this.drawModalFrame(x, y, width, height, '排位对局详情', '服务端记录 · 点击关闭', 'violet', () => { this.rankHistoryState.selectedMatch = null; });
+    this.drawFitText(outcome, this.width / 2, y + 158, width - 80, uiFont(34, 900), accent);
+    this.drawFitText(`对手：${match.opponent_name || '对手'}`, this.width / 2, y + 202, width - 90, uiFont(18, 800), GAME_UI.text);
+    const rows = [
+      ['模式', rankHistoryService.modeLabel(match.mode)],
+      ['答题', `${match.solved}${match.question_count ? ` / ${match.question_count}` : ''} 题`],
+      ['用时', match.elapsed_ms > 0 ? `${(match.elapsed_ms / 1000).toFixed(1)} 秒` : '暂无'],
+      ['错误', `${safeNumber(match.mistakes)} 次`],
+      ['积分变化', `${Number(match.rating_delta) > 0 ? '+' : ''}${safeNumber(match.rating_delta)}`],
+    ];
+    rows.forEach(([label, value], index) => {
+      const rowY = y + 244 + index * 38;
+      this.drawFitText(label, x + 62, rowY, 120, uiFont(15, 600), GAME_UI.secondary, 'left');
+      this.drawFitText(value, x + width - 62, rowY, width - 240, uiFont(16, 800), GAME_UI.text, 'right');
+    });
+    this.ctx.restore();
+  }
+
   drawRecords() {
     this.buttons = [];
-    this.drawGameHeader('挑战记录', '‹ 返回', () => this.goHome());
+    if (!this.recordsTab) this.recordsTab = 'ranked';
+    this.drawGameHeader('个人战绩', '‹ 返回', () => this.goHome());
+    // 战绩页的两级内容整体上移，给手机屏幕下方的统计卡片留出更多空间。
+    const tabY = this.screenContentTop(72);
+    this.drawNeonButton(32, tabY, 320, 54, '排位战绩', () => { this.recordsTab = 'ranked'; }, this.recordsTab === 'ranked' ? 'violet' : 'dark', { fontSize: 18, radius: 20, key: 'records-tab-ranked' });
+    this.drawNeonButton(398, tabY, 320, 54, '挑战数据', () => { this.recordsTab = 'challenge'; }, this.recordsTab === 'challenge' ? 'cyan' : 'dark', { fontSize: 18, radius: 20, key: 'records-tab-challenge' });
+    if (this.recordsTab === 'ranked') {
+      this.loadRankHistory();
+      this.drawRankedRecords(tabY + 76);
+      return;
+    }
     const top = this.pageTop();
-    const summaryY = this.screenContentTop(102);
+    // 挑战数据页签紧跟在页签下方，避免内容整体下沉、手机屏幕上方出现过大空隙。
+    const summaryY = this.screenContentTop(132);
     const stats = playerStats.summary(this.progress);
     const friend = this.progress.friend_matches || {};
     const endless = this.progress.endless || {};
@@ -5386,12 +5900,12 @@ class GameApp {
       shadowOffsetY: 0,
       hotspot: { x: 112, y: summaryY + 30, r: 220, color: 'rgba(40,233,255,0.09)' },
     });
-    this.drawText('总体数据', 60, summaryY + 42, uiFont(22, 900), GAME_UI.cyan, 'left');
-    this.drawDashboardMetric(70, summaryY + 80, (cx, cy, scale, color) => this.drawTargetIcon(cx, cy, scale, color), '答对题数', String(safeNumber(stats.total_solved)), 'cyan');
-    this.drawDashboardMetric(370, summaryY + 80, (cx, cy, scale, color) => this.drawLightningIcon(cx, cy, scale, color), '最高连击', String(safeNumber(stats.best_combo)), 'violet');
-    this.drawDashboardMetric(70, summaryY + 140, null, '累计得分', String(safeNumber(stats.total_score)), 'gold');
-    this.drawText('+', 98, summaryY + 170, uiFont(46, 900), 'rgba(154,100,255,0.28)');
-    this.drawDashboardMetric(370, summaryY + 140, (cx, cy, scale, color) => this.drawClockIcon(cx, cy, scale, color), '最快用时', stats.fastest_ms ? `${(stats.fastest_ms / 1000).toFixed(1)} 秒` : '暂无', 'cyan');
+    this.drawText('总体数据', 60, summaryY + 32, uiFont(22, 900), GAME_UI.cyan, 'left');
+    this.drawDashboardMetric(70, summaryY + 62, (cx, cy, scale, color) => this.drawTargetIcon(cx, cy, scale, color), '答对题数', String(safeNumber(stats.total_solved)), 'cyan');
+    this.drawDashboardMetric(370, summaryY + 62, (cx, cy, scale, color) => this.drawLightningIcon(cx, cy, scale, color), '最高连击', String(safeNumber(stats.best_combo)), 'violet');
+    this.drawDashboardMetric(70, summaryY + 116, null, '累计得分', String(safeNumber(stats.total_score)), 'gold');
+    this.drawText('+', 98, summaryY + 143, uiFont(42, 900), 'rgba(154,100,255,0.28)');
+    this.drawDashboardMetric(370, summaryY + 116, (cx, cy, scale, color) => this.drawClockIcon(cx, cy, scale, color), '最快用时', stats.fastest_ms ? `${(stats.fastest_ms / 1000).toFixed(1)} 秒` : '暂无', 'cyan');
     const cards = [
       ['闯关模式', `已解锁 ${this.highestPlayableLevelNumber()} 关`, 'cyan', (cx, cy) => this.drawFlagIcon(cx, cy, 0.44)],
       ['无尽模式', `最高 ${safeNumber(endless.best_questions)} 题`, 'violet', (cx, cy) => this.drawInfinityIcon(cx, cy, 0.38)],
@@ -5726,6 +6240,11 @@ class GameApp {
     this.hintPopup = null;
     this.menuPage = clamp(Math.floor(safeNumber(this.progress.unlocked_level, 0) / 20), 0, 9);
     this.screen = 'levels';
+    // Prepare the next playable run while the player is browsing the level
+    // page, so tapping a level normally starts without a visible wait.
+    if (this.backendAuth && this.backendAuth.status === 'ready' && typeof this.prefetchCampaignRun === 'function') {
+      this.prefetchCampaignRun(clamp(Math.floor(safeNumber(this.progress.unlocked_level, 0)), 0, 199));
+    }
   }
 
   ensureQuestionService() {
@@ -5931,11 +6450,12 @@ class GameApp {
       this.campaignAttempts = Array.isArray(this.campaignAttempts) ? this.campaignAttempts : [];
       this.campaignAttempts.push({
         puzzle_id: String(this.currentPuzzle.puzzleId || this.currentPuzzle.puzzle_id || `C${String(this.currentLevel + 1).padStart(3, '0')}-Q${String(this.currentQuestion + 1).padStart(2, '0')}`),
+        question_hash: String(this.currentPuzzle.question_hash || this.currentPuzzle.questionHash || ''),
         question_index: this.currentQuestion,
         elapsed_ms: elapsedMs,
         solved: true,
         mistakes: Math.max(0, Number(this.mistakes) || 0),
-        hints: this.hintUsed ? 1 : 0,
+        hints: Math.max(0, Math.floor(Number(this.hintsUsed) || 0)),
         score: Math.max(0, Math.min(100, Number(this.score) || 0)),
         score_delta: Math.floor(Number(this.score) - Number(scoreBefore) || 0),
         combo: Math.max(0, Number(this.combo) || 0),
@@ -5951,7 +6471,7 @@ class GameApp {
         elapsed_ms: elapsedMs,
         solved: true,
         mistakes: Math.max(0, Number(this.mistakes) || 0),
-        hints: this.hintUsed ? 1 : 0,
+        hints: Math.max(0, Math.floor(Number(this.questionHintsUsed) || 0)),
         score: Math.max(0, Number(this.score) || 0),
         score_delta: Math.max(0, Math.floor(Number(this.score) - Number(scoreBefore) || 0)),
         combo: Math.max(1, Number(this.combo) || 1),
@@ -5969,7 +6489,7 @@ class GameApp {
         question_index: passed && !isLast ? this.currentQuestion + 1 : this.currentQuestion,
         score: this.score,
         mistakes: this.mistakes,
-        hints_used: this.hintUsed ? 1 : 0,
+        hints_used: Math.max(0, Math.floor(Number(this.hintsUsed) || 0)),
         best_combo: this.maxCombo,
         attempts: this.pendingRunAttempts(this.mode),
       });
@@ -5981,7 +6501,7 @@ class GameApp {
     let rewardCoins = 0;
     let bonusLabels = [];
     const serverAuthoritative = Boolean(this.backendAuth && this.backendAuth.status === 'ready' && (
-      (this.mode === 'campaign' && this.campaignRun) ||
+      (this.mode === 'campaign' && (this.campaignRun || this.campaignRunLoading)) ||
       (this.mode === 'daily' && this.dailyRun) ||
       (this.mode === 'endless' && this.endlessRun && !this.endlessLocalFallback) ||
       (this.mode === 'friend' && !this.friendLocalFallback)
@@ -6014,7 +6534,6 @@ class GameApp {
       // rewards. A failed or missing run must not persist a local unlock.
       if (localProgressAllowed) storage.saveLevel(this.progress, this.currentLevel, stars, this.score);
       levelComplete = true;
-      this.submitCampaignLevelCompletion(this.currentLevel, this.score, stars);
     } else if (passed) {
       const starResult = this.calculateGeneralStars();
       stars = starResult.stars;
@@ -6154,7 +6673,15 @@ class GameApp {
       // 某些微信运行环境可能暂停 setTimeout；loop() 会用 autoNextAt 再兜底一次。
       return;
     }
-    const nextAvailable = passed && (this.mode === 'endless' || !isLast || (this.mode === 'campaign' && this.isCampaignLevelUnlocked(this.currentLevel + 1)));
+    const nextAvailable = passed && (this.mode === 'endless' || !isLast || (
+      this.mode === 'campaign' && localProgressAllowed && this.isCampaignLevelUnlocked(this.currentLevel + 1)
+    ));
+    const nextLevelPending = Boolean(
+      passed && levelComplete && this.mode === 'campaign' && serverAuthoritative && !nextAvailable
+    );
+    const campaignRunMissing = Boolean(
+      levelComplete && this.mode === 'campaign' && this.isBackendRequired() && !this.campaignRun
+    );
     if (levelComplete && this.currentLevel === 99 && !this.isCampaignLevelUnlocked(100)) {
       bonusLabels.push(`下一阶段需要前 100 关累计 ${this.campaignBlockGateScore()} 分`);
     }
@@ -6166,10 +6693,19 @@ class GameApp {
         : null,
       serverVerified: false,
       serverSubmitPending: serverAuthoritative,
-      serverSubmitError: false,
+      serverSubmitError: campaignRunMissing,
+      campaignNextRequested: false,
+      nextLevelLoading: false,
+      nextLevelPending,
+      serverStreak: null,
       next: nextAvailable,
     };
     this.screen = 'result';
+    // Build the result page first so a fast server response can update its
+    // verified state and enable the real “下一关” action immediately.
+    if (levelComplete && this.mode === 'campaign') {
+      this.submitCampaignLevelCompletion(this.currentLevel, this.score, stars);
+    }
   }
 
   nextQuestion() {
@@ -6198,6 +6734,8 @@ class GameApp {
     this.autoNextFallbackMs = 0;
     this.autoNextToken = safeNumber(this.autoNextToken) + 1;
     this.gameRequestToken += 1;
+    this.campaignNextRequested = false;
+    this.campaignStartRequest = null;
     this.result = null;
     this.hintPopup = null;
     this.resultHelpPopup = false;
@@ -6217,6 +6755,8 @@ class GameApp {
 
   backFromGame() {
     this.gameRequestToken += 1;
+    this.campaignNextRequested = false;
+    this.campaignStartRequest = null;
     this.settling = false;
     this.settleToken += 1;
     this.transitioning = false;
@@ -6230,6 +6770,8 @@ class GameApp {
 
   goHome() {
     this.gameRequestToken += 1;
+    this.campaignNextRequested = false;
+    this.campaignStartRequest = null;
     this.renderRecovery = false;
     this.settling = false;
     this.settleToken += 1;

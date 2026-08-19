@@ -449,6 +449,29 @@ function getLeaderboard(mode, scope = 'global') {
   return authenticatedRequest(`/api/v1/player/leaderboards/${safeMode}?scope=${safeScope}`, { timeout: REQUEST_TIMEOUTS.leaderboard });
 }
 
+function getRankedSummary(seasonID = '') {
+  const safeSeasonID = String(seasonID || '').trim();
+  const query = safeSeasonID ? `?season_id=${encodeURIComponent(safeSeasonID)}` : '';
+  return authenticatedRequest(`/api/v1/player/ranked/summary${query}`, { timeout: REQUEST_TIMEOUTS.leaderboard });
+}
+
+function getRankedMatches(options = {}) {
+  const params = [];
+  const seasonID = String(options.season_id || options.seasonID || '').trim();
+  const cursor = String(options.cursor || '').trim();
+  const limit = Math.max(1, Math.min(50, Math.floor(Number(options.limit) || 20)));
+  if (seasonID) params.push(`season_id=${encodeURIComponent(seasonID)}`);
+  params.push(`limit=${limit}`);
+  if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
+  return authenticatedRequest(`/api/v1/player/ranked/matches?${params.join('&')}`, { timeout: REQUEST_TIMEOUTS.leaderboard });
+}
+
+function getRankedMatch(matchID) {
+  const safeMatchID = encodeURIComponent(String(matchID || '').trim());
+  if (!safeMatchID) return Promise.reject(makeError('缺少 match_id，无法读取排位对局', 400, 'MATCH_ID_REQUIRED'));
+  return authenticatedRequest(`/api/v1/player/ranked/matches/${safeMatchID}`, { timeout: REQUEST_TIMEOUTS.leaderboard });
+}
+
 function createEndlessRun() {
   return authenticatedRequest('/api/v1/player/endless/runs', {
     method: 'POST',
@@ -500,11 +523,14 @@ function submitDailyRun(runID, submission = {}) {
   });
 }
 
-function createFriendRoom() {
+function createFriendRoom(options = {}) {
   return authenticatedRequest('/api/v1/player/friend/rooms', {
     method: 'POST',
     timeout: REQUEST_TIMEOUTS.room,
-    data: {},
+    data: {
+      question_count: Math.max(1, Math.floor(Number(options.question_count || options.questionCount || 0))),
+      time_limit_seconds: Math.max(0, Math.floor(Number(options.time_limit_seconds || options.timeLimitSeconds || 0))),
+    },
   });
 }
 
@@ -542,6 +568,19 @@ function startFriendRoom(roomCode) {
     method: 'POST',
     timeout: REQUEST_TIMEOUTS.room,
     data: {},
+  });
+}
+
+// A rematch must create a new server round. Never reuse the previous match_id,
+// progress hash, or submissions when the player taps “再来一局”.
+function rematchFriendRoom(roomCode, options = {}) {
+  const safeRoomCode = encodeURIComponent(String(roomCode || ''));
+  return authenticatedRequest(`/api/v1/player/friend/rooms/${safeRoomCode}/rematch`, {
+    method: 'POST',
+    timeout: REQUEST_TIMEOUTS.room,
+    data: {
+      client_round_id: String(options.client_round_id || options.clientRoundId || ''),
+    },
   });
 }
 
@@ -594,6 +633,8 @@ function joinMatchmaking(data = {}) {
       rank_tier: String(data.rank_tier || ''),
       rank_division: Number(data.rank_division || 0),
       rank_stars: Number(data.rank_stars || 0),
+      question_count: Math.max(1, Math.floor(Number(data.question_count || data.questionCount || 0))),
+      time_limit_seconds: Math.max(0, Math.floor(Number(data.time_limit_seconds || data.timeLimitSeconds || 0))),
     },
   });
 }
@@ -641,6 +682,9 @@ module.exports = {
   equipCosmetic,
   updatePreferences,
   getLeaderboard,
+  getRankedSummary,
+  getRankedMatches,
+  getRankedMatch,
   createEndlessRun,
   submitEndlessRun,
   createCampaignRun,
@@ -653,6 +697,7 @@ module.exports = {
   leaveFriendRoom,
   readyFriendRoom,
   startFriendRoom,
+  rematchFriendRoom,
   updateFriendMatchProgress,
   getFriendMatchProgress,
   submitFriendMatch,

@@ -14,9 +14,14 @@ func validConfigForTest() Config {
 		WeChat:   WeChatConfig{AppID: "wx1e7ac815548c561c", AppSecret: "real-app-secret", APIBaseURL: "https://api.weixin.qq.com", Timeout: 1},
 		JWT:      JWTConfig{Secret: "01234567890123456789012345678901", Algorithm: "HS256", AccessTTL: 1, RefreshTTL: 2},
 		Queue:    QueueConfig{Name: "game", Concurrency: 1, TaskTimeout: 1},
-		Game:     GameConfig{DailySeedSecret: "real-daily-seed-secret", MatchmakingWaitSeconds: 12},
-		Avatar:   AvatarConfig{StorageDir: "var/avatars", PublicBaseURL: "https://cdn.example.com", MaxBytes: 2 << 20, MaxDimension: 4096, UploadCooldownSeconds: 30},
-		Log:      LogConfig{Level: "info"},
+		Game: GameConfig{
+			DailySeedSecret:        "real-daily-seed-secret",
+			CampaignContentVersion: "v1",
+			CampaignContentSecret:  "real-campaign-content-secret",
+			MatchmakingWaitSeconds: 12,
+		},
+		Avatar: AvatarConfig{StorageDir: "var/avatars", PublicBaseURL: "https://cdn.example.com", MaxBytes: 2 << 20, MaxDimension: 4096, UploadCooldownSeconds: 30},
+		Log:    LogConfig{Level: "info"},
 	}
 }
 
@@ -29,6 +34,7 @@ func TestValidateProductionRejectsPlaceholderSecrets(t *testing.T) {
 		{name: "wechat app secret", apply: func(cfg *Config) { cfg.WeChat.AppSecret = "replace-with-wechat-app-secret" }},
 		{name: "jwt secret", apply: func(cfg *Config) { cfg.JWT.Secret = "replace-with-at-least-32-random-bytes" }},
 		{name: "daily seed secret", apply: func(cfg *Config) { cfg.Game.DailySeedSecret = "replace-with-a-separate-daily-seed-secret" }},
+		{name: "campaign content secret", apply: func(cfg *Config) { cfg.Game.CampaignContentSecret = "replace-with-a-stable-campaign-content-secret" }},
 	}
 	for _, field := range fields {
 		t.Run(field.name, func(t *testing.T) {
@@ -59,6 +65,8 @@ func TestValidateProductionRejectsMissingRequiredSecrets(t *testing.T) {
 		{name: "wechat app secret", apply: func(cfg *Config) { cfg.WeChat.AppSecret = "" }},
 		{name: "jwt secret", apply: func(cfg *Config) { cfg.JWT.Secret = "" }},
 		{name: "daily seed secret", apply: func(cfg *Config) { cfg.Game.DailySeedSecret = "" }},
+		{name: "campaign content version", apply: func(cfg *Config) { cfg.Game.CampaignContentVersion = "" }},
+		{name: "campaign content secret", apply: func(cfg *Config) { cfg.Game.CampaignContentSecret = "" }},
 	}
 	for _, field := range fields {
 		t.Run(field.name, func(t *testing.T) {

@@ -291,8 +291,8 @@ func TestFriendMatchSubmissionCanSettleAfterOpponentFinishedFirst(t *testing.T) 
 	if err != nil {
 		t.Fatalf("first final submission error = %v", err)
 	}
-	if !first.Pending {
-		t.Fatalf("first final submission = %#v, want pending", first)
+	if first.Pending || first.MatchResult == nil || first.Outcome == "" {
+		t.Fatalf("first final submission = %#v, want immediate settled result", first)
 	}
 
 	secondInput := validFriendMatchSubmission()
