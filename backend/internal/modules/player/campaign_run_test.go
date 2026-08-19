@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -146,6 +148,125 @@ func TestStartCampaignRunReturnsPublicQuestionsWithoutAnswerSteps(t *testing.T) 
 	}
 	if stored := runs.runs[result.RunID]; len(stored.Questions) != 3 || len(stored.Questions[0].SolutionSteps) != 3 {
 		t.Fatalf("stored run does not contain hidden answer steps: %#v", stored)
+	}
+}
+
+func TestCampaignRunQuestionsAreStableAcrossUsersAndRuns(t *testing.T) {
+	store := newCampaignTestStore(t, 1)
+	runs := &campaignRunStoreFake{}
+	service := NewServiceWithRoomsAndEndless(
+		leaderboardProfileReader{profile: user.ProfileResponse{ID: 3}},
+		store, nil, runs,
+	)
+	service.SetCampaignContent("v1", "test-campaign-secret")
+
+	first, err := service.StartCampaignRun(context.Background(), 3, 0)
+	if err != nil {
+		t.Fatalf("first StartCampaignRun() error = %v", err)
+	}
+	second, err := service.StartCampaignRun(context.Background(), 4, 0)
+	if err != nil {
+		t.Fatalf("second StartCampaignRun() error = %v", err)
+	}
+	third, err := service.StartCampaignRun(context.Background(), 3, 0)
+	if err != nil {
+		t.Fatalf("third StartCampaignRun() error = %v", err)
+	}
+
+	if reflect.DeepEqual(first.Puzzles, second.Puzzles) == false || reflect.DeepEqual(first.Puzzles, third.Puzzles) == false {
+		t.Fatalf("campaign questions are not stable: first=%#v second=%#v third=%#v", first.Puzzles, second.Puzzles, third.Puzzles)
+	}
+	if first.RunID == second.RunID || first.RunID == third.RunID || second.RunID == third.RunID {
+		t.Fatalf("run IDs must remain independent: %q %q %q", first.RunID, second.RunID, third.RunID)
+	}
+	for index, puzzle := range first.Puzzles {
+		wantID := fmt.Sprintf("C001-Q%02d", index+1)
+		if puzzle.PuzzleID != wantID || puzzle.QuestionHash == "" {
+			t.Fatalf("puzzle %d = %#v, want stable puzzle ID and hash", index, puzzle)
+		}
+		if len(puzzle.Numbers) != 4 || len(verifiedFriendSolutions(puzzle.Numbers, puzzle.Rules, 40)) == 0 {
+			t.Fatalf("puzzle %d is not a validated four-number puzzle: %#v", index, puzzle)
+		}
+	}
+
+	levelTwo, err := service.StartCampaignRun(context.Background(), 3, 1)
+	if err != nil {
+		t.Fatalf("level two StartCampaignRun() error = %v", err)
+	}
+	if reflect.DeepEqual(first.Puzzles, levelTwo.Puzzles) {
+		t.Fatal("different campaign levels unexpectedly returned the same questions")
+	}
+	if first.Puzzles[0].QuestionHash == levelTwo.Puzzles[0].QuestionHash {
+		t.Fatal("different campaign levels unexpectedly returned the same question hash")
+	}
+}
+
+func TestCampaignRunSubmissionUsesThePersistedDeterministicQuestions(t *testing.T) {
+	store := newCampaignTestStore(t, 0)
+	runs := &campaignRunStoreFake{}
+	service := NewServiceWithRoomsAndEndless(
+		leaderboardProfileReader{profile: user.ProfileResponse{ID: 3}},
+		store, nil, runs,
+	)
+	service.SetCampaignContent("v1", "test-campaign-secret")
+	started, err := service.StartCampaignRun(context.Background(), 3, 0)
+	if err != nil {
+		t.Fatalf("StartCampaignRun() error = %v", err)
+	}
+	run := runs.runs[started.RunID]
+	attempts := make([]CampaignRunAttemptInput, 0, len(run.Questions))
+	previousScore := 0
+	for index, question := range run.Questions {
+		solution := verifiedFriendSolutions(question.Numbers, question.Rules, 40)[0].steps
+		score := campaignProgressScore(index+1, len(run.Questions), 0, 0)
+		attempts = append(attempts, CampaignRunAttemptInput{
+			PuzzleID: question.PuzzleID, QuestionHash: question.QuestionHash,
+			QuestionIndex: index, ElapsedMS: 1000, Solved: true,
+			Score: score, ScoreDelta: score - previousScore, Combo: index + 1,
+			SolutionSteps: solution,
+		})
+		previousScore = score
+	}
+
+	result, err := service.SubmitCampaignRun(context.Background(), 3, started.RunID, CampaignRunSubmissionInput{
+		ProtocolVersion: campaignRunProtocolVersion,
+		IdempotencyKey:  "campaign_" + started.RunID,
+		RunID:           started.RunID,
+		LevelID:         run.LevelID,
+		Attempts:        attempts,
+		Summary: CampaignRunSummaryInput{
+			Questions: len(attempts), Score: previousScore, ElapsedMS: 1000 * len(attempts), Stars: 3, BestCombo: len(attempts),
+		},
+	})
+	if err != nil {
+		t.Fatalf("SubmitCampaignRun() error = %v", err)
+	}
+	if !result.Validated || result.Score != 100 || result.Questions != len(run.Questions) {
+		t.Fatalf("submission result = %#v, want validated full deterministic run", result)
+	}
+}
+
+func TestResumeCampaignRunKeepsQuestionsCreatedBeforeContentChange(t *testing.T) {
+	store := newCampaignTestStore(t, 0)
+	runs := &campaignRunStoreFake{}
+	service := NewServiceWithRoomsAndEndless(
+		leaderboardProfileReader{profile: user.ProfileResponse{ID: 3}},
+		store, nil, runs,
+	)
+	service.SetCampaignContent("v1", "test-campaign-secret")
+	started, err := service.StartCampaignRun(context.Background(), 3, 0)
+	if err != nil {
+		t.Fatalf("StartCampaignRun() error = %v", err)
+	}
+	original := append([]CampaignPuzzlePublic(nil), started.Puzzles...)
+
+	service.SetCampaignContent("v2", "another-test-campaign-secret")
+	resumed, err := service.ResumeCampaignRun(context.Background(), 3, started.RunID)
+	if err != nil {
+		t.Fatalf("ResumeCampaignRun() error = %v", err)
+	}
+	if !reflect.DeepEqual(original, resumed.Puzzles) {
+		t.Fatalf("resume replaced persisted questions: original=%#v resumed=%#v", original, resumed.Puzzles)
 	}
 }
 

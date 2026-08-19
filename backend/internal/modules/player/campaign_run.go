@@ -3,12 +3,13 @@ package player
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"math/big"
 	"strings"
 	"time"
 
@@ -171,15 +172,16 @@ func (s *Service) StartCampaignRun(ctx context.Context, userID uint64, levelID i
 	}
 
 	questionCount, timeLimitMS, allowHint := campaignLevelConfig(levelID)
-	seed, err := randomCampaignSeed()
-	if err != nil {
-		return CampaignRunResponse{}, err
-	}
 	runID, err := randomCampaignRunID()
 	if err != nil {
 		return CampaignRunResponse{}, err
 	}
-	questions := generateCampaignRunQuestions(levelID, seed, questionCount, timeLimitMS)
+	// Campaign questions are content, not per-run state. The seed deliberately
+	// excludes userID, runID, current time, and randomness so every player gets
+	// the same contract for a level within one published content version.
+	contentVersion := s.campaignContentVersionOrDefault()
+	seed := campaignContentSeed(contentVersion, s.campaignContentSecretOrDefault(), levelID)
+	questions := generateCampaignRunQuestions(levelID, seed, contentVersion, questionCount, timeLimitMS)
 	if len(questions) != questionCount {
 		return CampaignRunResponse{}, apperror.ServiceUnavailable("闯关题目暂时生成失败", nil)
 	}
@@ -417,7 +419,7 @@ func campaignLevelConfig(levelID int) (questionCount, timeLimitMS int, allowHint
 	return questionCount, int(math.Round(seconds * 1000)), chapterLevel < 16
 }
 
-func generateCampaignRunQuestions(levelID int, seed int64, count, timeLimitMS int) []CampaignPuzzle {
+func generateCampaignRunQuestions(levelID int, seed int64, contentVersion string, count, timeLimitMS int) []CampaignPuzzle {
 	random := newFriendSeededRandom(seed + int64(levelID+1)*7919)
 	used := make(map[string]struct{}, count)
 	result := make([]CampaignPuzzle, 0, count)
@@ -427,26 +429,76 @@ func generateCampaignRunQuestions(levelID int, seed int64, count, timeLimitMS in
 		if _, exists := used[key]; exists {
 			continue
 		}
-		solutions := friendSolveDetailed(numbers, 1)
-		allSolutions := friendSolveDetailed(numbers, 40)
-		if len(solutions) == 0 {
+		rules := friendPuzzleRules()
+		verifiedSolutions := verifiedFriendSolutions(numbers, rules, 40)
+		if len(verifiedSolutions) == 0 {
 			continue
 		}
 		used[key] = struct{}{}
-		rules := friendPuzzleRules()
+		questionIndex := len(result)
+		puzzleID := fmt.Sprintf("C%03d-Q%02d", levelID+1, questionIndex+1)
 		result = append(result, CampaignPuzzle{
-			PuzzleID:      fmt.Sprintf("C%03d-Q%02d", levelID+1, len(result)+1),
+			PuzzleID:      puzzleID,
 			Numbers:       append([]int(nil), numbers...),
 			Rules:         rules,
-			QuestionHash:  puzzleQuestionHash(numbers, rules, seed, len(result)),
+			QuestionHash:  campaignQuestionHash(contentVersion, levelID, questionIndex, puzzleID, numbers, rules),
 			SourceSeed:    fmt.Sprintf("%d", seed),
-			SolutionCount: len(allSolutions),
-			ShortestSteps: shortestSolutionSteps(allSolutions),
+			SolutionCount: len(verifiedSolutions),
+			ShortestSteps: shortestSolutionSteps(verifiedSolutions),
 			TimeLimitMS:   timeLimitMS,
-			SolutionSteps: append([]FriendMatchSolutionStep(nil), solutions[0].steps...),
+			SolutionSteps: append([]FriendMatchSolutionStep(nil), verifiedSolutions[0].steps...),
 		})
 	}
 	return result
+}
+
+func (s *Service) campaignContentVersionOrDefault() string {
+	if s != nil && strings.TrimSpace(s.campaignContentVersion) != "" {
+		return strings.TrimSpace(s.campaignContentVersion)
+	}
+	return defaultCampaignContentVersion
+}
+
+func (s *Service) campaignContentSecretOrDefault() string {
+	if s != nil && strings.TrimSpace(s.campaignContentSecret) != "" {
+		return strings.TrimSpace(s.campaignContentSecret)
+	}
+	return defaultCampaignContentSecret
+}
+
+// campaignContentSeed is the only seed used to generate a new campaign
+// question set. It is a deterministic hash of the published content version,
+// level, and server-held content secret. No per-player or per-run value is
+// included, so changing the content version is the explicit way to publish a
+// new campaign question set.
+func campaignContentSeed(contentVersion, contentSecret string, levelID int) int64 {
+	payload := fmt.Sprintf("campaign-content\x00%s\x00%d\x00%s", strings.TrimSpace(contentVersion), levelID, strings.TrimSpace(contentSecret))
+	digest := sha256.Sum256([]byte(payload))
+	value := binary.BigEndian.Uint64(digest[:8]) & (uint64(1<<63) - 1)
+	if value == 0 {
+		value = 1
+	}
+	return int64(value)
+}
+
+// campaignQuestionHash fingerprints the fixed question contract itself. It
+// intentionally does not include SourceSeed: the hash must remain tied to
+// the published question content rather than to a per-run generation input.
+func campaignQuestionHash(contentVersion string, levelID, questionIndex int, puzzleID string, numbers []int, rules FriendPuzzleRules) string {
+	payload, _ := json.Marshal(struct {
+		ContentVersion string            `json:"content_version"`
+		LevelID        int               `json:"level_id"`
+		QuestionIndex  int               `json:"question_index"`
+		PuzzleID       string            `json:"puzzle_id"`
+		Numbers        []int             `json:"numbers"`
+		Rules          FriendPuzzleRules `json:"rules"`
+	}{
+		ContentVersion: strings.TrimSpace(contentVersion), LevelID: levelID,
+		QuestionIndex: questionIndex, PuzzleID: puzzleID,
+		Numbers: numbers, Rules: rules,
+	})
+	digest := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", digest[:])
 }
 
 func publicCampaignRun(run CampaignRun) CampaignRunResponse {
@@ -497,14 +549,6 @@ func (s *Service) ensureCampaignLevelUnlocked(ctx context.Context, userID uint64
 		return apperror.New(10008, 403, "当前关卡尚未解锁", nil)
 	}
 	return nil
-}
-
-func randomCampaignSeed() (int64, error) {
-	value, err := rand.Int(rand.Reader, big.NewInt(2147483647))
-	if err != nil {
-		return 0, fmt.Errorf("generate campaign seed: %w", err)
-	}
-	return value.Int64(), nil
 }
 
 func randomCampaignRunID() (string, error) {

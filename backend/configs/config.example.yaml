@@ -51,9 +51,13 @@ queue:
   max_retry: 5
 
 game:
-  # Keep the daily seed secret outside the repository in production.
-  daily_seed_secret: ""
-  matchmaking_wait_seconds: 15
+	# Keep the daily seed secret outside the repository in production.
+	daily_seed_secret: ""
+	# The campaign content version and secret must remain stable for a published
+	# version. Changing either intentionally publishes a new campaign question set.
+	campaign_content_version: "v1"
+	campaign_content_secret: ""
+	matchmaking_wait_seconds: 15
   # Optional. Empty means the server derives the current Shanghai-time quarter.
   rank_season_id: ""
 

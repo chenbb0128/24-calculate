@@ -26,6 +26,8 @@ $env:GO_SERVICE_JWT_SECRET = "至少 32 个字符的本地 JWT 密钥"
 $env:GO_SERVICE_WECHAT_APP_ID = "wx1e7ac815548c561c"
 $env:GO_SERVICE_WECHAT_APP_SECRET = "对应的微信 AppSecret"
 $env:GO_SERVICE_GAME_DAILY_SEED_SECRET = "生产环境单独的每日题目密钥"
+$env:GO_SERVICE_GAME_CAMPAIGN_CONTENT_VERSION = "v1"
+$env:GO_SERVICE_GAME_CAMPAIGN_CONTENT_SECRET = "本机固定的闯关题库密钥"
 # 本机可留空；生产必须配置实际 HTTPS 图片域名和可写目录。
 $env:GO_SERVICE_AVATAR_STORAGE_DIR = "var/avatars"
 $env:GO_SERVICE_AVATAR_PUBLIC_BASE_URL = ""
@@ -33,7 +35,7 @@ $env:GO_SERVICE_AVATAR_PUBLIC_BASE_URL = ""
 D:\bin\go.exe run ./cmd/api
 ```
 
-看到 `api server started` 后，API 默认地址为 `http://127.0.0.1:8080`。AppSecret、数据库密码和 JWT 密钥只通过环境变量传入，不写入代码、配置文件或日志。
+看到 `api server started` 后，API 默认地址为 `http://127.0.0.1:8080`。AppSecret、数据库密码、JWT 密钥和闯关题库密钥只通过环境变量传入，不写入代码、配置文件或日志。闯关题目由“题库版本 + 关卡 + 服务端固定密钥”确定；同一版本发布后不要修改密钥，否则会生成新的题目内容。
 
 ## 数据库迁移
 

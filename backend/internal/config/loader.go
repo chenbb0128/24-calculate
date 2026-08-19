@@ -98,6 +98,8 @@ func setDefaults(v *viper.Viper) {
 		"queue.max_retry":    5,
 
 		"game.matchmaking_wait_seconds": 15,
+		"game.campaign_content_version": "v1",
+		"game.campaign_content_secret":  "",
 		"game.rank_season_id":           "",
 
 		"avatar.storage_dir":             "var/avatars",
@@ -130,7 +132,8 @@ func bindEnvironment(v *viper.Viper) {
 		"wechat.app_id", "wechat.app_secret", "wechat.api_base_url", "wechat.timeout",
 		"jwt.secret", "jwt.algorithm", "jwt.issuer", "jwt.access_ttl", "jwt.refresh_ttl",
 		"queue.name", "queue.concurrency", "queue.task_timeout", "queue.max_retry",
-		"game.daily_seed_secret", "game.matchmaking_wait_seconds", "game.rank_season_id",
+		"game.daily_seed_secret", "game.campaign_content_version", "game.campaign_content_secret",
+		"game.matchmaking_wait_seconds", "game.rank_season_id",
 		"avatar.storage_dir", "avatar.public_base_url", "avatar.max_bytes", "avatar.max_dimension",
 		"avatar.upload_cooldown_seconds",
 		"log.level", "log.format",

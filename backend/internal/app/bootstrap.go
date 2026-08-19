@@ -108,6 +108,7 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 		seedSecret = cfg.JWT.Secret
 	}
 	playerService.SetDailySeedSecret(seedSecret)
+	playerService.SetCampaignContent(cfg.Game.CampaignContentVersion, cfg.Game.CampaignContentSecret)
 	playerService.SetMatchmakingWait(time.Duration(cfg.Game.MatchmakingWaitSeconds) * time.Second)
 	playerHandler := player.NewHandler(playerService)
 

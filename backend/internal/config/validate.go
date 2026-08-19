@@ -78,6 +78,9 @@ func Validate(cfg *Config) error {
 	if cfg.Game.MatchmakingWaitSeconds < 1 || cfg.Game.MatchmakingWaitSeconds > 60 {
 		return fmt.Errorf("game.matchmaking_wait_seconds must be between 1 and 60")
 	}
+	if strings.TrimSpace(cfg.Game.CampaignContentVersion) == "" {
+		return fmt.Errorf("game.campaign_content_version must not be empty")
+	}
 	if strings.TrimSpace(cfg.Avatar.StorageDir) == "" {
 		return fmt.Errorf("avatar.storage_dir must not be empty")
 	}
@@ -108,10 +111,11 @@ func Validate(cfg *Config) error {
 	}
 	if strings.EqualFold(cfg.App.Env, "production") {
 		productionSecrets := map[string]string{
-			"database.password":      cfg.Database.Password,
-			"wechat.app_secret":      cfg.WeChat.AppSecret,
-			"jwt.secret":             cfg.JWT.Secret,
-			"game.daily_seed_secret": cfg.Game.DailySeedSecret,
+			"database.password":            cfg.Database.Password,
+			"wechat.app_secret":            cfg.WeChat.AppSecret,
+			"jwt.secret":                   cfg.JWT.Secret,
+			"game.daily_seed_secret":       cfg.Game.DailySeedSecret,
+			"game.campaign_content_secret": cfg.Game.CampaignContentSecret,
 		}
 		for name, value := range productionSecrets {
 			if strings.TrimSpace(value) == "" {
