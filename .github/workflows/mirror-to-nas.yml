@@ -1,0 +1,59 @@
+name: Mirror to NAS
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: twenty-four-calculate-nas-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Push master to NAS mirror
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure NAS SSH identity
+        env:
+          NAS_SSH_KEY: ${{ secrets.NAS_SSH_KEY }}
+          NAS_KNOWN_HOSTS: ${{ secrets.NAS_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$NAS_SSH_KEY"
+          test -n "$NAS_KNOWN_HOSTS"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$NAS_SSH_KEY" > ~/.ssh/nas_mirror
+          printf '%s\n' "$NAS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Push selected commit to NAS
+        env:
+          NAS_HOST: ${{ secrets.NAS_HOST }}
+          NAS_PORT: ${{ secrets.NAS_PORT }}
+          NAS_USER: ${{ secrets.NAS_USER }}
+          NAS_REPO: /volume1/docker/24-calculate-git/24-calculate.git
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$NAS_HOST"
+          test -n "$NAS_PORT"
+          test -n "$NAS_USER"
+          git remote add nas "ssh://${NAS_USER}@${NAS_HOST}:${NAS_PORT}${NAS_REPO}"
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/nas_mirror -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
+            git push nas "${GITHUB_SHA}:refs/heads/master"
+
+      - name: Remove NAS SSH identity
+        if: always()
+        shell: bash
+        run: rm -f ~/.ssh/nas_mirror

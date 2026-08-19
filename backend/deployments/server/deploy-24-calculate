@@ -3,6 +3,16 @@
 set -Eeuo pipefail
 
 readonly EXPECTED_SHA="${1:-}"
+readonly REQUESTED_IMAGE_INPUT_MODE="${2:-}"
+if [[ "$REQUESTED_IMAGE_INPUT_MODE" == --image-input=* ]]; then
+    readonly IMAGE_INPUT_MODE="${REQUESTED_IMAGE_INPUT_MODE#--image-input=}"
+elif [[ -z "$REQUESTED_IMAGE_INPUT_MODE" ]]; then
+    readonly IMAGE_INPUT_MODE="${IMAGE_INPUT_MODE:-registry}"
+else
+    printf 'Unsupported argument: %s\n' "$REQUESTED_IMAGE_INPUT_MODE" >&2
+    exit 64
+fi
+
 readonly APP_DIR="/data/website/24-calculate/server"
 readonly DEPLOY_DIR="$APP_DIR/backend/deployments"
 readonly COMPOSE_FILE="$DEPLOY_DIR/docker-compose.production.yml"
@@ -14,11 +24,17 @@ readonly LOCAL_HEALTH_URL="http://127.0.0.1:18082/ready"
 readonly AVATAR_DIR="/data/website/24-calculate/avatars"
 readonly BACKUP_DIR="/data/backups/24-calculate/mysql"
 readonly LOCK_FILE="/var/lock/24-calculate-deploy.lock"
+readonly IMAGE_ARCHIVE_MAX_MB="${IMAGE_ARCHIVE_MAX_MB:-2048}"
+readonly IMAGE_UPLOAD_TIMEOUT_SECONDS="${IMAGE_UPLOAD_TIMEOUT_SECONDS:-900}"
+readonly IMAGE_LOAD_TIMEOUT_SECONDS="${IMAGE_LOAD_TIMEOUT_SECONDS:-900}"
 
 docker_config_dir=""
+image_archive=""
 backup_temporary_file=""
 previous_image_id=""
 services_switched=0
+ghcr_user=""
+ghcr_token=""
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -86,6 +102,75 @@ backup_database() {
     db_password=""
 }
 
+read_registry_credentials() {
+    IFS= read -r ghcr_user || fail 'Missing GHCR username on standard input'
+    IFS= read -r ghcr_token || fail 'Missing GHCR token on standard input'
+    [[ "$ghcr_user" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] \
+        || fail 'Invalid GHCR username'
+    [[ -n "$ghcr_token" ]] || fail 'GHCR token must not be empty'
+}
+
+pull_registry_image() {
+    read_registry_credentials
+
+    docker_config_dir="$(mktemp -d /tmp/24-calculate-docker-config.XXXXXX)"
+    chmod 0700 "$docker_config_dir"
+
+    log "Pulling immutable image $IMAGE_NAME:$EXPECTED_SHA"
+    printf '%s' "$ghcr_token" | DOCKER_CONFIG="$docker_config_dir" \
+        docker login ghcr.io --username "$ghcr_user" --password-stdin >/dev/null
+    DOCKER_CONFIG="$docker_config_dir" docker pull "$IMAGE_NAME:$EXPECTED_SHA"
+    ghcr_token=""
+    rm -rf -- "$docker_config_dir"
+    docker_config_dir=""
+}
+
+receive_streamed_image() {
+    local max_blocks
+    local max_bytes
+    local archive_bytes
+
+    command -v gzip >/dev/null || fail 'gzip is not installed'
+    command -v timeout >/dev/null || fail 'timeout is not installed'
+
+    max_blocks=$((IMAGE_ARCHIVE_MAX_MB + 1))
+    max_bytes=$((IMAGE_ARCHIVE_MAX_MB * 1024 * 1024))
+    image_archive="$(mktemp /tmp/24-calculate-image.XXXXXX.tar.gz)"
+    chmod 0600 "$image_archive"
+
+    log "Receiving streamed Docker image archive for $IMAGE_NAME:$EXPECTED_SHA"
+    timeout "$IMAGE_UPLOAD_TIMEOUT_SECONDS" dd bs=1M count="$max_blocks" of="$image_archive"
+
+    archive_bytes="$(wc -c < "$image_archive" | tr -d '[:space:]')"
+    [[ "$archive_bytes" -gt 0 ]] || fail 'Streamed image archive is empty'
+    [[ "$archive_bytes" -le "$max_bytes" ]] \
+        || fail "Streamed image archive exceeds ${IMAGE_ARCHIVE_MAX_MB}MB limit"
+
+    gzip -t "$image_archive" || fail 'Streamed image archive is not a valid gzip archive'
+
+    log "Loading streamed Docker image $IMAGE_NAME:$EXPECTED_SHA"
+    timeout "$IMAGE_LOAD_TIMEOUT_SECONDS" docker load -i "$image_archive" >/dev/null
+    docker image inspect "$IMAGE_NAME:$EXPECTED_SHA" >/dev/null \
+        || fail "Loaded image is missing expected tag: $IMAGE_NAME:$EXPECTED_SHA"
+
+    rm -f -- "$image_archive"
+    image_archive=""
+}
+
+prepare_image() {
+    case "$IMAGE_INPUT_MODE" in
+        registry)
+            pull_registry_image
+            ;;
+        tar)
+            receive_streamed_image
+            ;;
+        *)
+            fail "Unsupported image input mode: $IMAGE_INPUT_MODE"
+            ;;
+    esac
+}
+
 restore_previous_image() {
     [[ -n "$previous_image_id" ]] || return 0
 
@@ -108,6 +193,10 @@ cleanup() {
         rm -f -- "$backup_temporary_file"
     fi
 
+    if [[ -n "$image_archive" ]]; then
+        rm -f -- "$image_archive"
+    fi
+
     if [[ -n "$docker_config_dir" && -d "$docker_config_dir" ]]; then
         rm -rf -- "$docker_config_dir"
     fi
@@ -125,12 +214,6 @@ trap cleanup EXIT
 [[ "$(id -u)" -eq 0 ]] || fail 'This script must run as root'
 [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] \
     || fail 'Expected one lowercase 40-character Git commit SHA'
-
-IFS= read -r ghcr_user || fail 'Missing GHCR username on standard input'
-IFS= read -r ghcr_token || fail 'Missing GHCR token on standard input'
-[[ "$ghcr_user" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] \
-    || fail 'Invalid GHCR username'
-[[ -n "$ghcr_token" ]] || fail 'GHCR token must not be empty'
 
 exec 9>"$LOCK_FILE"
 flock -n 9 || fail 'Another deployment is already running'
@@ -162,16 +245,7 @@ fi
 git merge-base --is-ancestor "$CURRENT_SHA" "$EXPECTED_SHA" \
     || fail "Deployment is not a fast-forward from $CURRENT_SHA to $EXPECTED_SHA"
 
-docker_config_dir="$(mktemp -d /tmp/24-calculate-docker-config.XXXXXX)"
-chmod 0700 "$docker_config_dir"
-
-log "Pulling immutable image $IMAGE_NAME:$EXPECTED_SHA"
-printf '%s' "$ghcr_token" | DOCKER_CONFIG="$docker_config_dir" \
-    docker login ghcr.io --username "$ghcr_user" --password-stdin >/dev/null
-DOCKER_CONFIG="$docker_config_dir" docker pull "$IMAGE_NAME:$EXPECTED_SHA"
-ghcr_token=""
-rm -rf -- "$docker_config_dir"
-docker_config_dir=""
+prepare_image
 
 log "Updating application from $CURRENT_SHA to $EXPECTED_SHA"
 git merge --quiet --ff-only "$EXPECTED_SHA"
