@@ -401,8 +401,15 @@ func friendRoomContract(room FriendRoom) (string, []string, []FriendPuzzleContra
 
 func friendRoomContractExcluding(room FriendRoom, excluded map[string]struct{}) (string, []string, []FriendPuzzleContract) {
 	puzzles := room.Puzzles
-	if len(puzzles) == 0 {
-		puzzles = generateFriendPuzzleContractExcluding(room.RoomSeed, room.Rules.QuestionCount, excluded)
+	questionCount := room.Rules.QuestionCount
+	if questionCount <= 0 {
+		questionCount = friendQuestionCount
+	}
+	// A legacy or partially persisted room must be reconstructed from its
+	// server-owned seed. Never accept a short puzzle slice and let the client
+	// see a different-sized match from the rules contract.
+	if len(puzzles) != questionCount {
+		puzzles = generateFriendPuzzleContractExcluding(room.RoomSeed, questionCount, excluded)
 	}
 	questionIDs := make([]string, len(puzzles))
 	for index, puzzle := range puzzles {

@@ -137,6 +137,26 @@ func TestSubmitFriendMatchAcceptsRetryAndRecomputesScore(t *testing.T) {
 	}
 }
 
+func TestSubmitFriendMatchFinalMarkerSettlesImmediatelyOnTimeout(t *testing.T) {
+	room := testFriendMatchRoom()
+	rooms := &friendLifecycleStoreFake{room: room}
+	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, &leaderboardStore{}, rooms)
+	input := validFriendMatchSubmission()
+	input.Final = true
+	input.Attempts = input.Attempts[:1]
+	input.Summary.PlayerElapsed = 1
+	input.Summary.PlayerMistakes = 0
+	input.Summary.Outcome = "pending"
+
+	result, err := service.SubmitFriendMatch(context.Background(), 3, room.RoomCode, input)
+	if err != nil {
+		t.Fatalf("SubmitFriendMatch() error = %v", err)
+	}
+	if result.Pending || result.MatchResult == nil || rooms.room.Status != FriendRoomFinished {
+		t.Fatalf("result = %#v, room = %#v, want immediate final settlement", result, rooms.room)
+	}
+}
+
 func TestSubmitFriendMatchRejectsScoreTamperingWithinLegacyRange(t *testing.T) {
 	store := &friendSubmissionStore{leaderboardStore: &leaderboardStore{}}
 	rooms := &friendRoomStoreFake{room: testFriendMatchRoom()}
@@ -204,7 +224,7 @@ func TestSubmitFriendMatchFinishesImmediatelyWhenPlayerCompletesRound(t *testing
 	solution := friendSolveDetailed(room.Puzzles[0].Numbers, 1)[0].steps
 	score := friendMatchScoreDelta(friendTimeLimitSecs, 1000, 0, 0)
 	result, err := service.SubmitFriendMatch(context.Background(), 3, room.RoomCode, FriendMatchSubmissionInput{
-		ProtocolVersion: 2, Action: "submitFriendMatch", IdempotencyKey: "immediate-001",
+		ProtocolVersion: 2, Action: "submitFriendMatch", IdempotencyKey: "immediate-001", Final: true,
 		MatchID: room.MatchID, RoomID: room.RoomID, RoomSeed: room.RoomSeed,
 		QuestionCount: 1, QuestionHash: room.QuestionHash, PuzzleIDs: room.PuzzleIDs,
 		Attempts: []FriendMatchAttemptInput{{

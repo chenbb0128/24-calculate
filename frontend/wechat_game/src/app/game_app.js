@@ -3900,32 +3900,31 @@ class GameApp {
     });
 
     const actionY = layout.actionY;
-    const actionWidth = (this.width - 112 - 18 * 3) / 4;
     const undoDisabled = this.mode === 'daily' && this.dailyChallenge && this.dailyChallenge.rule_id === 'no_undo';
     const dailyHintLimit = this.mode === 'daily' && typeof this.dailyHintLimit === 'function' ? this.dailyHintLimit() : 0;
     const dailyHintsRemaining = this.mode === 'daily' && typeof this.dailyHintsRemaining === 'function' ? this.dailyHintsRemaining() : 0;
     const dailyHintDisabled = this.mode === 'daily' && (dailyHintLimit <= 0 || dailyHintsRemaining <= 0);
     const utilityY = layout.bottomY;
-    const utilityLabels = [
-      undoDisabled ? '撤销' : `撤销${this.freeUndo ? '·免费' : ''}`,
-      friend ? '提示' : this.mode === 'daily' ? `提示·剩余${dailyHintsRemaining}` : `提示${this.freeHint ? '·免费' : ''}`,
-      '重置',
-      '重开',
-    ];
-    const utilityActions = [
-      () => this.undo(),
-      () => this.hint(),
-      () => this.resetPuzzle(),
-      () => this.restartMode(),
-    ];
-    const utilityVariants = ['cyan', 'magenta', 'violet', 'gold'];
-    utilityLabels.forEach((label, index) => {
+    const utilityItems = friend
+      ? [
+        { label: '撤销', action: () => this.undo(), variant: 'cyan', key: 'game-undo', disabled: false },
+        { label: '重置', action: () => this.resetPuzzle(), variant: 'violet', key: 'game-reset', disabled: false },
+        { label: '重开', action: () => this.restartMode(), variant: 'gold', key: 'game-restart', disabled: false },
+      ]
+      : [
+        { label: undoDisabled ? '撤销' : `撤销${this.freeUndo ? '·免费' : ''}`, action: () => this.undo(), variant: 'cyan', key: 'game-undo', disabled: undoDisabled },
+        { label: this.mode === 'daily' ? `提示·剩余${dailyHintsRemaining}` : `提示${this.freeHint ? '·免费' : ''}`, action: () => this.hint(), variant: 'magenta', key: 'game-hint', disabled: dailyHintDisabled },
+        { label: '重置', action: () => this.resetPuzzle(), variant: 'violet', key: 'game-reset', disabled: false },
+        { label: '重开', action: () => this.restartMode(), variant: 'gold', key: 'game-restart', disabled: false },
+      ];
+    const actionWidth = (this.width - 112 - 18 * (utilityItems.length - 1)) / utilityItems.length;
+    utilityItems.forEach((item, index) => {
       const x = 44 + index * (actionWidth + 18);
-      this.drawGameUtilityButton(x, utilityY, actionWidth, layout.bottomButtonHeight, label, utilityActions[index], utilityVariants[index], {
+      this.drawGameUtilityButton(x, utilityY, actionWidth, layout.bottomButtonHeight, item.label, item.action, item.variant, {
         fontSize: compact ? 15 : 16,
         radius: 16,
-        disabled: index === 0 ? undoDisabled : index === 1 && (friend || dailyHintDisabled),
-        key: ['game-undo', 'game-hint', 'game-reset', 'game-restart'][index],
+        disabled: item.disabled,
+        key: item.key,
       });
     });
   }
@@ -4855,7 +4854,12 @@ class GameApp {
       room.players = Array.isArray(room.players) ? room.players : [];
       room.players.push({ id: String(opponent.id || opponent.user_id || 'opponent'), name: String(opponent.name || opponent.nickname || '\u5bf9\u624b'), ready: true });
     }
-    room.status = 'ready';
+    // A matchmaking response may already observe the server's countdown or
+    // running state. Do not rewrite it to ready and trigger another /start.
+    const serverStatus = String(roomSource && (roomSource.status || roomSource.state) || '').toLowerCase();
+    room.status = [friendMatch.ROOM_STATUS.COUNTDOWN, friendMatch.ROOM_STATUS.RUNNING].includes(serverStatus)
+      ? serverStatus
+      : friendMatch.ROOM_STATUS.READY;
     room.local_fallback = false;
     this.friendRoom = room;
     this.friendRules = Object.assign({}, friendMatch.rules(), room.rules || {});
@@ -4865,6 +4869,7 @@ class GameApp {
     this.friendRanked = Boolean(this.friendMatchmaking.ranked);
     this.friendLobbyView = 'room';
     this.friendSelfReady = true;
+    this.friendServerStartAt = Number(room.start_at || room.startAt || 0) || ([friendMatch.ROOM_STATUS.COUNTDOWN, friendMatch.ROOM_STATUS.RUNNING].includes(room.status) ? Date.now() : 0);
     this.friendMatchmaking.status = 'matched';
     this.friendMatchmaking.matchedAt = Date.now() + 900;
     return true;

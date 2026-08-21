@@ -697,10 +697,15 @@ class ModeController {
             return;
           }
           if (remoteRoom && (remoteRoom.room_seed || remoteRoom.room_code || remoteRoom.match_id)) {
-            this.friendRoom = Object.assign({}, this.friendRoom, remoteRoom, { status: 'ready' });
+            // Keep the state returned by the server. A successful start can
+            // already be countdown/running when the other player won the race
+            // to press start; rewriting it to ready causes another /start.
+            this.friendRoom = Object.assign({}, this.friendRoom, remoteRoom);
             this.friendRules = Object.assign({}, friendMatch.rules(), this.friendRoom.rules || {});
           }
-          this.friendServerStartAt = Number(source.start_at || source.startAt || remoteRoom.start_at || remoteRoom.startAt || 0) || 0;
+          const remoteStatus = String(remoteRoom && (remoteRoom.status || remoteRoom.state) || '').toLowerCase();
+          const serverStartAt = Number(source.start_at || source.startAt || remoteRoom.start_at || remoteRoom.startAt || 0) || 0;
+          this.friendServerStartAt = serverStartAt || ([friendMatch.ROOM_STATUS.COUNTDOWN, friendMatch.ROOM_STATUS.RUNNING].includes(remoteStatus) ? Date.now() : 0);
           this.friendStartRequestInFlight = false;
           this.startFriend();
         }).catch((error) => {
@@ -1278,6 +1283,13 @@ class ModeController {
       this.selectedOperator = '';
       this.status = '';
     };
+    // Friend matches do not use the rewarded-ad economy. Undo is a normal
+    // gameplay action there and may be used for every recorded step.
+    if (this.mode === 'friend') {
+      restore();
+      this.triggerFeedback('info', '已撤销');
+      return;
+    }
     if (this.freeUndo) { this.freeUndo = false; restore(); this.triggerFeedback('info', '已使用本局免费撤销'); return; }
     this.showRewarded('undo', () => { restore(); this.triggerFeedback('success', '看完广告，获得一次撤销'); });
   }

@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/example/go-service/internal/apperror"
@@ -111,6 +112,30 @@ func TestCreateFriendRoomBuildsServerRoom(t *testing.T) {
 	}
 	if store.created.RoomCode != room.RoomCode {
 		t.Fatalf("stored room code = %q, want %q", store.created.RoomCode, room.RoomCode)
+	}
+}
+
+func TestFriendRoomQuestionsRandomizePerRoundButStayStableWithinRound(t *testing.T) {
+	firstStore := &friendRoomStoreFake{}
+	secondStore := &friendRoomStoreFake{}
+	firstService := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, &leaderboardStore{}, firstStore)
+	secondService := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, &leaderboardStore{}, secondStore)
+
+	first, err := firstService.CreateFriendRoom(context.Background(), 3)
+	if err != nil {
+		t.Fatalf("first CreateFriendRoom() error = %v", err)
+	}
+	second, err := secondService.CreateFriendRoom(context.Background(), 3)
+	if err != nil {
+		t.Fatalf("second CreateFriendRoom() error = %v", err)
+	}
+	if first.RoomSeed == second.RoomSeed || first.QuestionHash == second.QuestionHash || reflect.DeepEqual(first.Puzzles, second.Puzzles) {
+		t.Fatalf("different rounds reused the same question contract: first=%#v second=%#v", first, second)
+	}
+
+	resumedHash, resumedIDs, resumedPuzzles := friendRoomContract(first)
+	if resumedHash != first.QuestionHash || !reflect.DeepEqual(resumedIDs, first.PuzzleIDs) || !reflect.DeepEqual(resumedPuzzles, first.Puzzles) {
+		t.Fatalf("same round contract changed on resume: stored=%#v resumed=%#v", first, resumedPuzzles)
 	}
 }
 
