@@ -563,6 +563,20 @@ class GameApp {
     const mode = String(record.pending.mode || '').toLowerCase();
     const run = record.run;
     if (!Array.isArray(run.puzzles) || !run.puzzles.length) return false;
+    if (mode === 'campaign' && run.puzzles.some((puzzleRecord) => {
+      const numbers = puzzleRecord && Array.isArray(puzzleRecord.numbers) ? puzzleRecord.numbers : [];
+      return numbers.length !== 4 || numbers.some((value) => {
+        const digit = Number(value);
+        return !Number.isInteger(digit) || digit < 1 || digit > 9;
+      });
+    })) {
+      // A pre-release campaign Run may contain the old 1～10/1～12 content.
+      // Keep that server Run immutable, but do not restore it into the new
+      // 1～9 client contract; the next tap will create a fresh Run.
+      this.clearPendingRunCheckpoint('campaign', record.pending.run_id);
+      if (this.pendingResumeRuns) delete this.pendingResumeRuns.campaign;
+      return false;
+    }
     const questionIndex = Math.max(0, Math.min(run.puzzles.length - 1, Number(run.question_index) || 0));
     this.gameRequestToken += 1;
     this.mode = mode;
