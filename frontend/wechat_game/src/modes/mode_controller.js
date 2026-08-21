@@ -89,6 +89,21 @@ function normalizeCampaignPuzzle(record, levelIndex, questionIndex) {
   };
 }
 
+function hasCurrentCampaignDigitContract(run, levelIndex, expectedQuestionCount) {
+  if (!run || typeof run !== 'object' || !String(run.run_id || run.runId || '').trim()) return false;
+  const puzzles = Array.isArray(run.puzzles) ? run.puzzles : [];
+  if (!puzzles.length || (expectedQuestionCount > 0 && puzzles.length !== expectedQuestionCount)) return false;
+  const runLevel = Number(run.level_id !== undefined ? run.level_id : run.levelId);
+  if (Number.isFinite(runLevel) && runLevel !== Number(levelIndex)) return false;
+  return puzzles.every((record) => {
+    const numbers = record && Array.isArray(record.numbers) ? record.numbers : [];
+    return numbers.length === 4 && numbers.every((value) => {
+      const digit = Number(value);
+      return Number.isInteger(digit) && digit >= 1 && digit <= 9;
+    });
+  });
+}
+
 function makeFastEndlessRecord(questionIndex, runSeed, usedKeys) {
   const config = puzzle.endlessConfig(questionIndex);
   const start = Math.abs(Number(runSeed) || 1) % FAST_ENDLESS_NUMBERS.length;
@@ -286,7 +301,17 @@ class ModeController {
       this.status = '正在准备本关题目…';
       const prefetchedRun = !forceRestart && this.takePrefetchedCampaignRun(index);
       const runPromise = prefetchedRun || this.prefetchCampaignRun(index);
+      const initialRunWasPrefetched = Boolean(prefetchedRun);
       this.campaignRunReadyPromise = Promise.resolve(runPromise).then((run) => {
+        // A prefetch may have completed against an older API binary while a
+        // deployment is rolling out. Never render that stale contract. Make
+        // one fresh request so an already-open game can recover as soon as
+        // the new server is live, without requiring a WeChat tool restart.
+        if (initialRunWasPrefetched && run && !hasCurrentCampaignDigitContract(run, index, questionCount)) {
+          return apiClient.createCampaignRun(index);
+        }
+        return run;
+      }).then((run) => {
         if (requestToken !== this.gameRequestToken || this.mode !== 'campaign' || this.currentLevel !== index) return null;
         const serverQuestionCount = Math.floor(Number(run && (run.question_count || run.questionCount)) || 0);
         const serverPuzzles = Array.isArray(run && run.puzzles) ? run.puzzles : [];

@@ -51,7 +51,10 @@ check(entry.friendLobbyView === 'room' && entry.friendRoom.room_code === '628391
 
 entry.startFriendMatchmaking();
 check(entry.screen === 'friend_matchmaking', 'quick matchmaking page did not open');
-entry.friendMatchmaking.startedAt = Date.now() - (friend.MATCHMAKING_TIMEOUT + 1) * 1000;
+// The client deliberately jitters the local fallback window within the
+// configured bounds. Advance past the actual deadline instead of assuming
+// the nominal 20-second midpoint, otherwise this audit is time-dependent.
+entry.friendMatchmaking.startedAt = Date.now() - (entry.friendMatchmaking.botFallbackAfter + 1) * 1000;
 entry.updateFriendMatchmaking();
 check(entry.friendMatchmaking.status === 'bot_ready', 'matchmaking timeout did not prepare a bot');
 check(entry.friendRoom && entry.friendRoom.players[1].bot === true, 'bot opponent was not added to the room');
