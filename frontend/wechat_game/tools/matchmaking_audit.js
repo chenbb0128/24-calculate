@@ -8,7 +8,7 @@ function check(condition, message) {
   assert.ok(condition, message);
 }
 
-check(friend.MATCHMAKING_TIMEOUT === 15, 'matchmaking timeout must be 15 seconds');
+check(friend.MATCHMAKING_TIMEOUT === 20, 'matchmaking timeout must be 20 seconds');
 check(friend.sanitizeRoomCode('a12-3456789') === '123456', 'room code sanitizer must keep the first six digits');
 check(friend.botProfile('easy').difficulty === 'easy', 'easy bot profile is invalid');
 check(friend.botProfile('hard').difficulty === 'hard', 'hard bot profile is invalid');
@@ -35,6 +35,7 @@ Object.assign(entry, {
   friendMatchmakingLocal: true,
   friendBotDifficulty: 'standard',
   friendBotName: '',
+  progress: {},
   // An explicit null auth object represents the offline/local test harness.
   // A configured backend with status=offline must not enter the bot fallback.
   backendAuth: null,
