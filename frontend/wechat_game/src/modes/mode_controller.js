@@ -40,7 +40,7 @@ function endlessNumberKey(numbers) {
 function normalizeCampaignPuzzle(record, levelIndex, questionIndex) {
   const source = record && typeof record === 'object' ? record : {};
   const numbers = Array.isArray(source.numbers) ? source.numbers.map((value) => Number(value)) : [];
-  if (numbers.length !== 4 || numbers.some((value) => !Number.isInteger(value) || value < 1)) {
+  if (numbers.length !== 4 || numbers.some((value) => !Number.isInteger(value) || value < 1 || value > 9)) {
     throw new Error('服务端闯关题目数字无效');
   }
   const sourceRules = source.rules && typeof source.rules === 'object' ? source.rules : {};

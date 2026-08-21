@@ -13,7 +13,7 @@ const DIVIDE = puzzle.OPERATORS[3];
 
 function numberKey(numbers) {
   // 闯关题库按“实际牌面顺序”去重，允许同一组数字以不同顺序出现，
-  // 这样在数字限定为 1～10 时仍能生成完整的 200 关固定题库。
+  // 这样在数字限定为 1～9 时仍能生成完整的 200 关固定题库。
   return numbers.join(',');
 }
 
@@ -46,10 +46,10 @@ function hash(text, seed) {
 
 function makeCandidates() {
   const result = [];
-  for (let first = 1; first <= 10; first += 1) {
-    for (let second = first; second <= 10; second += 1) {
-      for (let third = second; third <= 10; third += 1) {
-        for (let fourth = third; fourth <= 10; fourth += 1) {
+  for (let first = 1; first <= 9; first += 1) {
+    for (let second = first; second <= 9; second += 1) {
+      for (let third = second; third <= 9; third += 1) {
+        for (let fourth = third; fourth <= 9; fourth += 1) {
           const numbers = [first, second, third, fourth];
           const detailed = puzzle.solveDetailed(numbers);
           if (!detailed.length) continue;
@@ -98,7 +98,7 @@ function policyFor(index, questionIndex) {
     return {
       phase,
       minDigit: 1,
-      maxDigit: 10,
+      maxDigit: 9,
       minSolutions: 1,
       maxSolutions: 24,
       minScore: 4,
@@ -113,7 +113,7 @@ function policyFor(index, questionIndex) {
     return {
       phase,
       minDigit: 2,
-      maxDigit: 10,
+      maxDigit: 9,
       minSolutions: 1,
       maxSolutions: 12,
       minScore: 7,
@@ -127,7 +127,7 @@ function policyFor(index, questionIndex) {
   return {
     phase,
     minDigit: 1,
-    maxDigit: 10,
+    maxDigit: 9,
     minSolutions: 1,
     maxSolutions: 4,
     minScore: 9,

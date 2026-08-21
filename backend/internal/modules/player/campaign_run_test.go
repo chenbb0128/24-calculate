@@ -184,7 +184,7 @@ func TestCampaignRunQuestionsAreStableAcrossUsersAndRuns(t *testing.T) {
 		if puzzle.PuzzleID != wantID || puzzle.QuestionHash == "" {
 			t.Fatalf("puzzle %d = %#v, want stable puzzle ID and hash", index, puzzle)
 		}
-		if len(puzzle.Numbers) != 4 || len(verifiedFriendSolutions(puzzle.Numbers, puzzle.Rules, 40)) == 0 {
+		if len(puzzle.Numbers) != 4 || slicesContainAbove(puzzle.Numbers, campaignMaxDigit) || len(verifiedFriendSolutions(puzzle.Numbers, puzzle.Rules, 40)) == 0 {
 			t.Fatalf("puzzle %d is not a validated four-number puzzle: %#v", index, puzzle)
 		}
 	}
@@ -199,6 +199,15 @@ func TestCampaignRunQuestionsAreStableAcrossUsersAndRuns(t *testing.T) {
 	if first.Puzzles[0].QuestionHash == levelTwo.Puzzles[0].QuestionHash {
 		t.Fatal("different campaign levels unexpectedly returned the same question hash")
 	}
+}
+
+func slicesContainAbove(values []int, maximum int) bool {
+	for _, value := range values {
+		if value < 1 || value > maximum {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCampaignRunSubmissionUsesThePersistedDeterministicQuestions(t *testing.T) {

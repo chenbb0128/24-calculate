@@ -35,11 +35,11 @@ function all() {
     const difficultyPhase = index < 20 ? 0 : index < 50 ? 1 : index < 100 ? 2 : 3;
     const difficultyProfile = [
       { name: '简单', minDigit: 1, maxDigit: 9, minSolutions: 2, maxSolutions: 999999, minDifficulty: 1, maxDifficulty: 7 },
-      { name: '进阶', minDigit: 1, maxDigit: 10, minSolutions: 1, maxSolutions: 24, minDifficulty: 4, maxDifficulty: 12 },
-      { name: '困难', minDigit: 2, maxDigit: 10, minSolutions: 1, maxSolutions: 12, minDifficulty: 7, maxDifficulty: 16 },
+      { name: '进阶', minDigit: 1, maxDigit: 9, minSolutions: 1, maxSolutions: 24, minDifficulty: 4, maxDifficulty: 12 },
+      { name: '困难', minDigit: 2, maxDigit: 9, minSolutions: 1, maxSolutions: 12, minDifficulty: 7, maxDifficulty: 16 },
       // 大师阶段用“少解法 + 高难度分”控制难度，允许少量 1 参与组合，
-      // 否则在 1～13 的整数题库中无法稳定凑齐 100 关的独立题目。
-      { name: '大师', minDigit: 1, maxDigit: 10, minSolutions: 1, maxSolutions: 4, minDifficulty: 9, maxDifficulty: 20 },
+      // 在 1～9 的整数题库中仍保持足够的独立题目。
+      { name: '大师', minDigit: 1, maxDigit: 9, minSolutions: 1, maxSolutions: 4, minDifficulty: 9, maxDifficulty: 20 },
     ][difficultyPhase];
     const config = {
       index,

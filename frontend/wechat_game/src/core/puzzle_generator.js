@@ -313,8 +313,8 @@ function generatePuzzleSet(config, levelIndex, count, seed, globalUsedKeys = nul
   return result;
 }
 
-const CAMPAIGN_DIGIT_MAX = 10;
-const CAMPAIGN_COMBINATION_TOTAL = 715;
+const CAMPAIGN_DIGIT_MAX = 9;
+const CAMPAIGN_COMBINATION_TOTAL = 495;
 
 function campaignNumberKey(numbers) {
   return (Array.isArray(numbers) ? numbers : []).join(',');

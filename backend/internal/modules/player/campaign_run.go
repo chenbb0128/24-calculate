@@ -20,6 +20,7 @@ const (
 	campaignRunProtocolVersion = 1
 	campaignRunTTL             = 2 * time.Hour
 	campaignLevelCount         = 200
+	campaignMaxDigit           = 9
 )
 
 var ErrCampaignRunNotFound = errors.New("campaign run not found")
@@ -424,7 +425,12 @@ func generateCampaignRunQuestions(levelID int, seed int64, contentVersion string
 	used := make(map[string]struct{}, count)
 	result := make([]CampaignPuzzle, 0, count)
 	for attempts := 0; len(result) < count && attempts < count*1000; attempts++ {
-		numbers := []int{random.int(1, 13), random.int(1, 13), random.int(1, 13), random.int(1, 13)}
+		numbers := []int{
+			random.int(1, campaignMaxDigit),
+			random.int(1, campaignMaxDigit),
+			random.int(1, campaignMaxDigit),
+			random.int(1, campaignMaxDigit),
+		}
 		key := friendNumberKey(numbers)
 		if _, exists := used[key]; exists {
 			continue
