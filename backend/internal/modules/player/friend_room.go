@@ -999,6 +999,13 @@ func (s *Service) GetFriendMatchProgress(ctx context.Context, userID uint64, roo
 	if latest, refreshErr := s.GetFriendRoom(ctx, room.RoomCode); refreshErr == nil {
 		room = latest
 	}
+	// Refreshing the room above may have promoted countdown -> running. Run one
+	// more bot step against the canonical room so the same progress request
+	// immediately exposes the newly available server-side progress instead of
+	// waiting for the next client poll.
+	if err := s.advanceFriendBot(ctx, room); err != nil {
+		return FriendMatchProgressResponse{}, err
+	}
 	result, err := s.friendMatchProgressResponse(ctx, userID, room)
 	if err != nil {
 		return FriendMatchProgressResponse{}, err

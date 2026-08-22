@@ -137,6 +137,10 @@ class GameApp {
     this.friendProgressRequestInFlight = false;
     this.friendProgressLastSentKey = '';
     this.friendMatchResolutionApplied = false;
+    // Server results can arrive after the player has left the result page.
+    // Keep a process-local idempotency map so late responses still update
+    // authoritative progress and rank exactly once.
+    this.friendServerResolvedMatches = Object.create(null);
     this.friendStartedAt = 0;
     this.friendPlayerSolved = 0;
     this.friendLobbyView = 'entry';
@@ -1145,42 +1149,94 @@ class GameApp {
     };
   }
 
-  applyServerFriendMatchResult(payload) {
-    if (this.friendLocalFallback || this.friendMatchResolutionApplied) return false;
+  friendServerResultContext(payload, fallback = {}) {
+    const source = payload && payload.data && typeof payload.data === 'object' ? payload.data : (payload || {});
+    const matchResult = source.match_result || source.matchResult || source.result || {};
+    const rankResult = source.rank_result || source.rankResult || matchResult.rank_result || matchResult.rankResult || {};
+    return {
+      matchID: String(source.match_id || source.matchId || matchResult.match_id || matchResult.matchId || rankResult.match_id || rankResult.matchId || fallback.matchID || '').trim(),
+      roundID: String(source.round_id || source.roundId || matchResult.round_id || matchResult.roundId || fallback.roundID || '').trim(),
+      ranked: Boolean(fallback.ranked || source.ranked || (rankResult && rankResult.eligible)),
+    };
+  }
+
+  currentFriendMatchContext() {
+    const room = this.friendRoom || {};
+    return {
+      matchID: String(this.friendMatch && (this.friendMatch.match_id || this.friendMatch.matchId)
+        || room.match_id || room.matchId || '').trim(),
+      roundID: String(room.round_id || room.roundId || '').trim(),
+    };
+  }
+
+  friendResultBelongsToCurrentMatch(context) {
+    const current = this.currentFriendMatchContext();
+    const roomID = String(this.friendRoom && (this.friendRoom.room_id || this.friendRoom.roomId) || '').trim();
+    if (context.matchID && current.matchID && context.matchID !== current.matchID && context.matchID !== roomID) return false;
+    if (context.roundID && current.roundID && context.roundID !== current.roundID) return false;
+    return true;
+  }
+
+  applyServerFriendMatchResult(payload, expectedContext = {}) {
+    if (this.friendLocalFallback) return false;
     const matchResult = this.normalizeServerFriendResult(payload);
-    if (!matchResult || !this.result) return false;
+    if (!matchResult) return false;
+    const context = this.friendServerResultContext(payload, expectedContext);
+    const currentMatch = this.friendResultBelongsToCurrentMatch(context);
+    const resultKey = context.matchID || context.roundID
+      ? `${context.matchID || 'match'}:${context.roundID || 'round'}`
+      : '';
+    const alreadyApplied = Boolean(resultKey && this.friendServerResolvedMatches[resultKey]);
     this.friendServerResult = payload;
-    this.result.matchResult = matchResult;
-    this.result.serverVerified = true;
-    this.result.serverSubmitPending = false;
-    this.result.serverSubmitError = false;
-    // 对战结算以服务端数值为准，避免本地预测分数覆盖真实胜负。
-    this.result.passed = matchResult.outcome === 'win';
-    this.result.score = matchResult.player_score;
-    this.result.mistakes = matchResult.player_mistakes;
-    this.result.reason = matchResult.outcome === 'win' ? '服务端确认胜利' : matchResult.outcome === 'draw' ? '服务端确认平局' : '服务端确认惜败';
-    this.result.next = false;
     const rewardValue = payload && (payload.reward_coins ?? payload.rewardCoins);
     const reward = Number.isFinite(Number(rewardValue)) ? Math.max(0, Number(rewardValue)) : 0;
-    this.result.rewardCoins = reward;
-    if (reward > 0 && Array.isArray(this.result.bonusLabels)) this.result.bonusLabels.push(`好友对战奖励 +${reward}`);
-    const record = this.progress.friend_matches || { date: '', played: 0, wins: 0, best_score: 0, best_time_ms: 0 };
-    record.date = storage.todayKey();
-    record.played = safeNumber(record.played) + 1;
-    if (matchResult.outcome === 'win') record.wins = safeNumber(record.wins) + 1;
-    record.best_score = Math.max(safeNumber(record.best_score), matchResult.player_score);
-    record.best_time_ms = record.best_time_ms > 0
-      ? Math.min(record.best_time_ms, matchResult.player_elapsed * 1000)
-      : matchResult.player_elapsed * 1000;
-    this.progress.friend_matches = record;
-    if (payload && payload.progress) this.progress = storage.mergeServerProgress(this.progress, payload.progress, { authoritative: true });
-    if (payload && Number.isFinite(Number(payload.coins))) this.progress.coins = Math.max(0, Math.floor(Number(payload.coins)));
-    else if (reward > 0) storage.addCoins(this.progress, reward);
-    this.result.rankChange = this.friendRanked
-      ? this.applyServerRankResult(payload, matchResult.outcome)
-      : rankService.ineligibleChange('本局为休闲对战，不计入段位');
-    this.friendMatchResolutionApplied = true;
-    storage.save(this.progress);
+
+    // The server result must be applied even when the result page has already
+    // been closed. This keeps rank, coins, and history authoritative across a
+    // late network response.
+    let rankChange = null;
+    if (!alreadyApplied) {
+      const record = this.progress.friend_matches || { date: '', played: 0, wins: 0, best_score: 0, best_time_ms: 0 };
+      record.date = storage.todayKey();
+      record.played = safeNumber(record.played) + 1;
+      if (matchResult.outcome === 'win') record.wins = safeNumber(record.wins) + 1;
+      record.best_score = Math.max(safeNumber(record.best_score), matchResult.player_score);
+      record.best_time_ms = record.best_time_ms > 0
+        ? Math.min(record.best_time_ms, matchResult.player_elapsed * 1000)
+        : matchResult.player_elapsed * 1000;
+      this.progress.friend_matches = record;
+      if (payload && payload.progress) this.progress = storage.mergeServerProgress(this.progress, payload.progress, { authoritative: true });
+      if (payload && Number.isFinite(Number(payload.coins))) this.progress.coins = Math.max(0, Math.floor(Number(payload.coins)));
+      else if (reward > 0) storage.addCoins(this.progress, reward);
+      rankChange = this.applyServerRankResult(payload, matchResult.outcome);
+      if (currentMatch && rankChange) this.friendRankChange = rankChange;
+      if (resultKey) this.friendServerResolvedMatches[resultKey] = true;
+      storage.save(this.progress);
+    }
+
+    if (this.result && currentMatch) {
+      this.result.matchResult = matchResult;
+      this.result.serverVerified = true;
+      this.result.serverSubmitPending = false;
+      this.result.serverSubmitError = false;
+      // 对战结算以服务端数值为准，避免本地预测分数覆盖真实胜负。
+      this.result.passed = matchResult.outcome === 'win';
+      this.result.score = matchResult.player_score;
+      this.result.mistakes = matchResult.player_mistakes;
+      this.result.reason = matchResult.outcome === 'win' ? '服务端确认胜利' : matchResult.outcome === 'draw' ? '服务端确认平局' : '服务端确认惜败';
+      this.result.next = false;
+      if (!alreadyApplied) {
+        this.result.rewardCoins = reward;
+        if (reward > 0 && Array.isArray(this.result.bonusLabels)) this.result.bonusLabels.push(`好友对战奖励 +${reward}`);
+      }
+      // A repeated progress poll may not need to mutate rank again, but the
+      // current result page should still display the cached server change.
+      this.result.rankChange = rankChange || this.result.rankChange || (context.ranked || this.friendRanked
+        ? null
+        : rankService.ineligibleChange('本局为休闲对战，不计入段位'));
+      this.friendMatchResolutionApplied = true;
+      storage.save(this.progress);
+    }
     return true;
   }
 
@@ -1195,7 +1251,7 @@ class GameApp {
   resolvePendingFriendMatch() {
     if (this.mode !== 'friend' || this.screen !== 'result' || !this.result || !this.result.matchResult || this.result.matchResult.outcome !== 'pending') return;
     const remoteResult = this.friendMatchProgress && (this.friendMatchProgress.match_result || this.friendMatchProgress.matchResult || this.friendMatchProgress.result);
-    if (remoteResult && this.applyServerFriendMatchResult(remoteResult)) return;
+    if (remoteResult && this.applyServerFriendMatchResult(remoteResult, this.currentFriendMatchContext())) return;
     if (!this.friendLocalFallback) return;
     const opponent = this.friendOpponentState();
     if (!opponent.finished) return;
@@ -1658,12 +1714,21 @@ class GameApp {
     const matchID = `${String(this.friendMatch && this.friendMatch.match_id || room && room.room_id || 'friend')}_${Number(this.friendStartedAt || Date.now())}`;
     const match = result || {};
     if (submission && this.backendAuth && this.backendAuth.status === 'ready' && apiClient.submitFriendMatch) {
+      // Capture the old round before the player can leave the result page or
+      // start a rematch. A late response still belongs to this exact match.
+      const requestContext = {
+        matchID: String(this.friendMatch && (this.friendMatch.match_id || this.friendMatch.matchId)
+          || room && (room.match_id || room.matchId)
+          || room && (room.room_id || room.roomId) || '').trim(),
+        roundID: String(room && (room.round_id || room.roundId) || '').trim(),
+        ranked: Boolean(this.friendRanked),
+      };
       const payload = Object.assign({}, submission, {
         idempotency_key: String(submission.idempotency_key || `friend_${matchID}`),
       });
       const roomCode = String(room && room.room_code || '').trim();
       apiClient.submitFriendMatch(roomCode, payload).then((serverResult) => {
-        if (!this.applyServerFriendMatchResult(serverResult)) {
+        if (!this.applyServerFriendMatchResult(serverResult, requestContext)) {
           this.triggerFeedback('info', '对局已提交，等待服务端结算');
         }
         this.leaderboardRemote = {};
@@ -3952,9 +4017,12 @@ class GameApp {
     };
     const pending = match.outcome === 'pending';
     const outcome = pending ? 'pending' : match.outcome === 'win' ? 'win' : match.outcome === 'draw' ? 'draw' : 'lose';
-    const outcomeTitle = pending ? '等待结算' : outcome === 'win' ? '本局胜利' : outcome === 'draw' ? '平局' : '本局惜败';
+    // The result screen is non-blocking. The server still owns the final
+    // outcome/rank, but the player can immediately leave or rematch while the
+    // authoritative response is being saved in the background.
+    const outcomeTitle = pending ? '本局结束' : outcome === 'win' ? '本局胜利' : outcome === 'draw' ? '平局' : '本局惜败';
     const outcomeSubtitle = pending
-      ? '正在等待对手提交最终成绩'
+      ? '最终成绩和段位正在同步，稍后会自动保存'
       : outcome === 'win'
         ? '你先完成全部题目，赢得本场对战'
         : outcome === 'draw'
@@ -3971,7 +4039,7 @@ class GameApp {
     const bottom = this.visibleBottom(16);
     const panelY = Math.round(clamp(top + (bottom - top - contentHeight) / 2, this.screenContentTop(48), Math.max(this.screenContentTop(48), bottom - contentHeight)));
     const panelX = (this.width - panelWidth) / 2;
-    this.drawGameHeader('对战结果', '‹ 首页', () => this.goHome(), pending ? '等待结算' : outcomeTitle);
+    this.drawGameHeader('对战结果', '‹ 首页', () => this.goHome(), outcomeTitle);
     this.drawGamePanel(panelX, panelY, panelWidth, panelHeight, variant, {
       radius: 32,
       shadowColor: outcome === 'win' ? 'rgba(40,233,255,0.30)' : outcome === 'lose' ? 'rgba(255,80,205,0.28)' : 'rgba(154,100,255,0.24)',
@@ -4021,10 +4089,9 @@ class GameApp {
     this.drawFitText(rankText, this.width / 2, panelY + 484, panelWidth - 100, uiFont(13, 700), this.friendRanked ? GAME_UI.goldLight : GAME_UI.muted);
 
     const primaryY = panelY + panelHeight + 30;
-    this.drawNeonButton(48, primaryY, this.width - 96, primaryHeight, pending ? '等待服务端结算' : '再来一局', () => {
-      if (pending) this.triggerFeedback('info', '正在等待服务端确认结果');
-      else this.requestFriendRematch();
-    }, outcome === 'win' ? 'cyan' : 'violet', { fontSize: 23, radius: 25, disabled: pending, key: 'friend-result-retry' });
+    this.drawNeonButton(48, primaryY, this.width - 96, primaryHeight, '再来一局', () => {
+      this.requestFriendRematch();
+    }, outcome === 'win' ? 'cyan' : 'violet', { fontSize: 23, radius: 25, disabled: false, key: 'friend-result-retry' });
     const secondaryY = primaryY + primaryHeight + 16;
     this.drawNeonButton(48, secondaryY, (this.width - 114) / 2, secondaryHeight, '返回好友对战', () => this.showFriendLobby(), 'magenta', { fontSize: 18, radius: 20, key: 'friend-result-lobby' });
     this.drawNeonButton(66 + (this.width - 114) / 2, secondaryY, (this.width - 114) / 2, secondaryHeight, '分享战绩', () => {

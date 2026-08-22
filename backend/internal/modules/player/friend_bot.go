@@ -10,7 +10,13 @@ import (
 // a real player while retaining one-question-at-a-time server timing. It is
 // called by both API requests and the background ticker.
 func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
-	if room.Status != FriendRoomRunning || room.StartAt <= 0 || s.rooms == nil {
+	// A room can still be persisted as countdown on the first poll after the
+	// server start time. The Redis repository normally promotes it to running,
+	// but the bot clock must not depend on that read-after-write race (and the
+	// in-memory stores used by tests do not perform the promotion). Once the
+	// authoritative start time has arrived, both states are eligible for one
+	// server-side bot step.
+	if (room.Status != FriendRoomCountdown && room.Status != FriendRoomRunning) || room.StartAt <= 0 || s.rooms == nil {
 		return nil
 	}
 	botFound := false

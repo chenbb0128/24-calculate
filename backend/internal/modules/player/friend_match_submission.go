@@ -275,7 +275,7 @@ func friendMatchEventID(room FriendRoom) string {
 // server-validated progress; unvalidated client-only heartbeats never become
 // an authoritative score.
 func (s *Service) ensureImmediateFriendSubmissions(ctx context.Context, room FriendRoom, currentUserID uint64, submissions map[uint64]FriendMatchSubmissionRecord) (map[uint64]FriendMatchSubmissionRecord, error) {
-	if len(submissions) >= len(room.Players) || len(room.Players) < 2 {
+	if len(room.Players) < 2 || friendRoomSubmissionsComplete(room, submissions) {
 		return submissions, nil
 	}
 	progress, err := s.getFriendMatchProgress(ctx, room)
@@ -317,6 +317,18 @@ func (s *Service) ensureImmediateFriendSubmissions(ctx context.Context, room Fri
 		}
 	}
 	return s.getFriendMatchSubmissions(ctx, room)
+}
+
+func friendRoomSubmissionsComplete(room FriendRoom, submissions map[uint64]FriendMatchSubmissionRecord) bool {
+	if len(room.Players) < 2 {
+		return false
+	}
+	for _, player := range room.Players {
+		if _, exists := submissions[player.UserID]; !exists {
+			return false
+		}
+	}
+	return true
 }
 
 func friendBotFinalState(room FriendRoom, elapsedMS int) (int, int) {
