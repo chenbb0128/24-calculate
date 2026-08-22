@@ -1062,7 +1062,7 @@ func (s *Service) resolveFriendMatchForUser(ctx context.Context, userID uint64, 
 	reward := 0
 	progress, err := s.store.MutatePlayerProgress(ctx, userID, func(state map[string]any) error {
 		var applyErr error
-		reward, applyErr = applyFriendServerResult(state, *matchResult, time.Now().In(shanghaiLocation).Format("2006-01-02"), room.RoomID)
+		reward, applyErr = applyFriendServerResult(state, *matchResult, time.Now().In(shanghaiLocation).Format("2006-01-02"), friendMatchEventID(room))
 		return applyErr
 	})
 	if err != nil {

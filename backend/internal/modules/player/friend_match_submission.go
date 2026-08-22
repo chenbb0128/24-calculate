@@ -51,6 +51,7 @@ type FriendMatchSubmissionInput struct {
 	ProtocolVersion     int                       `json:"protocol_version"`
 	Action              string                    `json:"action"`
 	IdempotencyKey      string                    `json:"idempotency_key"`
+	Final               bool                      `json:"final"`
 	MatchID             string                    `json:"match_id"`
 	RoomID              string                    `json:"room_id"`
 	RoomSeed            int64                     `json:"room_seed"`
@@ -152,7 +153,11 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 		if stored, exists := submissions[userID]; exists {
 			currentRecord = stored
 		}
-		if currentRecord.Solved >= friendQuestionCountForRoom(room) || room.Status == FriendRoomFinished {
+		// The client sends a submission only after its match has ended. Keep the
+		// final marker explicit so older progress-like callers can still receive
+		// a pending response, while the real game-over request settles the other
+		// player/bot and rank in this same request.
+		if input.Final || currentRecord.Solved >= friendQuestionCountForRoom(room) || room.Status == FriendRoomFinished {
 			submissions, err = s.ensureImmediateFriendSubmissions(ctx, room, userID, submissions)
 			if err != nil {
 				return FriendMatchSubmissionResponse{}, err
@@ -234,7 +239,7 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 		var reward int
 		progress, mutateErr := s.store.MutatePlayerProgress(ctx, userID, func(state map[string]any) error {
 			var err error
-			reward, err = applyFriendServerResult(state, *matchResult, time.Now().In(shanghaiLocation).Format("2006-01-02"), room.RoomID)
+			reward, err = applyFriendServerResult(state, *matchResult, time.Now().In(shanghaiLocation).Format("2006-01-02"), friendMatchEventID(room))
 			return err
 		})
 		if mutateErr != nil {
@@ -253,6 +258,16 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 		response.Progress = progress
 	}
 	return response, nil
+}
+
+func friendMatchEventID(room FriendRoom) string {
+	if matchID := strings.TrimSpace(room.MatchID); matchID != "" {
+		return matchID
+	}
+	if roundID := strings.TrimSpace(room.RoundID); roundID != "" {
+		return roundID
+	}
+	return strings.TrimSpace(room.RoomID)
 }
 
 // ensureImmediateFriendSubmissions closes a round as soon as one player has a

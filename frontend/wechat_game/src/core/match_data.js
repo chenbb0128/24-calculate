@@ -143,6 +143,10 @@ function createResultSubmission(match, attempts, summary = {}) {
     question_hash: String(contract.question_hash || ''),
     puzzle_ids: clone(contract.puzzle_ids || []),
     attempts: (Array.isArray(attempts) ? attempts : []).map(clone),
+    // This endpoint is called only after the local match ends. The explicit
+    // final marker lets the server settle the opponent/bot and rank in this
+    // same request instead of leaving a needless pending result.
+    final: true,
     summary: clone(summary || {}),
     validation: { replay_from_seed: true, verify_solution: true, verify_timing: true },
     client_authoritative: false,
