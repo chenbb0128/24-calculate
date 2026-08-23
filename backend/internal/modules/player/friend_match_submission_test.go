@@ -3,6 +3,7 @@ package player
 import (
 	"context"
 	"testing"
+	"time"
 
 	db "github.com/example/go-service/internal/store/sqlc"
 )
@@ -222,7 +223,7 @@ func TestSubmitFriendMatchFinishesImmediatelyWhenPlayerCompletesRound(t *testing
 	rooms := &friendLifecycleStoreFake{room: room}
 	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, &leaderboardStore{}, rooms)
 	solution := friendSolveDetailed(room.Puzzles[0].Numbers, 1)[0].steps
-	score := friendMatchScoreDelta(friendTimeLimitSecs, 1000, 0, 0)
+	score := friendMatchScoreDelta(friendTimeLimitForRoom(room), 1000, 0, 0)
 	result, err := service.SubmitFriendMatch(context.Background(), 3, room.RoomCode, FriendMatchSubmissionInput{
 		ProtocolVersion: 2, Action: "submitFriendMatch", IdempotencyKey: "immediate-001", Final: true,
 		MatchID: room.MatchID, RoomID: room.RoomID, RoomSeed: room.RoomSeed,
@@ -242,5 +243,39 @@ func TestSubmitFriendMatchFinishesImmediatelyWhenPlayerCompletesRound(t *testing
 	}
 	if result.MatchResult.Outcome != "win" {
 		t.Fatalf("match result = %#v, want win against non-submitting opponent", result.MatchResult)
+	}
+}
+
+func TestSubmitFriendMatchFinalMarkerSettlesBotImmediately(t *testing.T) {
+	room := testFriendMatchRoom()
+	room.Status = FriendRoomRunning
+	room.StartAt = time.Now().UTC().Add(-2 * time.Second).UnixMilli()
+	room.Rules.QuestionCount = 1
+	room.Puzzles = generateFriendPuzzleContract(room.RoomSeed, 1)
+	room.QuestionHash, room.PuzzleIDs, room.Puzzles = friendRoomContract(room)
+	room.Players[1] = FriendRoomPlayer{UserID: 0, Nickname: "对手", Ready: true}
+	rooms := &friendLifecycleStoreFake{room: room}
+	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(3)}, &leaderboardStore{}, rooms)
+	solution := friendSolveDetailed(room.Puzzles[0].Numbers, 1)[0].steps
+	score := friendMatchScoreDelta(friendTimeLimitForRoom(room), 1000, 0, 0)
+	result, err := service.SubmitFriendMatch(context.Background(), 3, room.RoomCode, FriendMatchSubmissionInput{
+		ProtocolVersion: 2, Action: "submitFriendMatch", IdempotencyKey: "bot-final-001", Final: true,
+		MatchID: room.MatchID, RoomID: room.RoomID, RoomSeed: room.RoomSeed,
+		QuestionCount: 1, QuestionHash: room.QuestionHash, PuzzleIDs: room.PuzzleIDs,
+		Attempts: []FriendMatchAttemptInput{{
+			ProtocolVersion: 2, PuzzleID: room.PuzzleIDs[0], QuestionIndex: 0,
+			ElapsedMS: 1000, Solved: true, Mistakes: 0, Score: score, ScoreDelta: score,
+			RoomSeed: room.RoomSeed, QuestionHash: room.QuestionHash, EventID: "bot-final-001:0", SolutionSteps: solution,
+		}},
+		Summary: FriendMatchSummaryInput{PlayerSolved: 1, PlayerScore: score, PlayerElapsed: 1},
+	})
+	if err != nil {
+		t.Fatalf("SubmitFriendMatch() error = %v", err)
+	}
+	if result.Pending || result.MatchResult == nil || rooms.room.Status != FriendRoomFinished {
+		t.Fatalf("result = %#v, room = %#v, want immediate bot settlement", result, rooms.room)
+	}
+	if _, ok := rooms.submissions[0]; !ok {
+		t.Fatal("bot submission was not materialized")
 	}
 }
