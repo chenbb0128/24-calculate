@@ -56,6 +56,14 @@ func TestValidateProductionAcceptsRealSecrets(t *testing.T) {
 	}
 }
 
+func TestValidateProductionAcceptsWeChatBaseURLWithTrailingSlash(t *testing.T) {
+	cfg := validConfigForTest()
+	cfg.WeChat.APIBaseURL += "/"
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v for trailing slash in WeChat API URL", err)
+	}
+}
+
 func TestValidateProductionRejectsMissingRequiredSecrets(t *testing.T) {
 	fields := []struct {
 		name  string

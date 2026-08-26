@@ -1,6 +1,7 @@
 package user
 
 import (
+	"errors"
 	"io"
 	"net/http"
 
@@ -67,6 +68,11 @@ func (h *Handler) UploadAvatar(c *gin.Context) {
 	}
 	file, err := c.FormFile("file")
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			response.WriteError(c, AvatarTooLarge(err))
+			return
+		}
 		response.WriteError(c, apperror.BadRequest("请上传名为 file 的图片文件", err))
 		return
 	}
@@ -79,7 +85,7 @@ func (h *Handler) UploadAvatar(c *gin.Context) {
 		maxBytes = 2 << 20
 	}
 	if file.Size > maxBytes {
-		response.WriteError(c, apperror.BadRequest("头像文件不能超过 2 MB", nil))
+		response.WriteError(c, AvatarTooLarge(nil))
 		return
 	}
 	opened, err := file.Open()
@@ -94,7 +100,7 @@ func (h *Handler) UploadAvatar(c *gin.Context) {
 		return
 	}
 	if int64(len(data)) > maxBytes {
-		response.WriteError(c, apperror.BadRequest("头像文件不能超过 2 MB", nil))
+		response.WriteError(c, AvatarTooLarge(nil))
 		return
 	}
 	result, err := h.service.UploadAvatar(c.Request.Context(), userID, data, h.service.avatarMaxDimension)

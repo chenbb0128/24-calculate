@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const OfficialWeChatAppID = "wx1e7ac815548c561c"
+
 type Config struct {
 	App      AppConfig      `mapstructure:"app"`
 	Server   ServerConfig   `mapstructure:"server"`

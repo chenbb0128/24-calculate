@@ -262,9 +262,9 @@ func TestBotMatchCreationReturnsCurrentTicketWhenDistributedLockIsBusy(t *testin
 	}
 }
 
-func TestDefaultMatchmakingWaitIsFifteenSeconds(t *testing.T) {
+func TestDefaultMatchmakingWaitIsTwentySeconds(t *testing.T) {
 	service := NewServiceWithRoomsAndEndless(matchmakingProfileReader{}, &leaderboardStore{}, &matchmakingRoomStoreFake{}, &matchmakingStoreFake{})
-	if service.matchmakingWait != 15*time.Second {
-		t.Fatalf("default matchmaking wait = %s, want 15s", service.matchmakingWait)
+	if service.matchmakingWait != 20*time.Second {
+		t.Fatalf("default matchmaking wait = %s, want 20s", service.matchmakingWait)
 	}
 }

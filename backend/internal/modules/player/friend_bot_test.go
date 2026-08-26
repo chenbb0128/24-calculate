@@ -2,9 +2,53 @@ package player
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestBotDifficultyFollowsServerRankTier(t *testing.T) {
+	tests := map[string]int{
+		RankTierBronze:   botDifficultyEasy,
+		RankTierSilver:   botDifficultyStandard,
+		RankTierGold:     botDifficultyAdvanced,
+		RankTierPlatinum: botDifficultyHard,
+		RankTierDiamond:  botDifficultyHigh,
+		RankTierMaster:   botDifficultyHigh,
+		RankTierKing:     botDifficultyHigh,
+	}
+	for tier, want := range tests {
+		if got := botDifficultyForRank(tier); got != want {
+			t.Fatalf("botDifficultyForRank(%q) = %d, want %d", tier, got, want)
+		}
+	}
+}
+
+func TestPublicBotMatchDoesNotExposeBotMetadata(t *testing.T) {
+	payload, err := json.Marshal(publicMatchmakingResponse(MatchmakingTicket{
+		TicketID: "mm-test", Status: "matched", IsBot: true, BotDifficulty: "high",
+		Room: &FriendRoom{MatchSource: "bot", Players: []FriendRoomPlayer{{UserID: 7}, {UserID: 0, Nickname: "对手"}}},
+	}))
+	if err != nil {
+		t.Fatalf("marshal public bot response: %v", err)
+	}
+	value := strings.ToLower(string(payload))
+	for _, forbidden := range []string{"\"is_bot\"", "\"bot_difficulty\"", "\"bot_user_id\"", "\"ai\"", "\"match_source\":\"bot\""} {
+		if strings.Contains(value, forbidden) {
+			t.Fatalf("public bot response contains %q: %s", forbidden, payload)
+		}
+	}
+}
+
+func TestBotDoesNotCompleteAllQuestionsAfterOneSecond(t *testing.T) {
+	for difficulty := botDifficultyEasy; difficulty <= botDifficultyHigh; difficulty++ {
+		solved, _ := botProgressForElapsed(0, 1000, 10, 42, difficulty)
+		if solved != 0 {
+			t.Fatalf("difficulty %d solved %d after one second, want 0", difficulty, solved)
+		}
+	}
+}
 
 func TestBotProgressAdvancesAtMostOneQuestionPerPoll(t *testing.T) {
 	first, _ := botProgressForElapsed(0, 60_000, 8, 12345, 1)

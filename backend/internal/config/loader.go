@@ -84,7 +84,7 @@ func setDefaults(v *viper.Viper) {
 
 		"wechat.api_base_url": "https://api.weixin.qq.com",
 		// AppID is public configuration; AppSecret remains environment-only.
-		"wechat.app_id":  "wx1e7ac815548c561c",
+		"wechat.app_id":  OfficialWeChatAppID,
 		"wechat.timeout": "5s",
 
 		"jwt.algorithm":   "HS256",

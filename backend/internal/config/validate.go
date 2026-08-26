@@ -55,6 +55,15 @@ func Validate(cfg *Config) error {
 	if strings.EqualFold(cfg.App.Env, "production") && (strings.TrimSpace(cfg.WeChat.AppID) == "" || strings.TrimSpace(cfg.WeChat.AppSecret) == "") {
 		return fmt.Errorf("wechat.app_id and wechat.app_secret must be provided in production")
 	}
+	if strings.EqualFold(cfg.App.Env, "production") {
+		if strings.TrimSpace(cfg.WeChat.AppID) != OfficialWeChatAppID {
+			return fmt.Errorf("wechat.app_id must match the production mini-game AppID")
+		}
+		parsed, err := url.Parse(strings.TrimSpace(cfg.WeChat.APIBaseURL))
+		if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "api.weixin.qq.com") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			return fmt.Errorf("wechat.api_base_url must be https://api.weixin.qq.com in production")
+		}
+	}
 
 	if len([]byte(cfg.JWT.Secret)) < 32 {
 		return fmt.Errorf("jwt.secret must be at least 32 bytes and must be provided through the environment")

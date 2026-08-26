@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -16,7 +17,8 @@ func TestLoginWithWeChatCreatesAndReusesUser(t *testing.T) {
 	client := &fakeWeChatClient{result: wechatplatform.LoginResult{OpenID: "openid-1"}}
 	service := NewServiceWithWeChat(users, &fakeTokenStore{}, newTestJWTManager(t), time.Minute, time.Hour, nil, nil, client)
 
-	first, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code-1", Nickname: "玩家"}, "127.0.0.1")
+	avatar := "https://thirdwx.qlogo.cn/mmopen/example/132"
+	first, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code-1", Nickname: "玩家", Avatar: avatar}, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("first LoginWithWeChat() error = %v", err)
 	}
@@ -24,11 +26,11 @@ func TestLoginWithWeChatCreatesAndReusesUser(t *testing.T) {
 		t.Fatalf("first login state = %+v, users = %+v", first, users)
 	}
 
-	second, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code-2", Nickname: "新昵称"}, "127.0.0.1")
+	second, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code-2", Nickname: "新昵称", Avatar: avatar}, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("second LoginWithWeChat() error = %v", err)
 	}
-	if second.AccessToken == "" || users.createCalls != 1 {
+	if second.AccessToken == "" || users.createCalls != 1 || users.byIdentity.Nickname != "新昵称" || users.byIdentity.Avatar != avatar {
 		t.Fatalf("second login state = %+v, users = %+v", second, users)
 	}
 }
@@ -53,6 +55,16 @@ func TestLoginWithWeChatUsesDefaultProfileWhenAuthorizationWasDeclined(t *testin
 	}
 	if users.byIdentity.Nickname != user.DefaultNickname || users.byIdentity.Avatar != user.DefaultAvatar {
 		t.Fatalf("created profile = %+v", users.byIdentity)
+	}
+}
+
+func TestLoginWithWeChatReturnsUnavailableForUpstreamFailure(t *testing.T) {
+	client := &fakeWeChatClient{err: errors.New("connection reset")}
+	service := NewServiceWithWeChat(&fakeWeChatUserStore{}, &fakeTokenStore{}, newTestJWTManager(t), time.Minute, time.Hour, nil, nil, client)
+
+	_, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code"}, "127.0.0.1")
+	if err == nil || err.Error() != "微信登录暂不可用" {
+		t.Fatalf("err = %v, want WeChat unavailable", err)
 	}
 }
 
@@ -91,4 +103,11 @@ func (f *fakeWeChatUserStore) CreateUserWithIdentityTx(_ context.Context, userAr
 		UpdatedAt:    userArg.UpdatedAt,
 	}
 	return f.byIdentity.ID, nil
+}
+
+func (f *fakeWeChatUserStore) UpdateUserProfile(_ context.Context, arg db.UpdateUserProfileParams) error {
+	f.byIdentity.Nickname = arg.Nickname
+	f.byIdentity.Avatar = arg.Avatar
+	f.byIdentity.UpdatedAt = arg.UpdatedAt
+	return nil
 }

@@ -261,7 +261,13 @@ func (s *Service) LoginWithWeChat(ctx context.Context, input WeChatLoginInput, i
 		if errors.Is(err, wechatplatform.ErrNotConfigured) {
 			return TokenResponse{}, WeChatUnavailable(err)
 		}
-		return TokenResponse{}, InvalidWeChatCode(err)
+		if errors.Is(err, wechatplatform.ErrInvalidCode) {
+			return TokenResponse{}, InvalidWeChatCode(err)
+		}
+		// Any error other than the explicit invalid-code result is an
+		// infrastructure/WeChat-service failure. Do not tell the client that a
+		// valid login code is invalid when the upstream service is unavailable.
+		return TokenResponse{}, WeChatUnavailable(err)
 	}
 	openID := strings.TrimSpace(loginResult.OpenID)
 	if openID == "" {
@@ -292,6 +298,9 @@ func (s *Service) LoginWithWeChat(ctx context.Context, input WeChatLoginInput, i
 	if account.Status == user.StatusDisabled {
 		return TokenResponse{}, user.Disabled(nil)
 	}
+	if err := s.syncWeChatProfile(ctx, users, &account, input); err != nil {
+		return TokenResponse{}, err
+	}
 
 	pair, jti, err := issueTokenPair(s.jwt, account.ID, s.accessTTL)
 	if err != nil {
@@ -315,7 +324,7 @@ func (s *Service) createWeChatUser(ctx context.Context, users WeChatUserStore, o
 	if err != nil {
 		return db.User{}, apperror.BadRequest(err.Error(), err)
 	}
-	avatar, err := user.NormalizeAvatar(input.Avatar)
+	avatar, err := user.NormalizeWeChatAvatar(input.Avatar)
 	if err != nil {
 		return db.User{}, apperror.BadRequest(err.Error(), err)
 	}
@@ -356,6 +365,51 @@ func (s *Service) createWeChatUser(ctx context.Context, users WeChatUserStore, o
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}, nil
+}
+
+type weChatProfileUpdater interface {
+	UpdateUserProfile(context.Context, db.UpdateUserProfileParams) error
+}
+
+func (s *Service) syncWeChatProfile(ctx context.Context, users WeChatUserStore, account *db.User, input WeChatLoginInput) error {
+	if account == nil || account.ID == 0 {
+		return InvalidWeChatCode(nil)
+	}
+	nickname := strings.TrimSpace(account.Nickname)
+	if nickname == "" {
+		nickname = user.DefaultNickname
+	}
+	avatar := strings.TrimSpace(account.Avatar)
+	if avatar == "" {
+		avatar = user.DefaultAvatar
+	}
+	if strings.TrimSpace(input.Nickname) != "" {
+		var err error
+		nickname, err = user.NormalizeNickname(input.Nickname)
+		if err != nil {
+			return apperror.BadRequest(err.Error(), err)
+		}
+	}
+	if strings.TrimSpace(input.Avatar) != "" {
+		var err error
+		avatar, err = user.NormalizeWeChatAvatar(input.Avatar)
+		if err != nil {
+			return apperror.BadRequest(err.Error(), err)
+		}
+	}
+	if nickname == account.Nickname && avatar == account.Avatar {
+		return nil
+	}
+	updater, ok := users.(weChatProfileUpdater)
+	if !ok {
+		return WeChatUnavailable(fmt.Errorf("user store does not support profile sync"))
+	}
+	now := time.Now().UTC()
+	if err := updater.UpdateUserProfile(ctx, db.UpdateUserProfileParams{Nickname: nickname, Avatar: avatar, UpdatedAt: now, ID: account.ID}); err != nil {
+		return err
+	}
+	account.Nickname, account.Avatar, account.UpdatedAt = nickname, avatar, now
+	return nil
 }
 
 func wechatUsername(openID string) string {

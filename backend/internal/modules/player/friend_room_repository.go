@@ -253,6 +253,32 @@ func (r *FriendRoomRepository) RemoveFriendBotRoom(ctx context.Context, roomCode
 	return r.redis.SRem(ctx, redisplatform.FriendBotRoomsKey(), roomCode).Err()
 }
 
+func (r *FriendRoomRepository) SetFriendBotDifficulty(ctx context.Context, roomCode string, difficulty int) error {
+	if r == nil || r.redis == nil || r.redis.Client == nil {
+		return fmt.Errorf("friend room redis repository is not initialized")
+	}
+	difficulty = maxInt(botDifficultyEasy, minInt(botDifficultyHigh, difficulty))
+	return r.redis.Set(ctx, redisplatform.FriendBotDifficultyKey(roomCode), strconv.Itoa(difficulty), friendRoomTTL).Err()
+}
+
+func (r *FriendRoomRepository) GetFriendBotDifficulty(ctx context.Context, roomCode string) (int, bool, error) {
+	if r == nil || r.redis == nil || r.redis.Client == nil {
+		return 0, false, fmt.Errorf("friend room redis repository is not initialized")
+	}
+	value, err := r.redis.Get(ctx, redisplatform.FriendBotDifficultyKey(roomCode)).Result()
+	if errors.Is(err, goRedis.Nil) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	difficulty, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false, fmt.Errorf("decode friend bot difficulty: %w", err)
+	}
+	return maxInt(botDifficultyEasy, minInt(botDifficultyHigh, difficulty)), true, nil
+}
+
 func (r *FriendRoomRepository) TouchFriendRoomPlayer(ctx context.Context, roomCode string, userID uint64) error {
 	if r == nil || r.redis == nil || r.redis.Client == nil {
 		return fmt.Errorf("friend room redis repository is not initialized")

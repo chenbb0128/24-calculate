@@ -76,6 +76,13 @@ type FriendBotRoomStore interface {
 	RemoveFriendBotRoom(context.Context, string) error
 }
 
+// FriendBotDifficultyStore persists server-only difficulty metadata outside
+// the public room JSON and lets the worker resume a bot after an API restart.
+type FriendBotDifficultyStore interface {
+	SetFriendBotDifficulty(context.Context, string, int) error
+	GetFriendBotDifficulty(context.Context, string) (int, bool, error)
+}
+
 type FriendRoomRateLimitStore interface {
 	AllowFriendRoomAction(ctx context.Context, userID uint64, action string, limit int64, window time.Duration) (bool, error)
 }
@@ -243,6 +250,7 @@ type FriendMatchProgressResponse struct {
 	RewardCoins int                      `json:"reward_coins,omitempty"`
 	Coins       int                      `json:"coins,omitempty"`
 	Progress    json.RawMessage          `json:"progress,omitempty"`
+	Pending     bool                     `json:"pending"`
 }
 
 func NewServiceWithRooms(profiles ProfileReader, store Store, rooms FriendRoomStore) *Service {
@@ -1015,6 +1023,7 @@ func (s *Service) GetFriendMatchProgress(ctx context.Context, userID uint64, roo
 		return FriendMatchProgressResponse{}, err
 	}
 	result.MatchResult = matchResult
+	result.Pending = matchResult == nil
 	if matchResult != nil {
 		result.RankResult = matchResult.RankResult
 	}
@@ -1033,22 +1042,14 @@ func (s *Service) resolveFriendMatchForUser(ctx context.Context, userID uint64, 
 		}
 	}
 	submissions, err := s.getFriendMatchSubmissions(ctx, room)
-	if err != nil || len(submissions) < 2 {
+	if err != nil || !friendRoomSubmissionsComplete(room, submissions) {
 		return nil, 0, nil, err
 	}
 	current, exists := submissions[userID]
 	if !exists {
 		return nil, 0, nil, nil
 	}
-	var opponent FriendMatchSubmissionRecord
-	found := false
-	for candidateID, candidate := range submissions {
-		if candidateID != userID {
-			opponent = candidate
-			found = true
-			break
-		}
-	}
+	opponent, found := friendRoomOpponentSubmission(room, userID, submissions)
 	if !found {
 		return nil, 0, nil, nil
 	}

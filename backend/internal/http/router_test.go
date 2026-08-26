@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -76,6 +78,28 @@ func TestUnknownRouteReturnsJSONNotFound(t *testing.T) {
 	}
 	if contentType := recorder.Header().Get("Content-Type"); contentType == "" {
 		t.Fatal("Content-Type header is empty")
+	}
+}
+
+func TestAvatarStaticFileIsServedFromConfiguredStorage(t *testing.T) {
+	root := t.TempDir()
+	avatarPath := filepath.Join(root, "avatars", "7", "test.webp")
+	if err := os.MkdirAll(filepath.Dir(avatarPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(avatarPath, []byte("webp-test"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	router, err := NewRouter(testConfig(), slog.Default(), RouterOptions{AvatarStorageDir: root})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/avatars/7/test.webp", nil))
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "webp-test" {
+		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
 	}
 }
 

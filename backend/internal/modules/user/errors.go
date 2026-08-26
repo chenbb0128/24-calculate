@@ -14,6 +14,10 @@ func Disabled(err error) error {
 	return apperror.New(30002, http.StatusForbidden, "用户已禁用", err)
 }
 
+func AvatarTooLarge(err error) error {
+	return apperror.New(10007, http.StatusRequestEntityTooLarge, "头像文件不能超过 2 MB", err)
+}
+
 func UsernameExists(err error) error {
 	return apperror.New(30003, http.StatusConflict, "用户名已存在", err)
 }

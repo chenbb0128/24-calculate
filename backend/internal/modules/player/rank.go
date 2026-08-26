@@ -99,6 +99,7 @@ type RankMatchPlayer struct {
 	OpponentUserID uint64
 	Outcome        string
 	IdempotencyKey string
+	Score          int
 	Solved         int
 	QuestionCount  int
 	ElapsedMS      int
@@ -140,16 +141,40 @@ type RankedSummary struct {
 }
 
 type RankedMatchRecord struct {
-	MatchID       string    `json:"match_id"`
-	Mode          string    `json:"mode"`
-	Outcome       string    `json:"outcome"`
-	OpponentName  string    `json:"opponent_name"`
-	Solved        int       `json:"solved"`
-	QuestionCount int       `json:"question_count"`
-	ElapsedMS     int       `json:"elapsed_ms"`
-	Mistakes      int       `json:"mistakes"`
-	RatingDelta   int       `json:"rating_delta"`
-	CreatedAt     time.Time `json:"created_at"`
+	MatchID        string                   `json:"match_id"`
+	Mode           string                   `json:"mode"`
+	Outcome        string                   `json:"outcome"`
+	OpponentName   string                   `json:"opponent_name"`
+	Solved         int                      `json:"solved"`
+	QuestionCount  int                      `json:"question_count"`
+	ElapsedMS      int                      `json:"elapsed_ms"`
+	Mistakes       int                      `json:"mistakes"`
+	Score          int                      `json:"score"`
+	RatingDelta    int                      `json:"rating_delta"`
+	RatingBefore   int                      `json:"rating_before"`
+	RatingAfter    int                      `json:"rating_after"`
+	TierBefore     string                   `json:"tier_before"`
+	TierAfter      string                   `json:"tier_after"`
+	DivisionBefore int                      `json:"division_before"`
+	DivisionAfter  int                      `json:"division_after"`
+	StarsBefore    int                      `json:"stars_before"`
+	StarsAfter     int                      `json:"stars_after"`
+	RankBefore     *RankedMatchRankSnapshot `json:"rank_before"`
+	RankAfter      *RankedMatchRankSnapshot `json:"rank_after"`
+	Verified       bool                     `json:"verified"`
+	CreatedAt      time.Time                `json:"created_at"`
+}
+
+// RankedMatchRankSnapshot is the immutable rank state at one side of a
+// completed match. The flattened fields above are kept for API compatibility;
+// these snapshots are convenient for the history screen and older clients.
+type RankedMatchRankSnapshot struct {
+	SeasonID string `json:"season_id"`
+	Label    string `json:"label"`
+	Rating   int    `json:"rating"`
+	Tier     string `json:"tier"`
+	Division int    `json:"division"`
+	Stars    int    `json:"stars"`
 }
 
 type RankedMatchPage struct {
@@ -339,16 +364,16 @@ WHERE user_id = ? AND season_id = ?`,
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO ranked_match_results
     (match_id, user_id, opponent_user_id, season_id, outcome, solved, question_count,
-     elapsed_ms, mistakes, rating_before, rating_delta, rating_after,
+     elapsed_ms, mistakes, score, rating_before, rating_delta, rating_after,
      tier_before, tier_after, division_before, division_after,
      stars_before, stars_after, placement_matches, ranked_matches, wins,
-     losses, draws, best_tier, idempotency_key, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     losses, draws, best_tier, verified, idempotency_key, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			settlement.MatchID, player.UserID, nullableUserID(player.OpponentUserID), seasonID, player.Outcome,
-			player.Solved, player.QuestionCount, player.ElapsedMS, player.Mistakes, profile.Rating,
+			player.Solved, player.QuestionCount, player.ElapsedMS, player.Mistakes, player.Score, profile.Rating,
 			delta, next.Rating, before.Tier, after.Tier, before.Division, after.Division,
 			before.Stars, after.Stars, next.PlacementMatches, next.RankedMatches,
-			next.Wins, next.Losses, next.Draws, next.BestTier, player.IdempotencyKey,
+			next.Wins, next.Losses, next.Draws, next.BestTier, true, player.IdempotencyKey,
 			next.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("record rank result: %w", err)
 		}
@@ -495,7 +520,7 @@ func (s *Service) settleRankedFriendMatch(ctx context.Context, userID uint64, ro
 		settled, err := s.rankStore.SettleRankedMatch(ctx, RankedMatchSettlement{
 			MatchID: matchID, SeasonID: seasonID,
 			Players: []RankMatchPlayer{{UserID: humanID, Outcome: outcome, IdempotencyKey: human.IdempotencyKey,
-				Solved: human.Solved, QuestionCount: room.Rules.QuestionCount, ElapsedMS: human.ElapsedMS, Mistakes: human.Mistakes}},
+				Score: human.Score, Solved: human.Solved, QuestionCount: room.Rules.QuestionCount, ElapsedMS: human.ElapsedMS, Mistakes: human.Mistakes}},
 		})
 		if err != nil {
 			return nil, err
@@ -527,9 +552,9 @@ func (s *Service) settleRankedFriendMatch(ctx context.Context, userID uint64, ro
 		SeasonID: seasonID,
 		Players: []RankMatchPlayer{
 			{UserID: players[0], OpponentUserID: players[1], Outcome: leftOutcome, IdempotencyKey: left.IdempotencyKey,
-				Solved: left.Solved, QuestionCount: room.Rules.QuestionCount, ElapsedMS: left.ElapsedMS, Mistakes: left.Mistakes},
+				Score: left.Score, Solved: left.Solved, QuestionCount: room.Rules.QuestionCount, ElapsedMS: left.ElapsedMS, Mistakes: left.Mistakes},
 			{UserID: players[1], OpponentUserID: players[0], Outcome: rightOutcome, IdempotencyKey: right.IdempotencyKey,
-				Solved: right.Solved, QuestionCount: room.Rules.QuestionCount, ElapsedMS: right.ElapsedMS, Mistakes: right.Mistakes},
+				Score: right.Score, Solved: right.Solved, QuestionCount: room.Rules.QuestionCount, ElapsedMS: right.ElapsedMS, Mistakes: right.Mistakes},
 		},
 	})
 	if err != nil {

@@ -371,6 +371,12 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 	for index := range room.Players {
 		room.Players[index].Ready = true
 	}
+	difficulty := botDifficultyForRank(ticket.RankTier)
+	if difficultyStore, ok := s.rooms.(FriendBotDifficultyStore); ok {
+		if err := difficultyStore.SetFriendBotDifficulty(ctx, room.RoomCode, difficulty); err != nil {
+			return MatchmakingTicket{}, err
+		}
+	}
 	if lifecycle, ok := s.rooms.(FriendRoomLifecycleStore); ok {
 		if _, err := lifecycle.SetFriendRoomReady(ctx, room.RoomCode, ticket.UserID, true); err != nil {
 			return MatchmakingTicket{}, err
@@ -384,13 +390,11 @@ func (s *Service) createBotMatch(ctx context.Context, ticket MatchmakingTicket) 
 		}
 		room = started
 	}
-	difficulties := []string{"easy", "standard", "hard"}
-	difficulty := difficulties[int(absMatchmakingInt64(room.RoomSeed))%len(difficulties)]
 	botTicket := MatchmakingTicket{
 		TicketID: "bot_" + ticket.TicketID, UserID: 0, Mode: ticket.Mode, RulesVersion: ticket.RulesVersion,
 		Region: ticket.Region, Ranked: room.Ranked, SeasonID: room.SeasonID, Player: bot, Status: "matched", MatchID: room.MatchID, Room: &room,
 		Opponent: &ticket.Player, CreatedAt: ticket.CreatedAt, ExpiresAt: time.Now().UTC().Add(matchmakingRetention),
-		IsBot: true, BotDifficulty: difficulty,
+		IsBot: true, BotDifficulty: botDifficultyName(difficulty),
 	}
 	current.Status, current.MatchID, current.Room, current.Opponent = "matched", room.MatchID, &room, &bot
 	if err := s.matchmaking.SaveMatchmakingPair(ctx, current, botTicket); err != nil {

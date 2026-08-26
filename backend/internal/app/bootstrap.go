@@ -90,6 +90,8 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 	avatarStorage := user.NewFileAvatarStorage(cfg.Avatar.StorageDir, cfg.Avatar.PublicBaseURL)
 	userService := user.NewServiceWithAvatarStorage(userRepository, avatarStorage, cfg.Avatar.MaxBytes, cfg.Avatar.MaxDimension, time.Duration(cfg.Avatar.UploadCooldownSeconds)*time.Second)
 	userService.SetAvatarRateLimiter(redisClient)
+	userService.SetAvatarPublicBaseURL(cfg.Avatar.PublicBaseURL)
+	userService.SetLogger(logger)
 	userHandler := user.NewHandler(userService)
 	playerRepository := player.NewRepository(queries, txManager)
 	friendRoomRepository := player.NewFriendRoomRepository(redisClient, database)
