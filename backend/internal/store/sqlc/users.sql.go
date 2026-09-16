@@ -18,19 +18,25 @@ INSERT INTO users (
     nickname,
     avatar,
     status,
+    nickname_moderation_status,
+    avatar_moderation_status,
+    moderation_updated_at,
     created_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), 'approved'), COALESCE(NULLIF(?, ''), 'approved'), ?, ?, ?)
 `
 
 type CreateUserParams struct {
-	Username     string
-	PasswordHash string
-	Nickname     string
-	Avatar       string
-	Status       uint8
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	Username                 string
+	PasswordHash             string
+	Nickname                 string
+	Avatar                   string
+	Status                   uint8
+	NicknameModerationStatus string
+	AvatarModerationStatus   string
+	ModerationUpdatedAt      *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (sql.Result, error) {
@@ -40,6 +46,9 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (sql.Res
 		arg.Nickname,
 		arg.Avatar,
 		arg.Status,
+		arg.NicknameModerationStatus,
+		arg.AvatarModerationStatus,
+		arg.ModerationUpdatedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -91,7 +100,9 @@ func (q *Queries) DisableUser(ctx context.Context, arg DisableUserParams) error 
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, username, password_hash, nickname, avatar, status, created_at, updated_at
+SELECT id, username, password_hash, nickname, avatar, status,
+       nickname_moderation_status, avatar_moderation_status,
+       moderation_updated_at, created_at, updated_at
 FROM users
 WHERE id = ?
 LIMIT 1
@@ -107,6 +118,9 @@ func (q *Queries) GetUserByID(ctx context.Context, id uint64) (User, error) {
 		&i.Nickname,
 		&i.Avatar,
 		&i.Status,
+		&i.NicknameModerationStatus,
+		&i.AvatarModerationStatus,
+		&i.ModerationUpdatedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -114,7 +128,9 @@ func (q *Queries) GetUserByID(ctx context.Context, id uint64) (User, error) {
 }
 
 const getUserByProviderSubject = `-- name: GetUserByProviderSubject :one
-SELECT u.id, u.username, u.password_hash, u.nickname, u.avatar, u.status, u.created_at, u.updated_at
+SELECT u.id, u.username, u.password_hash, u.nickname, u.avatar, u.status,
+       u.nickname_moderation_status, u.avatar_moderation_status,
+       u.moderation_updated_at, u.created_at, u.updated_at
 FROM users AS u
 INNER JOIN user_identities AS identity_record ON identity_record.user_id = u.id
 WHERE identity_record.provider = ? AND identity_record.provider_subject = ?
@@ -136,6 +152,9 @@ func (q *Queries) GetUserByProviderSubject(ctx context.Context, arg GetUserByPro
 		&i.Nickname,
 		&i.Avatar,
 		&i.Status,
+		&i.NicknameModerationStatus,
+		&i.AvatarModerationStatus,
+		&i.ModerationUpdatedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -143,7 +162,9 @@ func (q *Queries) GetUserByProviderSubject(ctx context.Context, arg GetUserByPro
 }
 
 const getUserByUsername = `-- name: GetUserByUsername :one
-SELECT id, username, password_hash, nickname, avatar, status, created_at, updated_at
+SELECT id, username, password_hash, nickname, avatar, status,
+       nickname_moderation_status, avatar_moderation_status,
+       moderation_updated_at, created_at, updated_at
 FROM users
 WHERE username = ?
 LIMIT 1
@@ -159,6 +180,9 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User,
 		&i.Nickname,
 		&i.Avatar,
 		&i.Status,
+		&i.NicknameModerationStatus,
+		&i.AvatarModerationStatus,
+		&i.ModerationUpdatedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -167,21 +191,32 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User,
 
 const updateUserProfile = `-- name: UpdateUserProfile :exec
 UPDATE users
-SET nickname = ?, avatar = ?, updated_at = ?
+SET nickname = ?,
+    avatar = ?,
+    nickname_moderation_status = COALESCE(NULLIF(?, ''), nickname_moderation_status),
+    avatar_moderation_status = COALESCE(NULLIF(?, ''), avatar_moderation_status),
+    moderation_updated_at = COALESCE(?, moderation_updated_at),
+    updated_at = ?
 WHERE id = ?
 `
 
 type UpdateUserProfileParams struct {
-	Nickname  string
-	Avatar    string
-	UpdatedAt time.Time
-	ID        uint64
+	Nickname                 string
+	Avatar                   string
+	NicknameModerationStatus string
+	AvatarModerationStatus   string
+	ModerationUpdatedAt      *time.Time
+	UpdatedAt                time.Time
+	ID                       uint64
 }
 
 func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error {
 	_, err := q.db.ExecContext(ctx, updateUserProfile,
 		arg.Nickname,
 		arg.Avatar,
+		arg.NicknameModerationStatus,
+		arg.AvatarModerationStatus,
+		arg.ModerationUpdatedAt,
 		arg.UpdatedAt,
 		arg.ID,
 	)

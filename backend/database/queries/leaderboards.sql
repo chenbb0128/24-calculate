@@ -2,6 +2,8 @@
 SELECT level_scores.user_id,
        u.nickname,
        u.avatar,
+       u.nickname_moderation_status,
+       u.avatar_moderation_status,
        SUM(level_scores.best_score) AS score,
        MAX(level_scores.last_created_at) AS last_created_at
 FROM (
@@ -11,13 +13,16 @@ FROM (
 ) AS level_scores
 INNER JOIN users AS u ON u.id = level_scores.user_id
 WHERE u.status = 1
-GROUP BY level_scores.user_id, u.nickname, u.avatar
+GROUP BY level_scores.user_id, u.nickname, u.avatar,
+         u.nickname_moderation_status, u.avatar_moderation_status
 ORDER BY score DESC, level_scores.user_id ASC;
 
 -- name: ListDailyLeaderboard :many
 SELECT completion.user_id,
        u.nickname,
        u.avatar,
+       u.nickname_moderation_status,
+       u.avatar_moderation_status,
        completion.date_key,
        completion.best_score AS score,
        completion.created_at

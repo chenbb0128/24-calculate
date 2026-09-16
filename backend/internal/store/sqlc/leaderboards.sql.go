@@ -10,26 +10,32 @@ import "context"
 import "time"
 
 type CampaignLeaderboardRow struct {
-	UserID        uint64
-	Nickname      string
-	Avatar        string
-	Score         int64
-	LastCreatedAt time.Time
+	UserID                   uint64
+	Nickname                 string
+	Avatar                   string
+	NicknameModerationStatus string
+	AvatarModerationStatus   string
+	Score                    int64
+	LastCreatedAt            time.Time
 }
 
 type DailyLeaderboardRow struct {
-	UserID    uint64
-	Nickname  string
-	Avatar    string
-	DateKey   string
-	Score     uint32
-	CreatedAt time.Time
+	UserID                   uint64
+	Nickname                 string
+	Avatar                   string
+	NicknameModerationStatus string
+	AvatarModerationStatus   string
+	DateKey                  string
+	Score                    uint32
+	CreatedAt                time.Time
 }
 
 const listCampaignLeaderboard = `-- name: ListCampaignLeaderboard :many
 SELECT level_scores.user_id,
        u.nickname,
        u.avatar,
+       u.nickname_moderation_status,
+       u.avatar_moderation_status,
        SUM(level_scores.best_score) AS score,
        MAX(level_scores.last_created_at) AS last_created_at
 FROM (
@@ -39,7 +45,8 @@ FROM (
 ) AS level_scores
 INNER JOIN users AS u ON u.id = level_scores.user_id
 WHERE u.status = 1
-GROUP BY level_scores.user_id, u.nickname, u.avatar
+GROUP BY level_scores.user_id, u.nickname, u.avatar,
+         u.nickname_moderation_status, u.avatar_moderation_status
 ORDER BY score DESC, level_scores.user_id ASC
 `
 
@@ -53,7 +60,7 @@ func (q *Queries) ListCampaignLeaderboard(ctx context.Context) ([]CampaignLeader
 	items := make([]CampaignLeaderboardRow, 0)
 	for rows.Next() {
 		var item CampaignLeaderboardRow
-		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Avatar, &item.Score, &item.LastCreatedAt); err != nil {
+		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Avatar, &item.NicknameModerationStatus, &item.AvatarModerationStatus, &item.Score, &item.LastCreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -68,6 +75,8 @@ const listDailyLeaderboard = `-- name: ListDailyLeaderboard :many
 SELECT completion.user_id,
        u.nickname,
        u.avatar,
+       u.nickname_moderation_status,
+       u.avatar_moderation_status,
        completion.date_key,
        completion.best_score AS score,
        completion.created_at
@@ -91,7 +100,7 @@ func (q *Queries) ListDailyLeaderboard(ctx context.Context, arg ListDailyLeaderb
 	items := make([]DailyLeaderboardRow, 0)
 	for rows.Next() {
 		var item DailyLeaderboardRow
-		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Avatar, &item.DateKey, &item.Score, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Avatar, &item.NicknameModerationStatus, &item.AvatarModerationStatus, &item.DateKey, &item.Score, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

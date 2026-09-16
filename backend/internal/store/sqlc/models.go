@@ -9,14 +9,17 @@ import (
 )
 
 type User struct {
-	ID           uint64
-	Username     string
-	PasswordHash string
-	Nickname     string
-	Avatar       string
-	Status       uint8
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID                       uint64
+	Username                 string
+	PasswordHash             string
+	Nickname                 string
+	Avatar                   string
+	Status                   uint8
+	NicknameModerationStatus string
+	AvatarModerationStatus   string
+	ModerationUpdatedAt      *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 type UserIdentity struct {

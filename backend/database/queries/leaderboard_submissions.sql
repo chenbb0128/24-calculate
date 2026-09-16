@@ -22,24 +22,30 @@ INSERT INTO player_leaderboard_submissions (
 SELECT submission.user_id,
        u.nickname,
        u.avatar,
+       u.nickname_moderation_status,
+       u.avatar_moderation_status,
        MAX(submission.score) AS score,
        MAX(submission.created_at) AS last_created_at
 FROM player_leaderboard_submissions AS submission
 INNER JOIN users AS u ON u.id = submission.user_id
 WHERE submission.mode = 'endless' AND u.status = 1
-GROUP BY submission.user_id, u.nickname, u.avatar
+GROUP BY submission.user_id, u.nickname, u.avatar,
+         u.nickname_moderation_status, u.avatar_moderation_status
 ORDER BY score DESC, submission.user_id ASC;
 
 -- name: ListFriendLeaderboard :many
 SELECT submission.user_id,
        u.nickname,
        u.avatar,
+       u.nickname_moderation_status,
+       u.avatar_moderation_status,
        MAX(submission.score) AS score,
        MAX(submission.created_at) AS last_created_at
 FROM player_leaderboard_submissions AS submission
 INNER JOIN users AS u ON u.id = submission.user_id
 WHERE submission.mode = 'friend' AND u.status = 1
-GROUP BY submission.user_id, u.nickname, u.avatar
+GROUP BY submission.user_id, u.nickname, u.avatar,
+         u.nickname_moderation_status, u.avatar_moderation_status
 ORDER BY score DESC, submission.user_id ASC;
 
 -- name: ListFriendUserIDs :many
