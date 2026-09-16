@@ -16,6 +16,10 @@ func AccessTokenRevokedKey(jti string) string {
 	return fmt.Sprintf("%s:auth:access-revoked:%s", keyPrefix, jti)
 }
 
+func AccountBlockedKey(role string, id uint64) string {
+	return fmt.Sprintf("%s:auth:account-blocked:%s:%d", keyPrefix, role, id)
+}
+
 func LoginRateKey(ip string) string {
 	digest := sha256.Sum256([]byte(ip))
 	return fmt.Sprintf("%s:rate:login:%s", keyPrefix, hex.EncodeToString(digest[:]))

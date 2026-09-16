@@ -84,6 +84,28 @@ func (c *Client) IsAccessTokenRevoked(ctx context.Context, jti string) (bool, er
 	return value > 0, err
 }
 
+func (c *Client) BlockAccount(ctx context.Context, role string, id uint64, ttl time.Duration) error {
+	if c == nil || c.Client == nil || strings.TrimSpace(role) == "" || id == 0 || ttl <= 0 {
+		return errors.New("account block parameters are invalid")
+	}
+	return c.Set(ctx, AccountBlockedKey(role, id), "1", ttl).Err()
+}
+
+func (c *Client) IsAccountBlocked(ctx context.Context, role string, id uint64) (bool, error) {
+	if c == nil || c.Client == nil || strings.TrimSpace(role) == "" || id == 0 {
+		return false, errors.New("account block parameters are invalid")
+	}
+	value, err := c.Exists(ctx, AccountBlockedKey(role, id)).Result()
+	return value > 0, err
+}
+
+func (c *Client) UnblockAccount(ctx context.Context, role string, id uint64) error {
+	if c == nil || c.Client == nil || strings.TrimSpace(role) == "" || id == 0 {
+		return errors.New("account block parameters are invalid")
+	}
+	return c.Del(ctx, AccountBlockedKey(role, id)).Err()
+}
+
 func (c *Client) AllowLogin(ctx context.Context, ip string, limit int64, window time.Duration) (bool, error) {
 	if limit <= 0 || window <= 0 {
 		return false, fmt.Errorf("login rate limit configuration is invalid")

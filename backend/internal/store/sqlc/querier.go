@@ -11,6 +11,8 @@ import (
 
 type Querier interface {
 	CreateAdminAccount(ctx context.Context, arg CreateAdminAccountParams) (sql.Result, error)
+	GetAdminUser(ctx context.Context, id uint64) (GetAdminUserRow, error)
+	GetAdminUserStats(ctx context.Context) (GetAdminUserStatsRow, error)
 	GetLeaderboardSubmissionByKey(ctx context.Context, arg GetLeaderboardSubmissionByKeyParams) (PlayerLeaderboardSubmission, error)
 	CreateLeaderboardSubmission(ctx context.Context, arg CreateLeaderboardSubmissionParams) error
 	ListEndlessLeaderboard(ctx context.Context) ([]LeaderboardScoreRow, error)
@@ -32,10 +34,12 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id uint64) (User, error)
 	GetUserByProviderSubject(ctx context.Context, arg GetUserByProviderSubjectParams) (User, error)
 	GetUserByUsername(ctx context.Context, username string) (User, error)
+	ListAdminUsers(ctx context.Context, arg ListAdminUsersParams) ([]ListAdminUsersRow, error)
 	GetAdminAccountByID(ctx context.Context, id uint64) (AdminAccount, error)
 	GetAdminAccountByUsername(ctx context.Context, username string) (AdminAccount, error)
 	TouchAdminLastLogin(ctx context.Context, arg TouchAdminLastLoginParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
+	UpdateAdminUserStatus(ctx context.Context, arg UpdateAdminUserStatusParams) (int64, error)
 	ListUsersForModeration(ctx context.Context, arg ListUsersForModerationParams) ([]User, error)
 	UpdateUserModeration(ctx context.Context, arg UpdateUserModerationParams) error
 	RecordModerationEvent(ctx context.Context, arg RecordModerationEventParams) error

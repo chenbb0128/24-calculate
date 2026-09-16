@@ -2,6 +2,13 @@ package redis
 
 import "testing"
 
+func TestAccountBlockedKeyUsesOnlyRoleAndNumericID(t *testing.T) {
+	key := AccountBlockedKey("user", 42)
+	if key != "twenty-four-calculate:auth:account-blocked:user:42" {
+		t.Fatalf("AccountBlockedKey() = %q", key)
+	}
+}
+
 func TestFriendRoundKeysAreIsolated(t *testing.T) {
 	roomCode := "123456"
 	firstRound := "round-a"
