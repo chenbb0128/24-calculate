@@ -142,7 +142,7 @@ func (s *Service) JoinMatchmaking(ctx context.Context, userID uint64, input Join
 		TicketID: randomMatchmakingTicketID(), ClientTicket: clientTicket, UserID: userID,
 		Mode: matchmakingModeFriend, RulesVersion: matchmakingRulesV1, Region: region,
 		Ranked: input.Ranked, SeasonID: seasonID, RankRating: rankRating, RankTier: rankTier, RankDivision: rankDivision, RankStars: rankStars,
-		Player: FriendRoomPlayer{UserID: profile.ID, Nickname: profile.Nickname, Avatar: profile.Avatar, Ready: true},
+		Player: FriendRoomPlayer{UserID: profile.ID, Nickname: profile.Nickname, Avatar: profile.Avatar, NicknameModerationStatus: profile.NicknameModerationStatus, AvatarModerationStatus: profile.AvatarModerationStatus, Ready: true},
 		Status: "searching", CreatedAt: now, ExpiresAt: now.Add(matchmakingTTL),
 	}
 	ticket.QueueKey = matchmakingQueueDiscriminator(ticket)
@@ -423,13 +423,14 @@ func absMatchmakingInt64(value int64) int64 {
 }
 
 func publicMatchmakingResponse(ticket MatchmakingTicket) MatchmakingResponse {
-	room := ticket.Room
-	if room != nil {
-		copyRoom := *room
-		if copyRoom.MatchSource == "bot" {
-			copyRoom.MatchSource = "matchmaking"
-		}
-		room = &copyRoom
+	room := sanitizePublicFriendRoom(ticket.Room)
+	if room != nil && room.MatchSource == "bot" {
+		room.MatchSource = "matchmaking"
+	}
+	var opponent *FriendRoomPlayer
+	if ticket.Opponent != nil {
+		copyOpponent := safePublicFriendRoomPlayer(*ticket.Opponent)
+		opponent = &copyOpponent
 	}
 	waitingSeconds := 0
 	if ticket.Status == "searching" && !ticket.CreatedAt.IsZero() {
@@ -437,7 +438,7 @@ func publicMatchmakingResponse(ticket MatchmakingTicket) MatchmakingResponse {
 	}
 	return MatchmakingResponse{
 		TicketID: ticket.TicketID, Mode: ticket.Mode, Status: ticket.Status,
-		MatchID: ticket.MatchID, Room: room, Opponent: ticket.Opponent,
+		MatchID: ticket.MatchID, Room: room, Opponent: opponent,
 		CreatedAt: ticket.CreatedAt, ExpiresAt: ticket.ExpiresAt, WaitingSeconds: waitingSeconds,
 		Ranked: ticket.Ranked, SeasonID: ticket.SeasonID,
 		RankSnapshot: func() *RankView {

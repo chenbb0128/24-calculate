@@ -2,9 +2,7 @@ package player
 
 import (
 	"context"
-	"net/url"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/example/go-service/internal/apperror"
@@ -61,14 +59,14 @@ func (s *Service) LeaderboardScoped(ctx context.Context, userID uint64, mode, sc
 
 	entries := make([]LeaderboardEntry, 0)
 	dateKey := ""
-	appendRow := func(id uint64, nickname, avatar string, score int64) {
+	appendRow := func(id uint64, nickname, avatar, nicknameStatus, avatarStatus string, score int64) {
 		if !include(id) {
 			return
 		}
 		entries = append(entries, LeaderboardEntry{
 			UserID:   id,
-			Nickname: normalizePublicNickname(nickname),
-			Avatar:   normalizePublicAvatar(avatar),
+			Nickname: user.SafePublicNickname(nickname, nicknameStatus),
+			Avatar:   user.SafePublicAvatar(avatar, avatarStatus),
 			Score:    clampLeaderboardScore(score),
 		})
 	}
@@ -80,7 +78,7 @@ func (s *Service) LeaderboardScoped(ctx context.Context, userID uint64, mode, sc
 			return LeaderboardResponse{}, err
 		}
 		for _, row := range rows {
-			appendRow(row.UserID, row.Nickname, row.Avatar, row.Score)
+			appendRow(row.UserID, row.Nickname, row.Avatar, row.NicknameModerationStatus, row.AvatarModerationStatus, row.Score)
 		}
 	case LeaderboardDaily:
 		dateKey = time.Now().In(shanghaiLocation).Format("2006-01-02")
@@ -89,7 +87,7 @@ func (s *Service) LeaderboardScoped(ctx context.Context, userID uint64, mode, sc
 			return LeaderboardResponse{}, err
 		}
 		for _, row := range rows {
-			appendRow(row.UserID, row.Nickname, row.Avatar, int64(row.Score))
+			appendRow(row.UserID, row.Nickname, row.Avatar, row.NicknameModerationStatus, row.AvatarModerationStatus, int64(row.Score))
 		}
 	case LeaderboardEndless:
 		rows, err := s.store.ListEndlessLeaderboard(ctx)
@@ -97,7 +95,7 @@ func (s *Service) LeaderboardScoped(ctx context.Context, userID uint64, mode, sc
 			return LeaderboardResponse{}, err
 		}
 		for _, row := range rows {
-			appendRow(row.UserID, row.Nickname, row.Avatar, row.Score)
+			appendRow(row.UserID, row.Nickname, row.Avatar, row.NicknameModerationStatus, row.AvatarModerationStatus, row.Score)
 		}
 	case LeaderboardFriend:
 		rows, err := s.store.ListFriendLeaderboard(ctx)
@@ -105,7 +103,7 @@ func (s *Service) LeaderboardScoped(ctx context.Context, userID uint64, mode, sc
 			return LeaderboardResponse{}, err
 		}
 		for _, row := range rows {
-			appendRow(row.UserID, row.Nickname, row.Avatar, row.Score)
+			appendRow(row.UserID, row.Nickname, row.Avatar, row.NicknameModerationStatus, row.AvatarModerationStatus, row.Score)
 		}
 	}
 
@@ -120,8 +118,8 @@ func (s *Service) LeaderboardScoped(ctx context.Context, userID uint64, mode, sc
 	if !found {
 		entries = append(entries, LeaderboardEntry{
 			UserID:   profile.ID,
-			Nickname: normalizePublicNickname(profile.Nickname),
-			Avatar:   normalizePublicAvatar(profile.Avatar),
+			Nickname: user.SafePublicNickname(profile.Nickname, profile.NicknameModerationStatus),
+			Avatar:   user.SafePublicAvatar(profile.Avatar, profile.AvatarModerationStatus),
 			Score:    0,
 		})
 	}
@@ -156,22 +154,11 @@ func (s *Service) LeaderboardScoped(ctx context.Context, userID uint64, mode, sc
 }
 
 func normalizePublicNickname(value string) string {
-	if normalized, err := user.NormalizeNickname(value); err == nil {
-		return normalized
-	}
-	return user.DefaultNickname
+	return user.SafePublicNickname(value, "")
 }
 
 func normalizePublicAvatar(value string) string {
-	value = strings.TrimSpace(value)
-	if normalized, err := user.NormalizeAvatar(value); err == nil {
-		return normalized
-	}
-	// Keep malformed historical values out of room/leaderboard responses.
-	if parsed, err := url.Parse(value); err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil {
-		return value
-	}
-	return user.DefaultAvatar
+	return user.SafePublicAvatar(value, "")
 }
 
 func normalizeLeaderboardMode(mode string) string {

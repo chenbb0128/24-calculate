@@ -113,17 +113,19 @@ type RankedMatchSettlement struct {
 }
 
 type RankLeaderboardRow struct {
-	UserID        uint64
-	Nickname      string
-	Avatar        string
-	SeasonID      string
-	Rating        int
-	Tier          string
-	Division      int
-	Stars         int
-	RankedMatches int
-	Wins          int
-	UpdatedAt     time.Time
+	UserID                   uint64
+	Nickname                 string
+	Avatar                   string
+	NicknameModerationStatus string
+	AvatarModerationStatus   string
+	SeasonID                 string
+	Rating                   int
+	Tier                     string
+	Division                 int
+	Stars                    int
+	RankedMatches            int
+	Wins                     int
+	UpdatedAt                time.Time
 }
 
 type RankedSummary struct {
@@ -450,7 +452,9 @@ func (r *SQLRankRepository) ListRankLeaderboard(ctx context.Context, seasonID st
 		return nil, err
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT p.user_id, u.nickname, u.avatar, p.season_id, p.rating, p.tier,
+SELECT p.user_id, u.nickname, u.avatar,
+       u.nickname_moderation_status, u.avatar_moderation_status,
+       p.season_id, p.rating, p.tier,
        p.division, p.stars, p.ranked_matches, p.wins, p.updated_at
 FROM player_rank_profiles p
 INNER JOIN users u ON u.id = p.user_id
@@ -463,7 +467,7 @@ ORDER BY p.rating DESC, p.wins DESC, p.ranked_matches DESC, p.user_id ASC`, seas
 	result := make([]RankLeaderboardRow, 0)
 	for rows.Next() {
 		var item RankLeaderboardRow
-		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Avatar, &item.SeasonID, &item.Rating,
+		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Avatar, &item.NicknameModerationStatus, &item.AvatarModerationStatus, &item.SeasonID, &item.Rating,
 			&item.Tier, &item.Division, &item.Stars, &item.RankedMatches, &item.Wins, &item.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan rank leaderboard: %w", err)
 		}
