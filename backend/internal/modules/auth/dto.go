@@ -18,6 +18,12 @@ type WeChatLoginInput struct {
 	Avatar   string `json:"avatar"`
 }
 
+type TapTapLoginInput struct {
+	Code     string `json:"code"`
+	Nickname string `json:"nickname"`
+	Avatar   string `json:"avatar"`
+}
+
 type DevLoginInput struct {
 	Slot int `json:"slot"`
 }
