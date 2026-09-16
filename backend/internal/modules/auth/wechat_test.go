@@ -3,9 +3,11 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/example/go-service/internal/modules/moderation"
 	"github.com/example/go-service/internal/modules/user"
 	wechatplatform "github.com/example/go-service/internal/platform/wechat"
 	db "github.com/example/go-service/internal/store/sqlc"
@@ -15,8 +17,10 @@ func TestLoginWithWeChatCreatesAndReusesUser(t *testing.T) {
 	users := &fakeWeChatUserStore{}
 	client := &fakeWeChatClient{result: wechatplatform.LoginResult{OpenID: "openid-1"}}
 	service := NewServiceWithWeChat(users, &fakeTokenStore{}, newTestJWTManager(t), time.Minute, time.Hour, nil, nil, client)
+	service.SetContentModerator(newAuthModerator(moderation.ProviderResult{Status: moderation.StatusApproved}))
 
-	first, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code-1", Nickname: "玩家"}, "127.0.0.1")
+	avatar := "https://thirdwx.qlogo.cn/mmopen/example/132"
+	first, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code-1", Nickname: "玩家", Avatar: avatar}, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("first LoginWithWeChat() error = %v", err)
 	}
@@ -24,11 +28,11 @@ func TestLoginWithWeChatCreatesAndReusesUser(t *testing.T) {
 		t.Fatalf("first login state = %+v, users = %+v", first, users)
 	}
 
-	second, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code-2", Nickname: "新昵称"}, "127.0.0.1")
+	second, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code-2", Nickname: "新昵称", Avatar: avatar}, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("second LoginWithWeChat() error = %v", err)
 	}
-	if second.AccessToken == "" || users.createCalls != 1 {
+	if second.AccessToken == "" || users.createCalls != 1 || users.byIdentity.Nickname != "玩家" || users.byIdentity.Avatar != avatar {
 		t.Fatalf("second login state = %+v, users = %+v", second, users)
 	}
 }
@@ -47,12 +51,92 @@ func TestLoginWithWeChatUsesDefaultProfileWhenAuthorizationWasDeclined(t *testin
 	users := &fakeWeChatUserStore{}
 	client := &fakeWeChatClient{result: wechatplatform.LoginResult{OpenID: "openid-default"}}
 	service := NewServiceWithWeChat(users, &fakeTokenStore{}, newTestJWTManager(t), time.Minute, time.Hour, nil, nil, client)
+	service.SetContentModerator(newAuthModerator(moderation.ProviderResult{Status: moderation.StatusApproved}))
 
 	if _, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code"}, "127.0.0.1"); err != nil {
 		t.Fatalf("LoginWithWeChat() error = %v", err)
 	}
 	if users.byIdentity.Nickname != user.DefaultNickname || users.byIdentity.Avatar != user.DefaultAvatar {
 		t.Fatalf("created profile = %+v", users.byIdentity)
+	}
+}
+
+func TestLoginWithWeChatRejectedFirstNicknameUsesSafeDefault(t *testing.T) {
+	users := &fakeWeChatUserStore{}
+	client := &fakeWeChatClient{result: wechatplatform.LoginResult{OpenID: "openid-rejected"}}
+	service := NewServiceWithWeChat(users, &fakeTokenStore{}, newTestJWTManager(t), time.Minute, time.Hour, nil, nil, client)
+	service.SetContentModerator(newAuthModerator(moderation.ProviderResult{Status: moderation.StatusRejected, ReasonCode: "87014"}))
+
+	if _, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code", Nickname: "违规昵称"}, "127.0.0.1"); err != nil {
+		t.Fatalf("LoginWithWeChat() error = %v", err)
+	}
+	if users.byIdentity.Nickname != user.DefaultNickname || users.byIdentity.NicknameModerationStatus != string(moderation.StatusRejected) {
+		t.Fatalf("rejected profile = %+v", users.byIdentity)
+	}
+}
+
+func TestLoginWithWeChatProviderFailureDoesNotSaveUnreviewedNickname(t *testing.T) {
+	users := &fakeWeChatUserStore{}
+	client := &fakeWeChatClient{result: wechatplatform.LoginResult{OpenID: "openid-unavailable"}}
+	service := NewServiceWithWeChat(users, &fakeTokenStore{}, newTestJWTManager(t), time.Minute, time.Hour, nil, nil, client)
+	service.SetContentModerator(newAuthModeratorWithError(errors.New("provider down")))
+
+	if _, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code", Nickname: "待审核昵称"}, "127.0.0.1"); err != nil {
+		t.Fatalf("LoginWithWeChat() error = %v", err)
+	}
+	if users.byIdentity.Nickname != user.DefaultNickname || users.byIdentity.NicknameModerationStatus != string(moderation.StatusUnreviewed) {
+		t.Fatalf("unavailable profile = %+v", users.byIdentity)
+	}
+}
+
+func TestLoginWithWeChatExistingNamedUserCannotBeRenamedByLoginPayload(t *testing.T) {
+	users := &fakeWeChatUserStore{byIdentity: db.User{
+		ID: 2, Username: "wx_existing", Nickname: "原昵称", Avatar: user.DefaultAvatar, Status: user.StatusActive,
+		NicknameModerationStatus: string(moderation.StatusApproved), AvatarModerationStatus: string(moderation.StatusApproved),
+	}}
+	client := &fakeWeChatClient{result: wechatplatform.LoginResult{OpenID: "openid-existing"}}
+	service := NewServiceWithWeChat(users, &fakeTokenStore{}, newTestJWTManager(t), time.Minute, time.Hour, nil, nil, client)
+	service.SetContentModerator(newAuthModerator(moderation.ProviderResult{Status: moderation.StatusApproved}))
+
+	if _, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code", Nickname: "攻击者昵称"}, "127.0.0.1"); err != nil {
+		t.Fatalf("LoginWithWeChat() error = %v", err)
+	}
+	if users.byIdentity.Nickname != "原昵称" || users.updateCalls != 0 {
+		t.Fatalf("existing profile was renamed: %+v, updates=%d", users.byIdentity, users.updateCalls)
+	}
+}
+
+func TestLoginWithWeChatDefaultProfileCanReceiveOneControlledApprovedSync(t *testing.T) {
+	users := &fakeWeChatUserStore{byIdentity: db.User{
+		ID: 2, Username: "wx_default", Nickname: user.DefaultNickname, Avatar: user.DefaultAvatar, Status: user.StatusActive,
+		NicknameModerationStatus: string(moderation.StatusApproved), AvatarModerationStatus: string(moderation.StatusApproved),
+	}}
+	client := &fakeWeChatClient{result: wechatplatform.LoginResult{OpenID: "openid-default-existing"}}
+	service := NewServiceWithWeChat(users, &fakeTokenStore{}, newTestJWTManager(t), time.Minute, time.Hour, nil, nil, client)
+	service.SetContentModerator(newAuthModerator(moderation.ProviderResult{Status: moderation.StatusApproved}))
+
+	if _, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code", Nickname: "首次授权昵称"}, "127.0.0.1"); err != nil {
+		t.Fatalf("first controlled sync error = %v", err)
+	}
+	if users.byIdentity.Nickname != "首次授权昵称" || users.byIdentity.NicknameModerationStatus != string(moderation.StatusApproved) || users.updateCalls != 1 {
+		t.Fatalf("controlled sync state = %+v, updates=%d", users.byIdentity, users.updateCalls)
+	}
+
+	if _, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code-2", Nickname: "第二个昵称"}, "127.0.0.1"); err != nil {
+		t.Fatalf("second login error = %v", err)
+	}
+	if users.byIdentity.Nickname != "首次授权昵称" || users.updateCalls != 1 {
+		t.Fatalf("controlled sync repeated unexpectedly: %+v, updates=%d", users.byIdentity, users.updateCalls)
+	}
+}
+
+func TestLoginWithWeChatReturnsUnavailableForUpstreamFailure(t *testing.T) {
+	client := &fakeWeChatClient{err: errors.New("connection reset")}
+	service := NewServiceWithWeChat(&fakeWeChatUserStore{}, &fakeTokenStore{}, newTestJWTManager(t), time.Minute, time.Hour, nil, nil, client)
+
+	_, err := service.LoginWithWeChat(context.Background(), WeChatLoginInput{Code: "code"}, "127.0.0.1")
+	if err == nil || err.Error() != "微信登录暂不可用" {
+		t.Fatalf("err = %v, want WeChat unavailable", err)
 	}
 }
 
@@ -69,6 +153,7 @@ type fakeWeChatUserStore struct {
 	fakeUserStore
 	byIdentity  db.User
 	createCalls int
+	updateCalls int
 }
 
 func (f *fakeWeChatUserStore) GetUserByProviderSubject(context.Context, string, string) (db.User, error) {
@@ -81,14 +166,49 @@ func (f *fakeWeChatUserStore) GetUserByProviderSubject(context.Context, string, 
 func (f *fakeWeChatUserStore) CreateUserWithIdentityTx(_ context.Context, userArg db.CreateUserParams, _ db.CreateUserIdentityParams) (uint64, error) {
 	f.createCalls++
 	f.byIdentity = db.User{
-		ID:           2,
-		Username:     userArg.Username,
-		PasswordHash: userArg.PasswordHash,
-		Nickname:     userArg.Nickname,
-		Avatar:       userArg.Avatar,
-		Status:       userArg.Status,
-		CreatedAt:    userArg.CreatedAt,
-		UpdatedAt:    userArg.UpdatedAt,
+		ID:                       2,
+		Username:                 userArg.Username,
+		PasswordHash:             userArg.PasswordHash,
+		Nickname:                 userArg.Nickname,
+		Avatar:                   userArg.Avatar,
+		Status:                   userArg.Status,
+		NicknameModerationStatus: userArg.NicknameModerationStatus,
+		AvatarModerationStatus:   userArg.AvatarModerationStatus,
+		ModerationUpdatedAt:      userArg.ModerationUpdatedAt,
+		CreatedAt:                userArg.CreatedAt,
+		UpdatedAt:                userArg.UpdatedAt,
 	}
 	return f.byIdentity.ID, nil
+}
+
+func (f *fakeWeChatUserStore) UpdateUserProfile(_ context.Context, arg db.UpdateUserProfileParams) error {
+	f.updateCalls++
+	f.byIdentity.Nickname = arg.Nickname
+	f.byIdentity.Avatar = arg.Avatar
+	f.byIdentity.NicknameModerationStatus = arg.NicknameModerationStatus
+	f.byIdentity.AvatarModerationStatus = arg.AvatarModerationStatus
+	f.byIdentity.ModerationUpdatedAt = arg.ModerationUpdatedAt
+	f.byIdentity.UpdatedAt = arg.UpdatedAt
+	return nil
+}
+
+type authModerationProvider struct {
+	result moderation.ProviderResult
+	err    error
+}
+
+func (f authModerationProvider) CheckText(context.Context, moderation.TextCheckRequest) (moderation.ProviderResult, error) {
+	return f.result, f.err
+}
+
+func (f authModerationProvider) CheckImage(context.Context, moderation.ImageCheckRequest) (moderation.ProviderResult, error) {
+	return moderation.ProviderResult{Status: moderation.StatusApproved}, nil
+}
+
+func newAuthModerator(result moderation.ProviderResult) *moderation.Service {
+	return moderation.NewService(authModerationProvider{result: result}, nil)
+}
+
+func newAuthModeratorWithError(err error) *moderation.Service {
+	return moderation.NewService(authModerationProvider{err: err}, nil)
 }

@@ -55,7 +55,7 @@ type Service struct {
 	rankSeason             string
 }
 
-const defaultMatchmakingWait = 15 * time.Second
+const defaultMatchmakingWait = 20 * time.Second
 
 const (
 	defaultCampaignContentVersion = "v1"

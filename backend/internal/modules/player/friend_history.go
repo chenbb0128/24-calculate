@@ -64,6 +64,7 @@ SELECT mine.id,
        COALESCE(JSON_UNQUOTE(JSON_EXTRACT(mine.metadata_json, '$.round_id')), ''),
        mine.outcome,
        COALESCE(opponent.nickname, ''),
+       COALESCE(opponent.nickname_moderation_status, 'unreviewed'),
        mine.questions, mine.elapsed_ms,
        CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(mine.metadata_json, '$.player_mistakes')), '0') AS UNSIGNED),
        CAST(COALESCE(rank_result.rating_delta, 0) AS SIGNED), mine.created_at
@@ -90,13 +91,14 @@ LIMIT ?`, args...)
 	for rows.Next() {
 		var id uint64
 		var item FriendMatchHistoryRecord
-		if err := rows.Scan(&id, &item.MatchID, &item.RoundID, &item.Outcome, &item.OpponentName,
+		var opponentNameStatus string
+		if err := rows.Scan(&id, &item.MatchID, &item.RoundID, &item.Outcome, &item.OpponentName, &opponentNameStatus,
 			&item.Solved, &item.ElapsedMS, &item.Mistakes, &item.RatingDelta, &item.CreatedAt); err != nil {
 			return FriendMatchHistoryPage{}, fmt.Errorf("scan friend match history: %w", err)
 		}
 		item.Mode = LeaderboardFriend
 		item.QuestionCount = friendQuestionCount
-		item.OpponentName = normalizePublicNickname(item.OpponentName)
+		item.OpponentName = safePublicOpponentName(item.OpponentName, opponentNameStatus)
 		if item.OpponentName == "" {
 			item.OpponentName = "玩家"
 		}
@@ -121,10 +123,12 @@ func (r *SQLFriendMatchHistoryRepository) GetFriendMatchHistory(ctx context.Cont
 		return FriendMatchHistoryRecord{}, fmt.Errorf("friend history database is not initialized")
 	}
 	var item FriendMatchHistoryRecord
+	var opponentNameStatus string
 	err := r.db.QueryRowContext(ctx, `
 SELECT COALESCE(JSON_UNQUOTE(JSON_EXTRACT(mine.metadata_json, '$.match_id')), mine.room_id),
        COALESCE(JSON_UNQUOTE(JSON_EXTRACT(mine.metadata_json, '$.round_id')), ''),
-       mine.outcome, COALESCE(opponent.nickname, ''), mine.questions, mine.elapsed_ms,
+       mine.outcome, COALESCE(opponent.nickname, ''),
+       COALESCE(opponent.nickname_moderation_status, 'unreviewed'), mine.questions, mine.elapsed_ms,
        CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(mine.metadata_json, '$.player_mistakes')), '0') AS UNSIGNED),
        CAST(COALESCE(rank_result.rating_delta, 0) AS SIGNED), mine.created_at
 FROM player_leaderboard_submissions mine
@@ -141,14 +145,14 @@ LEFT JOIN ranked_match_results rank_result
 WHERE mine.mode = 'friend' AND mine.user_id = ?
   AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(mine.metadata_json, '$.match_id')), mine.room_id) = ?
 ORDER BY mine.id DESC LIMIT 1`, userID, strings.TrimSpace(matchID)).Scan(
-		&item.MatchID, &item.RoundID, &item.Outcome, &item.OpponentName, &item.Solved,
+		&item.MatchID, &item.RoundID, &item.Outcome, &item.OpponentName, &opponentNameStatus, &item.Solved,
 		&item.ElapsedMS, &item.Mistakes, &item.RatingDelta, &item.CreatedAt)
 	if err != nil {
 		return FriendMatchHistoryRecord{}, err
 	}
 	item.Mode = LeaderboardFriend
 	item.QuestionCount = friendQuestionCount
-	item.OpponentName = normalizePublicNickname(item.OpponentName)
+	item.OpponentName = safePublicOpponentName(item.OpponentName, opponentNameStatus)
 	if item.OpponentName == "" {
 		item.OpponentName = "玩家"
 	}

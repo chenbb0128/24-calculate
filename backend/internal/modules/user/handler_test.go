@@ -82,6 +82,95 @@ func TestUploadAvatarHandlerSuccess(t *testing.T) {
 	}
 }
 
+func TestUploadAvatarHandlerRequiresFileField(t *testing.T) {
+	service := NewServiceWithAvatarStorage(&fakeStore{user: testUser()}, &fakeAvatarStorage{}, 2<<20, 4096, time.Minute)
+	handler := NewHandler(service)
+	router := gin.New()
+	router.POST("/me/avatar", func(c *gin.Context) {
+		c.Set("auth.user_id", uint64(7))
+		handler.UploadAvatar(c)
+	})
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("avatar", "avatar.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(testPNG(t, 20, 20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/me/avatar", &body)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"data":null`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUploadAvatarHandlerRejectsOversizedFile(t *testing.T) {
+	service := NewServiceWithAvatarStorage(&fakeStore{user: testUser()}, &fakeAvatarStorage{}, 2<<20, 4096, time.Minute)
+	handler := NewHandler(service)
+	router := gin.New()
+	router.POST("/me/avatar", func(c *gin.Context) {
+		c.Set("auth.user_id", uint64(7))
+		handler.UploadAvatar(c)
+	})
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("file", "avatar.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte{'x'}, (2<<20)+1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/me/avatar", &body)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(recorder.Body.String(), `"data":null`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUploadAvatarHandlerRejectsEmptyFile(t *testing.T) {
+	service := NewServiceWithAvatarStorage(&fakeStore{user: testUser()}, &fakeAvatarStorage{}, 2<<20, 4096, time.Minute)
+	handler := NewHandler(service)
+	router := gin.New()
+	router.POST("/me/avatar", func(c *gin.Context) {
+		c.Set("auth.user_id", uint64(7))
+		handler.UploadAvatar(c)
+	})
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	if _, err := form.CreateFormFile("file", "empty.png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/me/avatar", &body)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"data":null`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func testUser() db.User {
 	return db.User{ID: 7, Username: "alice", Status: StatusActive}
 }

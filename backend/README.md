@@ -1,6 +1,6 @@
 # 三火算术练习后端
 
-这是微信小游戏的 Go API 服务。后端负责微信身份、题目合同、Run 状态、服务端计分、金币奖励、商城、好友房间、快速匹配、人机对手和排行榜。前端只负责显示、交互、本地缓存和发起请求。
+这是微信小游戏和 TapTap 小游戏共用的 Go API 服务。后端负责微信/TapTap 身份、题目合同、Run 状态、服务端计分、金币奖励、商城、好友房间、快速匹配、人机对手和排行榜。前端只负责显示、交互、本地缓存和发起请求。
 
 ## 技术与目录
 
@@ -25,9 +25,13 @@ $env:GO_SERVICE_REDIS_PASSWORD = ""
 $env:GO_SERVICE_JWT_SECRET = "至少 32 个字符的本地 JWT 密钥"
 $env:GO_SERVICE_WECHAT_APP_ID = "wx1e7ac815548c561c"
 $env:GO_SERVICE_WECHAT_APP_SECRET = "对应的微信 AppSecret"
+$env:GO_SERVICE_TAPTAP_APP_ID = "TapTap MiniApp ID"
+$env:GO_SERVICE_TAPTAP_APP_SECRET = "对应的 TapTap 密钥"
 $env:GO_SERVICE_GAME_DAILY_SEED_SECRET = "生产环境单独的每日题目密钥"
 $env:GO_SERVICE_GAME_CAMPAIGN_CONTENT_VERSION = "v1"
 $env:GO_SERVICE_GAME_CAMPAIGN_CONTENT_SECRET = "本机固定的闯关题库密钥"
+$env:GO_SERVICE_MODERATION_TIMEOUT = "5s"
+$env:GO_SERVICE_MODERATION_MAX_RETRIES = "1"
 # 本机可留空；生产必须配置实际 HTTPS 图片域名和可写目录。
 $env:GO_SERVICE_AVATAR_STORAGE_DIR = "var/avatars"
 $env:GO_SERVICE_AVATAR_PUBLIC_BASE_URL = ""
@@ -35,7 +39,9 @@ $env:GO_SERVICE_AVATAR_PUBLIC_BASE_URL = ""
 D:\bin\go.exe run ./cmd/api
 ```
 
-看到 `api server started` 后，API 默认地址为 `http://127.0.0.1:8080`。AppSecret、数据库密码、JWT 密钥和闯关题库密钥只通过环境变量传入，不写入代码、配置文件或日志。闯关题目由“题库版本 + 关卡 + 服务端固定密钥”确定；同一版本发布后不要修改密钥，否则会生成新的题目内容。
+看到 `api server started` 后，API 默认地址为 `http://127.0.0.1:8080`。TapTap 配置是可选的；只发布微信版时可将 `GO_SERVICE_TAPTAP_APP_ID` 和 `GO_SERVICE_TAPTAP_APP_SECRET` 留空。AppSecret、TapTap 密钥、数据库密码、JWT 密钥和闯关题库密钥只通过环境变量传入，不写入代码、配置文件或日志。闯关题目由“题库版本 + 关卡 + 服务端固定密钥”确定；同一版本发布后不要修改密钥，否则会生成新的题目内容。
+
+TapTap 版本调用 `tap.login()` 获取临时 code，再请求 `POST /api/v1/auth/taptap-login`。后端使用服务端保存的 MiniApp ID 和密钥向 `https://cloud-miniapp.tapapis.cn` 换取 TapTap 用户身份，并以 `taptap` provider 与微信身份隔离；两个平台的登录都返回相同格式的 JWT access/refresh token。TapTap 密钥不能放进小游戏包体或前端代码。
 
 ## 数据库迁移
 
@@ -50,7 +56,7 @@ cd D:\微信小游戏\backend
 
 ## 主要接口
 
-- `POST /api/v1/auth/wechat-login`、`POST /api/v1/auth/refresh`
+- `POST /api/v1/auth/wechat-login`、`POST /api/v1/auth/taptap-login`、`POST /api/v1/auth/refresh`
 - `GET/PATCH /api/v1/users/me`、`POST /api/v1/users/me/avatar`
 - `GET /api/v1/player/bootstrap`
 - `POST/GET /api/v1/player/campaign/runs...`
@@ -62,6 +68,17 @@ cd D:\微信小游戏\backend
 - `GET /health`、`GET /ready`
 
 所有受保护接口从 JWT 获取用户身份，不信任请求体中的 `user_id`、`score`、`coins`、`winner` 或 `reward`。错误响应保留数字 `code`，并增加 `request_id` 和 `data: null`。头像上传只接受 JPG/PNG/WEBP，服务端会裁剪为 256×256 WEBP；生产环境的 `GO_SERVICE_AVATAR_PUBLIC_BASE_URL` 必须是 HTTPS 图片域名。
+
+用户昵称和自定义头像在公开资料中只显示审核通过的值；拒绝、待审核、未审核或审核服务故障时显示安全默认资料。微信首次授权昵称由服务端审核，已审核昵称不会被后续登录参数覆盖。头像上传请求必须使用 `multipart/form-data` 的 `file` 字段，审核通过前不会写入公开存储。
+
+历史资料整改先预览再执行：
+
+```powershell
+D:\bin\go.exe run ./cmd/moderation-cleanup --dry-run
+D:\bin\go.exe run ./cmd/moderation-cleanup
+```
+
+`--dry-run` 不写用户资料、审核审计或奖励；正式执行前先备份数据库，并只在确认统计后运行 apply 命令。整改不会清空 Redis。
 
 ## 测试与构建
 
@@ -81,7 +98,7 @@ D:\bin\go.exe test ./internal/modules/player -run "Test(FriendRoomRepositoryRedi
 
 ## 生产部署提示
 
-生产环境需要 HTTPS、微信平台合法 request 域名、反向代理、MySQL 定期备份和 Redis/Memurai 监控。当前正式地址为 `https://calc-api.pdurl.cn`，线上验收记录见 [`docs/release-acceptance.md`](docs/release-acceptance.md)。MySQL 可使用 `mysqldump --single-transaction` 备份；Redis 中的 Run、房间、匹配和实时进度是带 TTL 的临时状态。
+生产环境需要 HTTPS、微信平台合法 request 域名、TapTap 后台域名白名单、反向代理、MySQL 定期备份和 Redis/Memurai 监控。当前正式地址为 `https://calc-api.pdurl.cn`，线上验收记录见 [`docs/release-acceptance.md`](docs/release-acceptance.md)。MySQL 可使用 `mysqldump --single-transaction` 备份；Redis 中的 Run、房间、匹配和实时进度是带 TTL 的临时状态。
 
 生产部署不要求本机开发使用 Docker；Windows 本机步骤见 [`docs/local-windows.md`](docs/local-windows.md)。如果生产服务器直接运行 Go 二进制，可按 [`docs/production-native.md`](docs/production-native.md) 配置 systemd 和 Nginx。
 

@@ -43,6 +43,11 @@ GO_SERVICE_REDIS_DB=2
 GO_SERVICE_WECHAT_APP_ID=wx1e7ac815548c561c
 GO_SERVICE_WECHAT_APP_SECRET=<wechat-app-secret>
 GO_SERVICE_WECHAT_API_BASE_URL=https://api.weixin.qq.com
+GO_SERVICE_MODERATION_TIMEOUT=5s
+GO_SERVICE_MODERATION_MAX_RETRIES=1
+GO_SERVICE_TAPTAP_APP_ID=<taptap-miniapp-id>
+GO_SERVICE_TAPTAP_APP_SECRET=<taptap-server-secret>
+GO_SERVICE_TAPTAP_API_BASE_URL=https://cloud-miniapp.tapapis.cn
 GO_SERVICE_JWT_SECRET=<random-secret-at-least-32-bytes>
 GO_SERVICE_GAME_DAILY_SEED_SECRET=<separate-random-daily-secret>
 GO_SERVICE_GAME_CAMPAIGN_CONTENT_VERSION=v1
@@ -54,7 +59,7 @@ GO_SERVICE_LOG_LEVEL=info
 GO_SERVICE_LOG_FORMAT=json
 ```
 
-生产数据库名、Redis 地址和账号必须以服务器实际配置为准，不要直接照抄示例值。`actual-image-domain` 必须替换成真实的 HTTPS 图片下载域名；如果由同一台 Nginx 提供静态文件，可以使用 `https://calc-api.pdurl.cn`，并为 `/avatars/` 配置只读静态目录，否则使用实际对象存储/CDN 域名。
+生产数据库名、Redis 地址和账号必须以服务器实际配置为准，不要直接照抄示例值。TapTap 版本上线时才填写三项 `GO_SERVICE_TAPTAP_*` 配置；只发布微信版时可留空 App ID 和密钥。`actual-image-domain` 必须替换成真实的 HTTPS 图片下载域名；如果由同一台 Nginx 提供静态文件，可以使用 `https://calc-api.pdurl.cn`，并为 `/avatars/` 配置只读静态目录，否则使用实际对象存储/CDN 域名。
 
 ## 3. 数据库迁移
 
@@ -67,6 +72,9 @@ goose -dir database/migrations mysql \
 ```
 
 执行后确认 Goose 显示当前迁移版本，并记录输出。不要执行 `down` 或删除已有表。
+
+内容审核依赖同一个服务端微信客户端，迁移 `00013_create_user_moderation.sql` 后由 API bootstrap 自动注入。审核超时允许 1～30 秒，最大重试次数允许 0～2；生产建议保持上面的 5 秒/1 次配置。审核历史整改必须先执行 `api` 进程使用的相同环境变量下的 `moderation-cleanup --dry-run`，确认数量后再去掉 `--dry-run`。命令不会修改奖励、排行榜或清空 Redis。
+整改命令会输出 `failed` 和 `avatars_hidden` 统计；出现审核上游失败时应先修复配置或网络，再重新执行 apply，不能把 `unreviewed` 资料当作已审核通过。
 
 ## 4. systemd 服务
 
@@ -118,6 +126,8 @@ location /avatars/ {
     alias /var/lib/24-calculate/avatars/avatars/;
     add_header Cache-Control "public, max-age=86400";
 }
+
+头像接口只接受带 Bearer access token 的 `multipart/form-data` 请求，文件字段名为 `file`。上传成功前先经过微信图片安全检查；审核拒绝或审核服务不可用时，旧头像保持不变。
 ```
 
 执行：

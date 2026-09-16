@@ -101,6 +101,13 @@ func FriendBotRoomsKey() string {
 	return fmt.Sprintf("%s:friend:bot-rooms", keyPrefix)
 }
 
+// FriendBotDifficultyKey stores server-only bot tuning metadata. It is kept
+// outside the public room JSON so clients cannot infer whether an opponent is
+// a bot or which difficulty profile was selected.
+func FriendBotDifficultyKey(roomCode string) string {
+	return fmt.Sprintf("%s:friend:room:%s:bot-difficulty", keyPrefix, roomCode)
+}
+
 func FriendRoomRateKey(action string, userID uint64) string {
 	return fmt.Sprintf("%s:rate:friend:%s:%d", keyPrefix, action, userID)
 }

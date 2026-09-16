@@ -95,6 +95,7 @@ type rankStoreFake struct {
 	result         map[uint64]RankSettlementResult
 	rows           []RankLeaderboardRow
 	seasonRequests []string
+	settlements    []RankedMatchSettlement
 }
 
 func (f *rankStoreFake) GetOrCreateRankProfile(_ context.Context, _ uint64, seasonID string) (RankProfile, error) {
@@ -104,7 +105,8 @@ func (f *rankStoreFake) GetOrCreateRankProfile(_ context.Context, _ uint64, seas
 	return profile, nil
 }
 
-func (f *rankStoreFake) SettleRankedMatch(context.Context, RankedMatchSettlement) (map[uint64]RankSettlementResult, error) {
+func (f *rankStoreFake) SettleRankedMatch(_ context.Context, settlement RankedMatchSettlement) (map[uint64]RankSettlementResult, error) {
+	f.settlements = append(f.settlements, settlement)
 	return f.result, nil
 }
 
@@ -124,5 +126,34 @@ func TestGetRankUsesConfiguredRankStore(t *testing.T) {
 	}
 	if got.SeasonID != "2026-S3" || got.Rating != 1000 || got.Tier != RankTierBronze {
 		t.Fatalf("GetRank() = %+v", got)
+	}
+}
+
+func TestRankedFriendSettlementCarriesServerValidatedScore(t *testing.T) {
+	room := FriendRoom{
+		RoomID: "friend-ranked", RoomCode: "123456", MatchID: "match-ranked", SeasonID: "2026-S3",
+		Ranked: true, RankedEligible: true, MatchSource: "matchmaking",
+		Rules:   FriendRoomRules{QuestionCount: 10},
+		Players: []FriendRoomPlayer{{UserID: 7}, {UserID: 0}},
+	}
+	store := &rankStoreFake{result: map[uint64]RankSettlementResult{
+		7: {Result: RankResult{Eligible: true, MatchID: room.MatchID, Outcome: "win"}},
+	}}
+	service := NewServiceWithRooms(leaderboardProfileReader{profile: testFriendProfile(7)}, &leaderboardStore{}, &friendRoomStoreFake{room: room})
+	service.SetRankStore(store)
+
+	_, err := service.settleRankedFriendMatch(context.Background(), 7, room, map[uint64]FriendMatchSubmissionRecord{
+		7: {UserID: 7, Solved: 8, Score: 731, ElapsedMS: 42000, Mistakes: 1, IdempotencyKey: "human-1"},
+		0: {UserID: 0, Solved: 7, Score: 700, ElapsedMS: 50000, IdempotencyKey: "auto:round-1:0"},
+	})
+	if err != nil {
+		t.Fatalf("settleRankedFriendMatch() error = %v", err)
+	}
+	if len(store.settlements) != 1 || len(store.settlements[0].Players) != 1 {
+		t.Fatalf("settlements = %#v, want one human settlement", store.settlements)
+	}
+	player := store.settlements[0].Players[0]
+	if player.UserID != 7 || player.Score != 731 || player.Solved != 8 || player.Mistakes != 1 {
+		t.Fatalf("rank settlement player = %#v, want server-calculated metrics", player)
 	}
 }

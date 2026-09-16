@@ -13,6 +13,14 @@
 - 无尽、闯关、每日和好友成绩只能通过对应的服务端校验 run/对战接口写入。
 - 微信开发者工具项目已开启合法域名校验和代码压缩。
 
+## TapTap 版本发布目标
+
+- TapTap 小游戏包目录：`frontend/taptap_game`
+- 登录接口：`POST /api/v1/auth/taptap-login`
+- 正式 API：`https://calc-api.pdurl.cn`
+- 当前状态：代码和后端接口已完成本地适配，尚未在 TapTap 后台创建条目、打包上传或提交审核。
+- 发布前必须在后端生产环境填写 `GO_SERVICE_TAPTAP_APP_ID` 和 `GO_SERVICE_TAPTAP_APP_SECRET`，并在 TapTap 后台配置 `calc-api.pdurl.cn` 请求域名白名单。
+
 ## 线上只读验收记录（部分通过）
 
 最近验收日期：2026-08-18
@@ -44,11 +52,21 @@
 
 ## 上线前仍需人工完成
 
+### 用户资料与内容审核验收
+
+1. 在生产环境执行 `00013_create_user_moderation.sql`，确认 `users` 的三个审核字段和 `user_moderation_events` 表存在。
+2. 确认 API 环境变量包含 `GO_SERVICE_MODERATION_TIMEOUT=5s`、`GO_SERVICE_MODERATION_MAX_RETRIES=1`，微信 AppSecret 只存在服务端环境变量。
+3. 用空昵称/头像完成微信登录；再用审核拒绝的昵称测试，确认登录成功但公开资料显示 `算术玩家`，日志不含 token、AppSecret 或原始资料。
+4. 用 `multipart/form-data` 的 `file` 字段上传 JPG/PNG/WEBP，确认通过后返回 HTTPS 头像地址；空文件、超 2 MiB、伪造图片和审核拒绝均不覆盖旧头像。
+5. 运行 `./moderation-cleanup --dry-run` 检查统计，确认无进度/金币变更后再执行 apply；整改完成后重复执行应无新增已审核资料更新。
+6. 查询排行榜、排位历史、好友历史、好友房和匹配响应，确认拒绝/待审核用户只显示安全默认昵称和头像。
+
 1. 在微信公众平台把 `calc-api.pdurl.cn` 配置为小游戏 request 合法域名，确认没有配置 `http://`、端口或路径。
 2. 使用真实微信账号在真机完成一次登录、bootstrap、闯关、每日挑战、无尽和好友房验收。
 3. 用两个真实微信账号或两台设备验证好友房和排行榜；不要在生产包使用 `dev-login`。
 4. 确认生产 MySQL 已完成迁移，并验证一次可恢复的定期备份。
 5. 把前端广告占位 ID 替换为公众平台真实广告位 ID，并验证广告失败时不会发放奖励。
 6. 补齐小游戏隐私协议、用户协议、备案/类目材料和分享图片后，再上传体验版审核。
+7. TapTap 版本额外完成 `frontend/taptap_game/tools/smoke_test.js`、`prelaunch_audit.js`、真机登录及全玩法验收，再使用 TapTap 打包工具上传 ZIP。
 
 验收过程中不得把 AppSecret、JWT 密钥、数据库密码或 Redis 密码写入仓库、前端代码、截图或日志。

@@ -32,6 +32,9 @@ type Querier interface {
 	GetUserByProviderSubject(ctx context.Context, arg GetUserByProviderSubjectParams) (User, error)
 	GetUserByUsername(ctx context.Context, username string) (User, error)
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
+	ListUsersForModeration(ctx context.Context, arg ListUsersForModerationParams) ([]User, error)
+	UpdateUserModeration(ctx context.Context, arg UpdateUserModerationParams) error
+	RecordModerationEvent(ctx context.Context, arg RecordModerationEventParams) error
 	UpdatePlayerProfileProgress(ctx context.Context, arg UpdatePlayerProfileProgressParams) error
 }
 

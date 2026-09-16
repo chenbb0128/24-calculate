@@ -15,12 +15,14 @@ import (
 	"github.com/example/go-service/internal/config"
 	httpapi "github.com/example/go-service/internal/http"
 	"github.com/example/go-service/internal/modules/auth"
+	"github.com/example/go-service/internal/modules/moderation"
 	"github.com/example/go-service/internal/modules/player"
 	"github.com/example/go-service/internal/modules/user"
 	jwtplatform "github.com/example/go-service/internal/platform/jwt"
 	appLogger "github.com/example/go-service/internal/platform/logger"
 	queueplatform "github.com/example/go-service/internal/platform/queue"
 	redisplatform "github.com/example/go-service/internal/platform/redis"
+	taptapplatform "github.com/example/go-service/internal/platform/taptap"
 	wechatplatform "github.com/example/go-service/internal/platform/wechat"
 	"github.com/example/go-service/internal/store"
 	db "github.com/example/go-service/internal/store/sqlc"
@@ -85,11 +87,18 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 	queries := db.New(database)
 	txManager := store.NewTxManager(database)
 	userRepository := user.NewRepository(queries, txManager)
-	authService := auth.NewServiceWithWeChat(userRepository, redisClient, manager, cfg.JWT.AccessTTL, cfg.JWT.RefreshTTL, queueClient, logger, wechatplatform.NewClient(cfg.WeChat))
+	wechatClient := wechatplatform.NewClient(cfg.WeChat)
+	wechatClient.SetContentSafetyPolicy(cfg.Moderation.Timeout, cfg.Moderation.MaxRetries)
+	contentModerator := moderation.NewService(wechatClient, moderation.NewSQLAuditStore(database))
+	authService := auth.NewServiceWithWeChatAndTapTap(userRepository, redisClient, manager, cfg.JWT.AccessTTL, cfg.JWT.RefreshTTL, queueClient, logger, wechatClient, taptapplatform.NewClient(cfg.TapTap))
+	authService.SetContentModerator(contentModerator)
 	authHandler := auth.NewHandler(authService)
 	avatarStorage := user.NewFileAvatarStorage(cfg.Avatar.StorageDir, cfg.Avatar.PublicBaseURL)
 	userService := user.NewServiceWithAvatarStorage(userRepository, avatarStorage, cfg.Avatar.MaxBytes, cfg.Avatar.MaxDimension, time.Duration(cfg.Avatar.UploadCooldownSeconds)*time.Second)
 	userService.SetAvatarRateLimiter(redisClient)
+	userService.SetAvatarPublicBaseURL(cfg.Avatar.PublicBaseURL)
+	userService.SetLogger(logger)
+	userService.SetContentModerator(contentModerator)
 	userHandler := user.NewHandler(userService)
 	playerRepository := player.NewRepository(queries, txManager)
 	friendRoomRepository := player.NewFriendRoomRepository(redisClient, database)

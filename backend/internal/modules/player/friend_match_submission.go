@@ -73,7 +73,7 @@ type FriendMatchSubmissionResponse struct {
 	Validated           bool               `json:"validated"`
 	IdempotencyReplayed bool               `json:"idempotency_replayed"`
 	Outcome             string             `json:"outcome,omitempty"`
-	Pending             bool               `json:"pending,omitempty"`
+	Pending             bool               `json:"pending"`
 	RankResult          *RankResult        `json:"rank_result,omitempty"`
 	RewardCoins         int                `json:"reward_coins,omitempty"`
 	Coins               int                `json:"coins,omitempty"`
@@ -163,16 +163,8 @@ func (s *Service) SubmitFriendMatch(ctx context.Context, userID uint64, roomCode
 				return FriendMatchSubmissionResponse{}, err
 			}
 		}
-		if len(submissions) >= 2 {
-			var opponent FriendMatchSubmissionRecord
-			foundOpponent := false
-			for _, candidate := range submissions {
-				if candidate.UserID != userID {
-					opponent = candidate
-					foundOpponent = true
-					break
-				}
-			}
+		if friendRoomSubmissionsComplete(room, submissions) {
+			opponent, foundOpponent := friendRoomOpponentSubmission(room, userID, submissions)
 			if foundOpponent {
 				outcome := compareFriendResults(submissions[userID], opponent)
 				matchResult = &FriendMatchResult{
@@ -275,7 +267,7 @@ func friendMatchEventID(room FriendRoom) string {
 // server-validated progress; unvalidated client-only heartbeats never become
 // an authoritative score.
 func (s *Service) ensureImmediateFriendSubmissions(ctx context.Context, room FriendRoom, currentUserID uint64, submissions map[uint64]FriendMatchSubmissionRecord) (map[uint64]FriendMatchSubmissionRecord, error) {
-	if len(submissions) >= len(room.Players) || len(room.Players) < 2 {
+	if len(room.Players) < 2 || friendRoomSubmissionsComplete(room, submissions) {
 		return submissions, nil
 	}
 	progress, err := s.getFriendMatchProgress(ctx, room)
@@ -288,6 +280,16 @@ func (s *Service) ensureImmediateFriendSubmissions(ctx context.Context, room Fri
 	if room.StartAt > 0 {
 		serverElapsed = int(time.Since(time.UnixMilli(room.StartAt)).Milliseconds())
 		serverElapsed = maxInt(0, minInt(serverElapsed, timeLimitMS))
+	}
+	botDifficulty := fallbackBotDifficulty(room)
+	for _, player := range room.Players {
+		if player.UserID == 0 {
+			botDifficulty, err = s.friendBotDifficulty(ctx, room)
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
 	for _, player := range room.Players {
 		if player.UserID == currentUserID {
@@ -309,8 +311,9 @@ func (s *Service) ensureImmediateFriendSubmissions(ctx context.Context, room Fri
 		// A bot has a server clocked progression even if nobody polled it. We
 		// calculate its final state from the same one-question-at-a-time plan.
 		if player.UserID == 0 {
-			record.Solved, record.ElapsedMS = friendBotFinalState(room, serverElapsed)
+			record.Solved, record.ElapsedMS = friendBotFinalStateWithDifficulty(room, serverElapsed, botDifficulty)
 			record.Score = record.Solved * 100
+			record.IdempotencyKey = friendBotSubmissionKey(room)
 		}
 		if err := s.saveFriendMatchSubmission(ctx, room, record); err != nil && !errors.Is(err, ErrFriendMatchSubmissionAlreadyExists) {
 			return nil, err
@@ -319,9 +322,37 @@ func (s *Service) ensureImmediateFriendSubmissions(ctx context.Context, room Fri
 	return s.getFriendMatchSubmissions(ctx, room)
 }
 
+func friendRoomSubmissionsComplete(room FriendRoom, submissions map[uint64]FriendMatchSubmissionRecord) bool {
+	if len(room.Players) < 2 {
+		return false
+	}
+	for _, player := range room.Players {
+		if _, exists := submissions[player.UserID]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
 func friendBotFinalState(room FriendRoom, elapsedMS int) (int, int) {
+	return friendBotFinalStateWithDifficulty(room, elapsedMS, fallbackBotDifficulty(room))
+}
+
+func friendRoomOpponentSubmission(room FriendRoom, userID uint64, submissions map[uint64]FriendMatchSubmissionRecord) (FriendMatchSubmissionRecord, bool) {
+	for _, player := range room.Players {
+		if player.UserID == userID {
+			continue
+		}
+		if submission, exists := submissions[player.UserID]; exists {
+			return submission, true
+		}
+	}
+	return FriendMatchSubmissionRecord{}, false
+}
+
+func friendBotFinalStateWithDifficulty(room FriendRoom, elapsedMS, difficulty int) (int, int) {
 	count := friendQuestionCountForRoom(room)
-	difficulty := int(absMatchmakingInt64(room.RoomSeed) % 3)
+	difficulty = normalizeBotDifficulty(difficulty)
 	solved, used := 0, int64(0)
 	for solved < count {
 		nextSolved, nextUsed := botProgressForElapsed(solved, int64(elapsedMS), count, room.RoomSeed, difficulty)

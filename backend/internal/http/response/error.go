@@ -10,7 +10,7 @@ import (
 )
 
 type ErrorResponse struct {
-	Code      int    `json:"code"`
+	Code      any    `json:"code"`
 	Message   string `json:"message"`
 	RequestID string `json:"request_id,omitempty"`
 	Data      any    `json:"data"`
@@ -29,8 +29,12 @@ func WriteError(c *gin.Context, err error) {
 		status = http.StatusInternalServerError
 	}
 
+	code := any(appErr.Code)
+	if appErr.BusinessCode != "" {
+		code = appErr.BusinessCode
+	}
 	c.JSON(status, ErrorResponse{
-		Code: appErr.Code, Message: appErr.Message,
+		Code: code, Message: appErr.Message,
 		RequestID: requestid.FromContext(c.Request.Context()), Data: nil,
 	})
 }

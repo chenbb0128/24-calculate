@@ -60,6 +60,20 @@ func (h *Handler) WeChatLogin(c *gin.Context) {
 	response.Success(c, http.StatusOK, result)
 }
 
+func (h *Handler) TapTapLogin(c *gin.Context) {
+	var input TapTapLoginInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.WriteError(c, apperror.BadRequest("请求参数错误", err))
+		return
+	}
+	result, err := h.service.LoginWithTapTap(c.Request.Context(), input, c.ClientIP())
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
 func (h *Handler) DevLogin(c *gin.Context) {
 	var input DevLoginInput
 	if err := c.ShouldBindJSON(&input); err != nil {

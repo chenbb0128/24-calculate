@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/example/go-service/internal/apperror"
+	"github.com/example/go-service/internal/modules/moderation"
 	"github.com/example/go-service/internal/modules/user"
 )
 
@@ -210,14 +211,14 @@ func TestGetFriendRoomUsesLatestPlayerProfile(t *testing.T) {
 	}
 	store := &friendRoomStoreFake{room: room}
 	service := NewServiceWithRooms(latestProfileReader{profiles: map[uint64]user.ProfileResponse{
-		3: {ID: 3, Nickname: "新昵称", Avatar: "https://cdn.example/avatar.webp"},
+		3: {ID: 3, Nickname: "新昵称", Avatar: "https://calc-api.pdurl.cn/avatars/3/avatar.webp", NicknameModerationStatus: string(moderation.StatusApproved), AvatarModerationStatus: string(moderation.StatusApproved)},
 	}}, &leaderboardStore{}, store)
 
 	result, err := service.GetFriendRoom(context.Background(), "135790")
 	if err != nil {
 		t.Fatalf("GetFriendRoom() error = %v", err)
 	}
-	if result.Players[0].Nickname != "新昵称" || result.Players[0].Avatar != "https://cdn.example/avatar.webp" {
+	if result.Players[0].Nickname != "新昵称" || result.Players[0].Avatar != "https://calc-api.pdurl.cn/avatars/3/avatar.webp" {
 		t.Fatalf("room player profile = %#v, want latest nickname and avatar", result.Players[0])
 	}
 }

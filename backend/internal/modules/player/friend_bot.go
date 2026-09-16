@@ -3,14 +3,93 @@ package player
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
+
+const (
+	botDifficultyEasy = iota
+	botDifficultyStandard
+	botDifficultyAdvanced
+	botDifficultyHard
+	botDifficultyHigh
+)
+
+func botDifficultyForRank(tier string) int {
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case RankTierSilver:
+		return botDifficultyStandard
+	case RankTierGold:
+		return botDifficultyAdvanced
+	case RankTierPlatinum:
+		return botDifficultyHard
+	case RankTierDiamond, RankTierMaster, RankTierKing:
+		return botDifficultyHigh
+	default:
+		return botDifficultyEasy
+	}
+}
+
+func botDifficultyName(difficulty int) string {
+	switch difficulty {
+	case botDifficultyStandard:
+		return "standard"
+	case botDifficultyAdvanced:
+		return "advanced"
+	case botDifficultyHard:
+		return "hard"
+	case botDifficultyHigh:
+		return "high"
+	default:
+		return "easy"
+	}
+}
+
+func normalizeBotDifficulty(difficulty int) int {
+	if difficulty < botDifficultyEasy {
+		return botDifficultyEasy
+	}
+	if difficulty > botDifficultyHigh {
+		return botDifficultyHigh
+	}
+	return difficulty
+}
+
+func fallbackBotDifficulty(room FriendRoom) int {
+	// Existing rooms created before server-only difficulty metadata was added
+	// must remain recoverable. Their seed-based fallback preserves the old
+	// timing contract without exposing any bot information.
+	return int(absMatchmakingInt64(room.RoomSeed) % 3)
+}
+
+func (s *Service) friendBotDifficulty(ctx context.Context, room FriendRoom) (int, error) {
+	if store, ok := s.rooms.(FriendBotDifficultyStore); ok {
+		difficulty, exists, err := store.GetFriendBotDifficulty(ctx, room.RoomCode)
+		if err != nil {
+			return 0, err
+		}
+		if exists {
+			return normalizeBotDifficulty(difficulty), nil
+		}
+	}
+	return fallbackBotDifficulty(room), nil
+}
+
+func friendBotSubmissionKey(room FriendRoom) string {
+	return "auto:" + roomRoundID(room) + ":0"
+}
 
 // advanceFriendBot writes a bot's progress into the same Redis structures as
 // a real player while retaining one-question-at-a-time server timing. It is
 // called by both API requests and the background ticker.
 func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
-	if room.Status != FriendRoomRunning || room.StartAt <= 0 || s.rooms == nil {
+	// A room can still be persisted as countdown on the first poll after the
+	// server start time. The Redis repository normally promotes it to running,
+	// but the bot clock must not depend on that read-after-write race (and the
+	// in-memory stores used by tests do not perform the promotion). Once the
+	// authoritative start time has arrived, both states are eligible for one
+	// server-side bot step.
+	if (room.Status != FriendRoomCountdown && room.Status != FriendRoomRunning) || room.StartAt <= 0 || s.rooms == nil {
 		return nil
 	}
 	botFound := false
@@ -40,7 +119,10 @@ func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
 		return nil
 	}
 
-	difficulty := int(absMatchmakingInt64(room.RoomSeed) % 3)
+	difficulty, err := s.friendBotDifficulty(ctx, room)
+	if err != nil {
+		return err
+	}
 	solved, usedMS := botProgressForElapsed(previous.Solved, elapsed, count, room.RoomSeed, difficulty)
 	if solved < previous.Solved {
 		return nil
@@ -58,10 +140,12 @@ func (s *Service) advanceFriendBot(ctx context.Context, room FriendRoom) error {
 		return err
 	}
 	if finished {
-		_ = s.saveFriendMatchSubmission(ctx, room, FriendMatchSubmissionRecord{
+		if err := s.saveFriendMatchSubmission(ctx, room, FriendMatchSubmissionRecord{
 			UserID: 0, RoundID: room.RoundID, Solved: solved, Score: progress.Score, ElapsedMS: progress.ElapsedMS,
-			CreatedAt: time.Now().UTC(),
-		})
+			IdempotencyKey: friendBotSubmissionKey(room), CreatedAt: time.Now().UTC(),
+		}); err != nil && !errors.Is(err, ErrFriendMatchSubmissionAlreadyExists) {
+			return err
+		}
 		if lifecycle, ok := s.rooms.(FriendRoomLifecycleStore); ok {
 			if err := lifecycle.FinishFriendRoom(ctx, room.RoomCode, room.MatchID); err != nil && !errors.Is(err, ErrFriendRoomStarted) {
 				return err
@@ -118,17 +202,17 @@ func botProgressForElapsed(previousSolved int, elapsed int64, count int, seed in
 	if count <= 0 || elapsed < 0 {
 		return previousSolved, 0
 	}
-	if difficulty < 0 || difficulty > 2 {
-		difficulty = 1
-	}
-	base := []int64{11000, 8000, 5000}[difficulty]
+	difficulty = normalizeBotDifficulty(difficulty)
+	base := []int64{14000, 11000, 9000, 7000, 5500}[difficulty]
+	jitterWindow := []int64{2500, 2200, 1800, 1500, 1200}[difficulty]
+	minimum := []int64{6000, 5000, 4000, 3500, 3000}[difficulty]
 	targetSolved := 0
 	elapsedForTarget := int64(0)
 	for index := 0; index < count; index++ {
-		jitter := (absMatchmakingInt64(seed)+int64(index*7919))%3500 - 1750
+		jitter := (absMatchmakingInt64(seed)+int64(index*7919))%(2*jitterWindow+1) - jitterWindow
 		duration := base + jitter
-		if duration < 3000 {
-			duration = 3000
+		if duration < minimum {
+			duration = minimum
 		}
 		elapsedForTarget += duration
 		if elapsedForTarget > elapsed {
@@ -145,10 +229,10 @@ func botProgressForElapsed(previousSolved int, elapsed int64, count int, seed in
 	}
 	usedMS := int64(0)
 	for index := 0; index < solved; index++ {
-		jitter := (absMatchmakingInt64(seed)+int64(index*7919))%3500 - 1750
+		jitter := (absMatchmakingInt64(seed)+int64(index*7919))%(2*jitterWindow+1) - jitterWindow
 		duration := base + jitter
-		if duration < 3000 {
-			duration = 3000
+		if duration < minimum {
+			duration = minimum
 		}
 		usedMS += duration
 	}

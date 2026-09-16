@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/example/go-service/internal/apperror"
+	"github.com/example/go-service/internal/modules/moderation"
+	"github.com/example/go-service/internal/modules/user"
 )
 
 const (
@@ -74,6 +76,13 @@ type FriendBotRoomStore interface {
 	AddFriendBotRoom(context.Context, string) error
 	ListFriendBotRooms(context.Context) ([]string, error)
 	RemoveFriendBotRoom(context.Context, string) error
+}
+
+// FriendBotDifficultyStore persists server-only difficulty metadata outside
+// the public room JSON and lets the worker resume a bot after an API restart.
+type FriendBotDifficultyStore interface {
+	SetFriendBotDifficulty(context.Context, string, int) error
+	GetFriendBotDifficulty(context.Context, string) (int, bool, error)
 }
 
 type FriendRoomRateLimitStore interface {
@@ -146,12 +155,14 @@ type FriendRoomCreateInput struct {
 }
 
 type FriendRoomPlayer struct {
-	UserID       uint64    `json:"user_id,omitempty"`
-	Nickname     string    `json:"nickname"`
-	Avatar       string    `json:"avatar"`
-	Ready        bool      `json:"ready"`
-	LastSeenAt   time.Time `json:"last_seen_at,omitempty"`
-	Disconnected bool      `json:"disconnected,omitempty"`
+	UserID                   uint64    `json:"user_id,omitempty"`
+	Nickname                 string    `json:"nickname"`
+	Avatar                   string    `json:"avatar"`
+	Ready                    bool      `json:"ready"`
+	LastSeenAt               time.Time `json:"last_seen_at,omitempty"`
+	Disconnected             bool      `json:"disconnected,omitempty"`
+	NicknameModerationStatus string    `json:"-"`
+	AvatarModerationStatus   string    `json:"-"`
 }
 
 type FriendMatchProgress struct {
@@ -243,6 +254,7 @@ type FriendMatchProgressResponse struct {
 	RewardCoins int                      `json:"reward_coins,omitempty"`
 	Coins       int                      `json:"coins,omitempty"`
 	Progress    json.RawMessage          `json:"progress,omitempty"`
+	Pending     bool                     `json:"pending"`
 }
 
 func NewServiceWithRooms(profiles ProfileReader, store Store, rooms FriendRoomStore) *Service {
@@ -413,11 +425,13 @@ func (s *Service) createFriendRoomWithRules(ctx context.Context, userID uint64, 
 				IntegerIntermediate: true,
 			},
 			Players: []FriendRoomPlayer{{
-				UserID:     profile.ID,
-				Nickname:   profile.Nickname,
-				Avatar:     profile.Avatar,
-				Ready:      false,
-				LastSeenAt: now,
+				UserID:                   profile.ID,
+				Nickname:                 profile.Nickname,
+				Avatar:                   profile.Avatar,
+				NicknameModerationStatus: profile.NicknameModerationStatus,
+				AvatarModerationStatus:   profile.AvatarModerationStatus,
+				Ready:                    false,
+				LastSeenAt:               now,
 			}},
 			CreatedAt: now,
 			ExpiresAt: now.Add(friendRoomTTL),
@@ -489,7 +503,7 @@ func (s *Service) JoinFriendRoom(ctx context.Context, userID uint64, roomCode st
 	if len(room.Players) >= 2 {
 		return FriendRoom{}, apperror.New(10003, 409, "好友房间已满", ErrFriendRoomFull)
 	}
-	player := FriendRoomPlayer{UserID: profile.ID, Nickname: profile.Nickname, Avatar: profile.Avatar, Ready: false, LastSeenAt: time.Now().UTC()}
+	player := FriendRoomPlayer{UserID: profile.ID, Nickname: profile.Nickname, Avatar: profile.Avatar, Ready: false, LastSeenAt: time.Now().UTC(), NicknameModerationStatus: profile.NicknameModerationStatus, AvatarModerationStatus: profile.AvatarModerationStatus}
 	if err := s.rooms.JoinFriendRoom(ctx, roomCode, player); err != nil {
 		return FriendRoom{}, mapFriendRoomError(err)
 	}
@@ -694,10 +708,16 @@ func (s *Service) GetFriendRoom(ctx context.Context, roomCode string) (FriendRoo
 			if profile, profileErr := s.profiles.GetProfile(ctx, room.Players[index].UserID); profileErr == nil {
 				room.Players[index].Nickname = profile.Nickname
 				room.Players[index].Avatar = profile.Avatar
+				room.Players[index].NicknameModerationStatus = profile.NicknameModerationStatus
+				room.Players[index].AvatarModerationStatus = profile.AvatarModerationStatus
+			} else {
+				room.Players[index].Nickname = user.DefaultNickname
+				room.Players[index].Avatar = user.DefaultAvatar
+				room.Players[index].NicknameModerationStatus = string(moderation.StatusUnreviewed)
+				room.Players[index].AvatarModerationStatus = string(moderation.StatusUnreviewed)
 			}
 		}
-		room.Players[index].Nickname = normalizePublicNickname(room.Players[index].Nickname)
-		room.Players[index].Avatar = normalizePublicAvatar(room.Players[index].Avatar)
+		room.Players[index] = safePublicFriendRoomPlayer(room.Players[index])
 	}
 	return room, nil
 }
@@ -999,6 +1019,13 @@ func (s *Service) GetFriendMatchProgress(ctx context.Context, userID uint64, roo
 	if latest, refreshErr := s.GetFriendRoom(ctx, room.RoomCode); refreshErr == nil {
 		room = latest
 	}
+	// Refreshing the room above may have promoted countdown -> running. Run one
+	// more bot step against the canonical room so the same progress request
+	// immediately exposes the newly available server-side progress instead of
+	// waiting for the next client poll.
+	if err := s.advanceFriendBot(ctx, room); err != nil {
+		return FriendMatchProgressResponse{}, err
+	}
 	result, err := s.friendMatchProgressResponse(ctx, userID, room)
 	if err != nil {
 		return FriendMatchProgressResponse{}, err
@@ -1008,6 +1035,7 @@ func (s *Service) GetFriendMatchProgress(ctx context.Context, userID uint64, roo
 		return FriendMatchProgressResponse{}, err
 	}
 	result.MatchResult = matchResult
+	result.Pending = matchResult == nil
 	if matchResult != nil {
 		result.RankResult = matchResult.RankResult
 	}
@@ -1026,22 +1054,14 @@ func (s *Service) resolveFriendMatchForUser(ctx context.Context, userID uint64, 
 		}
 	}
 	submissions, err := s.getFriendMatchSubmissions(ctx, room)
-	if err != nil || len(submissions) < 2 {
+	if err != nil || !friendRoomSubmissionsComplete(room, submissions) {
 		return nil, 0, nil, err
 	}
 	current, exists := submissions[userID]
 	if !exists {
 		return nil, 0, nil, nil
 	}
-	var opponent FriendMatchSubmissionRecord
-	found := false
-	for candidateID, candidate := range submissions {
-		if candidateID != userID {
-			opponent = candidate
-			found = true
-			break
-		}
-	}
+	opponent, found := friendRoomOpponentSubmission(room, userID, submissions)
 	if !found {
 		return nil, 0, nil, nil
 	}

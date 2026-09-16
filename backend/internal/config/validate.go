@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 func Validate(cfg *Config) error {
@@ -52,8 +53,37 @@ func Validate(cfg *Config) error {
 	if strings.TrimSpace(cfg.WeChat.APIBaseURL) == "" || cfg.WeChat.Timeout <= 0 {
 		return fmt.Errorf("wechat api configuration is invalid")
 	}
+	if cfg.Moderation.Timeout < time.Second || cfg.Moderation.Timeout > 30*time.Second {
+		return fmt.Errorf("moderation.timeout must be between 1s and 30s")
+	}
+	if cfg.Moderation.MaxRetries < 0 || cfg.Moderation.MaxRetries > 2 {
+		return fmt.Errorf("moderation.max_retries must be between 0 and 2")
+	}
 	if strings.EqualFold(cfg.App.Env, "production") && (strings.TrimSpace(cfg.WeChat.AppID) == "" || strings.TrimSpace(cfg.WeChat.AppSecret) == "") {
 		return fmt.Errorf("wechat.app_id and wechat.app_secret must be provided in production")
+	}
+	if strings.EqualFold(cfg.App.Env, "production") {
+		if strings.TrimSpace(cfg.WeChat.AppID) != OfficialWeChatAppID {
+			return fmt.Errorf("wechat.app_id must match the production mini-game AppID")
+		}
+		parsed, err := url.Parse(strings.TrimSpace(cfg.WeChat.APIBaseURL))
+		if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "api.weixin.qq.com") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			return fmt.Errorf("wechat.api_base_url must be https://api.weixin.qq.com in production")
+		}
+	}
+	if (strings.TrimSpace(cfg.TapTap.AppID) == "") != (strings.TrimSpace(cfg.TapTap.AppSecret) == "") {
+		return fmt.Errorf("taptap.app_id and taptap.app_secret must be provided together")
+	}
+	if strings.TrimSpace(cfg.TapTap.AppID) != "" || strings.TrimSpace(cfg.TapTap.AppSecret) != "" {
+		if strings.TrimSpace(cfg.TapTap.APIBaseURL) == "" || cfg.TapTap.Timeout <= 0 {
+			return fmt.Errorf("taptap api configuration is invalid")
+		}
+		if strings.EqualFold(cfg.App.Env, "production") {
+			parsed, err := url.Parse(strings.TrimSpace(cfg.TapTap.APIBaseURL))
+			if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "cloud-miniapp.tapapis.cn") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+				return fmt.Errorf("taptap.api_base_url must be https://cloud-miniapp.tapapis.cn in production")
+			}
+		}
 	}
 
 	if len([]byte(cfg.JWT.Secret)) < 32 {
@@ -116,6 +146,9 @@ func Validate(cfg *Config) error {
 			"jwt.secret":                   cfg.JWT.Secret,
 			"game.daily_seed_secret":       cfg.Game.DailySeedSecret,
 			"game.campaign_content_secret": cfg.Game.CampaignContentSecret,
+		}
+		if strings.TrimSpace(cfg.TapTap.AppID) != "" || strings.TrimSpace(cfg.TapTap.AppSecret) != "" {
+			productionSecrets["taptap.app_secret"] = cfg.TapTap.AppSecret
 		}
 		for name, value := range productionSecrets {
 			if strings.TrimSpace(value) == "" {

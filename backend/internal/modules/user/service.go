@@ -5,13 +5,18 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"net/url"
+	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
 	"github.com/example/go-service/internal/apperror"
+	"github.com/example/go-service/internal/modules/moderation"
 	db "github.com/example/go-service/internal/store/sqlc"
 )
 
@@ -34,14 +39,17 @@ type AvatarRateLimiter interface {
 }
 
 type Service struct {
-	store              Store
-	avatarStorage      AvatarStorage
-	avatarRateLimiter  AvatarRateLimiter
-	avatarMaxBytes     int64
-	avatarMaxDimension int
-	uploadCooldown     time.Duration
-	uploadMu           sync.Mutex
-	lastAvatarUploads  map[uint64]time.Time
+	store               Store
+	avatarStorage       AvatarStorage
+	avatarRateLimiter   AvatarRateLimiter
+	avatarMaxBytes      int64
+	avatarMaxDimension  int
+	uploadCooldown      time.Duration
+	uploadMu            sync.Mutex
+	lastAvatarUploads   map[uint64]time.Time
+	avatarPublicBaseURL string
+	logger              *slog.Logger
+	moderator           *moderation.Service
 }
 
 func NewService(store Store) *Service {
@@ -65,12 +73,31 @@ func NewServiceWithAvatarStorage(store Store, avatarStorage AvatarStorage, maxBy
 		avatarMaxDimension: maxDimension,
 		uploadCooldown:     uploadCooldown,
 		lastAvatarUploads:  make(map[uint64]time.Time),
+		logger:             slog.Default(),
 	}
 }
 
 func (s *Service) SetAvatarRateLimiter(limiter AvatarRateLimiter) {
 	if s != nil {
 		s.avatarRateLimiter = limiter
+	}
+}
+
+func (s *Service) SetAvatarPublicBaseURL(value string) {
+	if s != nil {
+		s.avatarPublicBaseURL = strings.TrimRight(strings.TrimSpace(value), "/")
+	}
+}
+
+func (s *Service) SetLogger(logger *slog.Logger) {
+	if s != nil && logger != nil {
+		s.logger = logger
+	}
+}
+
+func (s *Service) SetContentModerator(moderator *moderation.Service) {
+	if s != nil {
+		s.moderator = moderator
 	}
 }
 
@@ -89,6 +116,9 @@ func (s *Service) GetProfile(ctx context.Context, id uint64) (ProfileResponse, e
 }
 
 func (s *Service) UpdateProfile(ctx context.Context, id uint64, input UpdateProfileInput) (ProfileResponse, error) {
+	if input.Nickname != nil {
+		return ProfileResponse{}, apperror.NewBusiness("NICKNAME_EDIT_DISABLED", http.StatusBadRequest, "昵称暂时无法修改", nil)
+	}
 	user, err := s.store.GetUserByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -102,19 +132,15 @@ func (s *Service) UpdateProfile(ctx context.Context, id uint64, input UpdateProf
 
 	nickname := user.Nickname
 	avatar := user.Avatar
-	if input.Nickname != nil {
-		var err error
-		nickname, err = NormalizeNickname(*input.Nickname)
-		if err != nil {
-			return ProfileResponse{}, invalidProfile(err.Error())
-		}
-	}
+	nicknameStatus := user.NicknameModerationStatus
+	avatarStatus := user.AvatarModerationStatus
 	if input.Avatar != nil {
 		var err error
-		avatar, err = NormalizeAvatar(*input.Avatar)
+		avatar, err = s.normalizeProfileAvatar(*input.Avatar, id)
 		if err != nil {
 			return ProfileResponse{}, invalidProfile(err.Error())
 		}
+		avatarStatus = string(moderation.StatusApproved)
 	}
 	// Old accounts may contain empty fields from before profile defaults were
 	// introduced. Normalize them on the next profile read/update as well.
@@ -124,29 +150,53 @@ func (s *Service) UpdateProfile(ctx context.Context, id uint64, input UpdateProf
 	if strings.TrimSpace(avatar) == "" {
 		avatar = DefaultAvatar
 	}
+	if nicknameStatus == "" {
+		nicknameStatus = string(moderation.StatusApproved)
+	}
+	if avatarStatus == "" {
+		avatarStatus = string(moderation.StatusApproved)
+	}
 
 	now := time.Now().UTC()
 	if err := s.store.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
-		Nickname:  nickname,
-		Avatar:    avatar,
-		UpdatedAt: now,
-		ID:        id,
+		Nickname:                 nickname,
+		Avatar:                   avatar,
+		NicknameModerationStatus: nicknameStatus,
+		AvatarModerationStatus:   avatarStatus,
+		ModerationUpdatedAt:      &now,
+		UpdatedAt:                now,
+		ID:                       id,
 	}); err != nil {
 		return ProfileResponse{}, err
 	}
 
 	user.Nickname = nickname
 	user.Avatar = avatar
+	user.NicknameModerationStatus = nicknameStatus
+	user.AvatarModerationStatus = avatarStatus
+	user.ModerationUpdatedAt = &now
 	user.UpdatedAt = now
 	return toProfileResponse(user), nil
 }
 
 func (s *Service) UploadAvatar(ctx context.Context, id uint64, data []byte, maxDimension int) (AvatarUploadResponse, error) {
+	detectedFormat := detectAvatarFormat(data)
+	logUpload := func(success bool, reason, avatarURL string) {
+		if s != nil && s.logger != nil {
+			s.logger.InfoContext(ctx, "avatar upload", "user_id", id, "bytes", len(data), "format", detectedFormat, "saved", success, "avatar_url", avatarURL, "reason", reason)
+		}
+	}
 	if s.avatarStorage == nil {
+		logUpload(false, "storage_not_configured", "")
 		return AvatarUploadResponse{}, apperror.ServiceUnavailable("头像上传暂未配置", nil)
 	}
-	if len(data) == 0 || int64(len(data)) > s.avatarMaxBytes {
-		return AvatarUploadResponse{}, invalidProfile(fmt.Sprintf("头像文件不能超过 %d MB", s.avatarMaxBytes/(1<<20)))
+	if len(data) == 0 {
+		logUpload(false, "empty_file", "")
+		return AvatarUploadResponse{}, invalidProfile("头像文件不能为空")
+	}
+	if int64(len(data)) > s.avatarMaxBytes {
+		logUpload(false, "file_too_large_or_empty", "")
+		return AvatarUploadResponse{}, AvatarTooLarge(nil)
 	}
 	if maxDimension <= 0 {
 		maxDimension = s.avatarMaxDimension
@@ -154,45 +204,76 @@ func (s *Service) UploadAvatar(ctx context.Context, id uint64, data []byte, maxD
 	user, err := s.store.GetUserByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			logUpload(false, "user_not_found", "")
 			return AvatarUploadResponse{}, NotFound(err)
 		}
+		logUpload(false, "load_user_failed", "")
 		return AvatarUploadResponse{}, err
 	}
 	if user.Status == StatusDisabled {
+		logUpload(false, "user_disabled", "")
 		return AvatarUploadResponse{}, Disabled(nil)
 	}
 	if s.avatarRateLimiter != nil {
-		allowed, limitErr := s.avatarRateLimiter.AllowAvatarUpload(ctx, id, 2, time.Hour)
+		allowed, limitErr := s.avatarRateLimiter.AllowAvatarUpload(ctx, id, 1, s.uploadCooldown)
 		if limitErr != nil {
+			logUpload(false, "rate_limiter_failed", "")
 			return AvatarUploadResponse{}, limitErr
 		}
 		if !allowed {
+			logUpload(false, "rate_limited", "")
 			return AvatarUploadResponse{}, apperror.New(10006, 429, "头像上传过于频繁，请稍后再试", nil)
 		}
 	} else if !s.allowAvatarUpload(id, time.Now().UTC()) {
+		logUpload(false, "rate_limited", "")
 		return AvatarUploadResponse{}, apperror.New(10006, 429, "头像上传过于频繁，请稍后再试", nil)
 	}
 	encoded, width, height, err := processAvatarImage(data, maxDimension)
 	if err != nil {
+		logUpload(false, "invalid_image", "")
 		return AvatarUploadResponse{}, invalidProfile(err.Error())
+	}
+	if s.moderator != nil {
+		decision, moderationErr := s.moderator.ModerateImage(ctx, id, "avatar_upload", encoded)
+		if moderationErr != nil || decision.Status == moderation.StatusUnavailable {
+			logUpload(false, "moderation_provider_unavailable", "")
+			return AvatarUploadResponse{}, apperror.NewBusiness("MODERATION_PROVIDER_UNAVAILABLE", http.StatusServiceUnavailable, "内容审核服务暂不可用", moderationErr)
+		}
+		if decision.Status == moderation.StatusRejected {
+			logUpload(false, "moderation_rejected", "")
+			return AvatarUploadResponse{}, apperror.NewBusiness("AVATAR_REJECTED", http.StatusBadRequest, "头像未通过内容审核，请更换后再试", nil)
+		}
+		if decision.Status == moderation.StatusPending {
+			logUpload(false, "moderation_pending", "")
+			return AvatarUploadResponse{ModerationStatus: string(moderation.StatusPending), Profile: toProfileResponse(user)}, nil
+		}
 	}
 	stored, err := s.avatarStorage.Save(ctx, id, encoded)
 	if err != nil {
+		logUpload(false, "storage_save_failed", "")
 		return AvatarUploadResponse{}, apperror.ServiceUnavailable("头像保存失败", err)
 	}
 	nickname := strings.TrimSpace(user.Nickname)
 	if nickname == "" {
 		nickname = DefaultNickname
 	}
+	nicknameStatus := strings.TrimSpace(user.NicknameModerationStatus)
+	if nicknameStatus == "" {
+		nicknameStatus = string(moderation.StatusApproved)
+	}
 	oldAvatar := strings.TrimSpace(user.Avatar)
 	now := time.Now().UTC()
 	if err := s.store.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
-		Nickname:  nickname,
-		Avatar:    stored.URL,
-		UpdatedAt: now,
-		ID:        id,
+		Nickname:                 nickname,
+		Avatar:                   stored.URL,
+		NicknameModerationStatus: nicknameStatus,
+		AvatarModerationStatus:   string(moderation.StatusApproved),
+		ModerationUpdatedAt:      &now,
+		UpdatedAt:                now,
+		ID:                       id,
 	}); err != nil {
 		_ = s.avatarStorage.Delete(context.Background(), stored.Key)
+		logUpload(false, "profile_update_failed", "")
 		return AvatarUploadResponse{}, err
 	}
 	if oldAvatar != "" && oldAvatar != DefaultAvatar && oldAvatar != stored.URL {
@@ -205,8 +286,12 @@ func (s *Service) UploadAvatar(ctx context.Context, id uint64, data []byte, maxD
 		}(oldAvatar)
 	}
 	user.Avatar = stored.URL
+	user.NicknameModerationStatus = nicknameStatus
+	user.AvatarModerationStatus = string(moderation.StatusApproved)
+	user.ModerationUpdatedAt = &now
 	user.UpdatedAt = now
-	return AvatarUploadResponse{AvatarURL: stored.URL, AvatarKey: stored.Key, Width: width, Height: height, Format: "webp", Profile: toProfileResponse(user)}, nil
+	logUpload(true, "", stored.URL)
+	return AvatarUploadResponse{AvatarURL: stored.URL, AvatarKey: stored.Key, Width: width, Height: height, Format: "webp", ModerationStatus: string(moderation.StatusApproved), Profile: toProfileResponse(user)}, nil
 }
 
 func (s *Service) allowAvatarUpload(id uint64, now time.Time) bool {
@@ -221,23 +306,39 @@ func (s *Service) allowAvatarUpload(id uint64, now time.Time) bool {
 }
 
 func toProfileResponse(user db.User) ProfileResponse {
-	nickname := strings.TrimSpace(user.Nickname)
-	if nickname == "" {
-		nickname = DefaultNickname
-	}
-	avatar := strings.TrimSpace(user.Avatar)
-	if avatar == "" {
-		avatar = DefaultAvatar
-	}
 	return ProfileResponse{
-		ID:        user.ID,
-		Username:  user.Username,
-		Nickname:  nickname,
-		Avatar:    avatar,
-		Status:    user.Status,
-		CreatedAt: user.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt: user.UpdatedAt.UTC().Format(time.RFC3339),
+		ID:                       user.ID,
+		Username:                 user.Username,
+		Nickname:                 SafePublicNickname(user.Nickname, user.NicknameModerationStatus),
+		Avatar:                   SafePublicAvatar(user.Avatar, user.AvatarModerationStatus),
+		Status:                   user.Status,
+		CreatedAt:                user.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:                user.UpdatedAt.UTC().Format(time.RFC3339),
+		NicknameModerationStatus: user.NicknameModerationStatus,
+		AvatarModerationStatus:   user.AvatarModerationStatus,
 	}
+}
+
+func SafePublicNickname(value, status string) string {
+	if !moderation.IsPubliclyApproved(moderation.Status(strings.TrimSpace(status))) {
+		return DefaultNickname
+	}
+	nickname, err := NormalizeNickname(value)
+	if err != nil {
+		return DefaultNickname
+	}
+	return nickname
+}
+
+func SafePublicAvatar(value, status string) string {
+	if !moderation.IsPubliclyApproved(moderation.Status(strings.TrimSpace(status))) {
+		return DefaultAvatar
+	}
+	avatar, err := NormalizeAvatar(value)
+	if err != nil {
+		return DefaultAvatar
+	}
+	return avatar
 }
 
 func invalidProfile(message string) error {
@@ -270,9 +371,10 @@ func NormalizeNickname(value string) (string, error) {
 	return value, nil
 }
 
-// NormalizeAvatar accepts one of the built-in avatar identifiers or an HTTPS
-// image URL returned by WeChat/object storage. Empty input resets to the
-// built-in default avatar.
+// NormalizeAvatar accepts one of the built-in avatar identifiers or a
+// syntactically valid HTTPS backend-avatar URL. Callers that have an
+// authenticated user must use Service.UpdateProfile, which additionally
+// checks the configured host and the user's ownership of the path.
 func NormalizeAvatar(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -284,14 +386,68 @@ func NormalizeAvatar(value string) (string, error) {
 	if _, ok := allowedAvatars[value]; ok {
 		return value, nil
 	}
-	if strings.HasPrefix(value, "/avatars/") && !strings.Contains(value, "..") && strings.HasSuffix(value, ".webp") {
-		return value, nil
-	}
 	parsed, err := url.ParseRequestURI(value)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || !isBackendAvatarPath(parsed.Path) || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("avatar 必须是预设头像或 HTTPS 图片地址")
 	}
 	return value, nil
+}
+
+// NormalizeWeChatAvatar is used only for the server response received during
+// WeChat privacy authorization. It accepts WeChat's HTTPS avatar hosts, while
+// the authenticated profile endpoint accepts only our own generated avatars.
+func NormalizeWeChatAvatar(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return DefaultAvatar, nil
+	}
+	if _, ok := allowedAvatars[value]; ok {
+		return value, nil
+	}
+	if len([]rune(value)) > MaxAvatarRunes {
+		return "", fmt.Errorf("avatar 长度不能超过 %d 个字符", MaxAvatarRunes)
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || !isWeChatAvatarHost(parsed.Hostname()) {
+		return "", fmt.Errorf("avatar 必须是微信安全头像地址或预设头像")
+	}
+	return value, nil
+}
+
+func (s *Service) normalizeProfileAvatar(value string, userID uint64) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return DefaultAvatar, nil
+	}
+	if len([]rune(value)) > MaxAvatarRunes {
+		return "", fmt.Errorf("avatar 长度不能超过 %d 个字符", MaxAvatarRunes)
+	}
+	if _, ok := allowedAvatars[value]; ok {
+		return value, nil
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !isBackendAvatarPath(parsed.Path) {
+		return "", fmt.Errorf("avatar 必须是后端生成的 HTTPS 头像地址或预设头像")
+	}
+	base, baseErr := url.Parse(s.avatarPublicBaseURL)
+	if baseErr != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || !strings.EqualFold(parsed.Scheme, base.Scheme) || !strings.EqualFold(parsed.Host, base.Host) {
+		return "", fmt.Errorf("avatar 必须是后端生成的 HTTPS 头像地址或预设头像")
+	}
+	prefix := "/avatars/" + strconv.FormatUint(userID, 10) + "/"
+	if !strings.HasPrefix(parsed.Path, prefix) {
+		return "", fmt.Errorf("avatar 不属于当前用户")
+	}
+	return value, nil
+}
+
+func isBackendAvatarPath(value string) bool {
+	cleaned := path.Clean("/" + strings.TrimSpace(value))
+	return strings.HasPrefix(cleaned, "/avatars/") && !strings.Contains(value, "..") && strings.HasSuffix(cleaned, ".webp")
+}
+
+func isWeChatAvatarHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	return host == "qlogo.cn" || strings.HasSuffix(host, ".qlogo.cn")
 }
 
 func IsAllowedAvatar(value string) bool {

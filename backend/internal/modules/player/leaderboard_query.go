@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/example/go-service/internal/apperror"
+	"github.com/example/go-service/internal/modules/user"
 )
 
 const LeaderboardOverall = "overall"
@@ -76,10 +77,11 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 	}
 
 	type row struct {
-		id           uint64
-		name, avatar string
-		score        int64
-		createdAt    time.Time
+		id                       uint64
+		name, avatar             string
+		nameStatus, avatarStatus string
+		score                    int64
+		createdAt                time.Time
 	}
 	rows := make([]row, 0)
 	now := time.Now().UTC()
@@ -92,20 +94,21 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 	accept := func(createdAt time.Time) bool {
 		return start.IsZero() || createdAt.IsZero() || !createdAt.Before(start)
 	}
-	appendRow := func(id uint64, name, avatar string, score int64, createdAt time.Time) {
+	appendRow := func(id uint64, name, avatar, nameStatus, avatarStatus string, score int64, createdAt time.Time) {
 		if include(id) && accept(createdAt) {
-			rows = append(rows, row{id: id, name: normalizePublicNickname(name), avatar: normalizePublicAvatar(avatar), score: int64(clampLeaderboardScore(score)), createdAt: createdAt})
+			rows = append(rows, row{id: id, name: user.SafePublicNickname(name, nameStatus), avatar: user.SafePublicAvatar(avatar, avatarStatus), nameStatus: nameStatus, avatarStatus: avatarStatus, score: int64(clampLeaderboardScore(score)), createdAt: createdAt})
 		}
 	}
 
 	if mode == LeaderboardOverall {
 		combined := make(map[uint64]row)
-		add := func(id uint64, name, avatar string, score int64, createdAt time.Time) {
+		add := func(id uint64, name, avatar, nameStatus, avatarStatus string, score int64, createdAt time.Time) {
 			if !include(id) || !accept(createdAt) {
 				return
 			}
 			current := combined[id]
-			current.id, current.name, current.avatar = id, normalizePublicNickname(name), normalizePublicAvatar(avatar)
+			current.id, current.name, current.avatar = id, user.SafePublicNickname(name, nameStatus), user.SafePublicAvatar(avatar, avatarStatus)
+			current.nameStatus, current.avatarStatus = nameStatus, avatarStatus
 			current.score += maxInt64(0, score)
 			if createdAt.After(current.createdAt) {
 				current.createdAt = createdAt
@@ -117,7 +120,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 			return LeaderboardResponse{}, err
 		}
 		for _, item := range campaign {
-			add(item.UserID, item.Nickname, item.Avatar, item.Score, item.LastCreatedAt)
+			add(item.UserID, item.Nickname, item.Avatar, item.NicknameModerationStatus, item.AvatarModerationStatus, item.Score, item.LastCreatedAt)
 		}
 		dailyDate := now.In(shanghaiLocation).Format("2006-01-02")
 		daily, err := s.store.ListDailyLeaderboard(ctx, dailyDate)
@@ -125,21 +128,21 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 			return LeaderboardResponse{}, err
 		}
 		for _, item := range daily {
-			add(item.UserID, item.Nickname, item.Avatar, int64(item.Score), item.CreatedAt)
+			add(item.UserID, item.Nickname, item.Avatar, item.NicknameModerationStatus, item.AvatarModerationStatus, int64(item.Score), item.CreatedAt)
 		}
 		endless, err := s.store.ListEndlessLeaderboard(ctx)
 		if err != nil {
 			return LeaderboardResponse{}, err
 		}
 		for _, item := range endless {
-			add(item.UserID, item.Nickname, item.Avatar, item.Score, item.LastCreatedAt)
+			add(item.UserID, item.Nickname, item.Avatar, item.NicknameModerationStatus, item.AvatarModerationStatus, item.Score, item.LastCreatedAt)
 		}
 		friend, err := s.store.ListFriendLeaderboard(ctx)
 		if err != nil {
 			return LeaderboardResponse{}, err
 		}
 		for _, item := range friend {
-			add(item.UserID, item.Nickname, item.Avatar, item.Score, item.LastCreatedAt)
+			add(item.UserID, item.Nickname, item.Avatar, item.NicknameModerationStatus, item.AvatarModerationStatus, item.Score, item.LastCreatedAt)
 		}
 		for _, item := range combined {
 			rows = append(rows, item)
@@ -152,7 +155,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 				return LeaderboardResponse{}, err
 			}
 			for _, item := range items {
-				appendRow(item.UserID, item.Nickname, item.Avatar, int64(item.Rating), item.UpdatedAt)
+				appendRow(item.UserID, item.Nickname, item.Avatar, item.NicknameModerationStatus, item.AvatarModerationStatus, int64(item.Rating), item.UpdatedAt)
 			}
 		case LeaderboardCampaign:
 			items, err := s.store.ListCampaignLeaderboard(ctx)
@@ -160,7 +163,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 				return LeaderboardResponse{}, err
 			}
 			for _, item := range items {
-				appendRow(item.UserID, item.Nickname, item.Avatar, item.Score, item.LastCreatedAt)
+				appendRow(item.UserID, item.Nickname, item.Avatar, item.NicknameModerationStatus, item.AvatarModerationStatus, item.Score, item.LastCreatedAt)
 			}
 		case LeaderboardDaily:
 			dateKey := now.In(shanghaiLocation).Format("2006-01-02")
@@ -169,7 +172,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 				return LeaderboardResponse{}, err
 			}
 			for _, item := range items {
-				appendRow(item.UserID, item.Nickname, item.Avatar, int64(item.Score), item.CreatedAt)
+				appendRow(item.UserID, item.Nickname, item.Avatar, item.NicknameModerationStatus, item.AvatarModerationStatus, int64(item.Score), item.CreatedAt)
 			}
 		case LeaderboardEndless:
 			items, err := s.store.ListEndlessLeaderboard(ctx)
@@ -177,7 +180,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 				return LeaderboardResponse{}, err
 			}
 			for _, item := range items {
-				appendRow(item.UserID, item.Nickname, item.Avatar, item.Score, item.LastCreatedAt)
+				appendRow(item.UserID, item.Nickname, item.Avatar, item.NicknameModerationStatus, item.AvatarModerationStatus, item.Score, item.LastCreatedAt)
 			}
 		case LeaderboardFriend:
 			items, err := s.store.ListFriendLeaderboard(ctx)
@@ -185,7 +188,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 				return LeaderboardResponse{}, err
 			}
 			for _, item := range items {
-				appendRow(item.UserID, item.Nickname, item.Avatar, item.Score, item.LastCreatedAt)
+				appendRow(item.UserID, item.Nickname, item.Avatar, item.NicknameModerationStatus, item.AvatarModerationStatus, item.Score, item.LastCreatedAt)
 			}
 		}
 	}
@@ -198,7 +201,7 @@ func (s *Service) LeaderboardScopedPage(ctx context.Context, userID uint64, mode
 		}
 	}
 	if !seen {
-		rows = append(rows, row{id: profile.ID, name: normalizePublicNickname(profile.Nickname), avatar: normalizePublicAvatar(profile.Avatar)})
+		rows = append(rows, row{id: profile.ID, name: user.SafePublicNickname(profile.Nickname, profile.NicknameModerationStatus), avatar: user.SafePublicAvatar(profile.Avatar, profile.AvatarModerationStatus), nameStatus: profile.NicknameModerationStatus, avatarStatus: profile.AvatarModerationStatus})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].score != rows[j].score {

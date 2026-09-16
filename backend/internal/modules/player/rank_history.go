@@ -187,7 +187,11 @@ func (r *SQLRankRepository) ListRankedMatches(ctx context.Context, userID uint64
 	args = append(args, limit+1)
 	rows, err := r.db.QueryContext(ctx, `
 SELECT r.id, r.match_id, r.outcome, COALESCE(u.nickname, ''),
-       r.solved, r.question_count, r.elapsed_ms, r.mistakes, r.rating_delta, r.created_at
+       COALESCE(u.nickname_moderation_status, 'unreviewed'),
+       r.solved, r.question_count, r.elapsed_ms, r.mistakes, r.score,
+       r.rating_before, r.rating_after, r.tier_before, r.tier_after,
+       r.division_before, r.division_after, r.stars_before, r.stars_after,
+       r.verified, r.created_at
 FROM ranked_match_results r
 LEFT JOIN users u ON u.id = r.opponent_user_id
 WHERE r.user_id = ? AND r.season_id = ?`+condition+`
@@ -202,13 +206,20 @@ LIMIT ?`, args...)
 	for rows.Next() {
 		var id uint64
 		var item RankedMatchRecord
-		var outcome, opponentName string
-		if err := rows.Scan(&id, &item.MatchID, &outcome, &opponentName, &item.Solved,
-			&item.QuestionCount, &item.ElapsedMS, &item.Mistakes, &item.RatingDelta, &item.CreatedAt); err != nil {
+		var outcome, opponentName, opponentNameStatus string
+		var verified int
+		if err := rows.Scan(&id, &item.MatchID, &outcome, &opponentName, &opponentNameStatus, &item.Solved,
+			&item.QuestionCount, &item.ElapsedMS, &item.Mistakes, &item.Score,
+			&item.RatingBefore, &item.RatingAfter, &item.TierBefore, &item.TierAfter,
+			&item.DivisionBefore, &item.DivisionAfter, &item.StarsBefore, &item.StarsAfter,
+			&verified, &item.CreatedAt); err != nil {
 			return RankedMatchPage{}, fmt.Errorf("scan ranked match: %w", err)
 		}
 		item.Mode, item.Outcome = "ranked", publicRankOutcome(outcome)
-		item.OpponentName = normalizePublicNickname(opponentName)
+		item.Verified = verified != 0
+		item.RankBefore = rankedMatchRankSnapshot(seasonID, item.RatingBefore, item.TierBefore, item.DivisionBefore, item.StarsBefore)
+		item.RankAfter = rankedMatchRankSnapshot(seasonID, item.RatingAfter, item.TierAfter, item.DivisionAfter, item.StarsAfter)
+		item.OpponentName = safePublicOpponentName(opponentName, opponentNameStatus)
 		if item.OpponentName == "" {
 			item.OpponentName = "玩家"
 		}
@@ -233,24 +244,45 @@ func (r *SQLRankRepository) GetRankedMatch(ctx context.Context, userID uint64, m
 		return RankedMatchRecord{}, fmt.Errorf("rank repository database is not initialized")
 	}
 	row := r.db.QueryRowContext(ctx, `
-SELECT r.outcome, COALESCE(u.nickname, ''), r.solved, r.question_count,
-       r.elapsed_ms, r.mistakes, r.rating_delta, r.created_at
+SELECT r.season_id, r.outcome, COALESCE(u.nickname, ''),
+       COALESCE(u.nickname_moderation_status, 'unreviewed'), r.solved, r.question_count,
+       r.elapsed_ms, r.mistakes, r.score, r.rating_delta,
+       r.rating_before, r.rating_after, r.tier_before, r.tier_after,
+       r.division_before, r.division_after, r.stars_before, r.stars_after,
+       r.verified, r.created_at
 FROM ranked_match_results r
 LEFT JOIN users u ON u.id = r.opponent_user_id
 WHERE r.user_id = ? AND r.match_id = ?
 ORDER BY r.id DESC LIMIT 1`, userID, strings.TrimSpace(matchID))
-	var outcome, opponentName string
+	var seasonID, outcome, opponentName, opponentNameStatus string
 	var item RankedMatchRecord
-	if err := row.Scan(&outcome, &opponentName, &item.Solved, &item.QuestionCount, &item.ElapsedMS,
-		&item.Mistakes, &item.RatingDelta, &item.CreatedAt); err != nil {
+	var verified int
+	if err := row.Scan(&seasonID, &outcome, &opponentName, &opponentNameStatus, &item.Solved, &item.QuestionCount, &item.ElapsedMS,
+		&item.Mistakes, &item.Score, &item.RatingDelta, &item.RatingBefore, &item.RatingAfter,
+		&item.TierBefore, &item.TierAfter, &item.DivisionBefore, &item.DivisionAfter,
+		&item.StarsBefore, &item.StarsAfter, &verified, &item.CreatedAt); err != nil {
 		return RankedMatchRecord{}, err
 	}
 	item.MatchID, item.Mode, item.Outcome = strings.TrimSpace(matchID), "ranked", publicRankOutcome(outcome)
-	item.OpponentName = normalizePublicNickname(opponentName)
+	item.Verified = verified != 0
+	item.RankBefore = rankedMatchRankSnapshot(seasonID, item.RatingBefore, item.TierBefore, item.DivisionBefore, item.StarsBefore)
+	item.RankAfter = rankedMatchRankSnapshot(seasonID, item.RatingAfter, item.TierAfter, item.DivisionAfter, item.StarsAfter)
+	item.OpponentName = safePublicOpponentName(opponentName, opponentNameStatus)
 	if item.OpponentName == "" {
 		item.OpponentName = "玩家"
 	}
 	return item, nil
+}
+
+func rankedMatchRankSnapshot(seasonID string, rating int, tier string, division, stars int) *RankedMatchRankSnapshot {
+	return &RankedMatchRankSnapshot{
+		SeasonID: seasonID,
+		Label:    rankLabel(tier, division),
+		Rating:   rating,
+		Tier:     tier,
+		Division: division,
+		Stars:    stars,
+	}
 }
 
 func rankWinRate(wins, matches int) float64 {

@@ -44,11 +44,13 @@ type CreateLeaderboardSubmissionParams struct {
 }
 
 type LeaderboardScoreRow struct {
-	UserID        uint64
-	Nickname      string
-	Avatar        string
-	Score         int64
-	LastCreatedAt time.Time
+	UserID                   uint64
+	Nickname                 string
+	Avatar                   string
+	NicknameModerationStatus string
+	AvatarModerationStatus   string
+	Score                    int64
+	LastCreatedAt            time.Time
 }
 
 const getLeaderboardSubmissionByKey = `-- name: GetLeaderboardSubmissionByKey :one
@@ -112,12 +114,15 @@ const listEndlessLeaderboard = `-- name: ListEndlessLeaderboard :many
 SELECT submission.user_id,
        u.nickname,
        u.avatar,
+       u.nickname_moderation_status,
+       u.avatar_moderation_status,
        MAX(submission.score) AS score,
        MAX(submission.created_at) AS last_created_at
 FROM player_leaderboard_submissions AS submission
 INNER JOIN users AS u ON u.id = submission.user_id
 WHERE submission.mode = 'endless' AND u.status = 1
-GROUP BY submission.user_id, u.nickname, u.avatar
+GROUP BY submission.user_id, u.nickname, u.avatar,
+         u.nickname_moderation_status, u.avatar_moderation_status
 ORDER BY score DESC, submission.user_id ASC
 `
 
@@ -130,7 +135,7 @@ func (q *Queries) ListEndlessLeaderboard(ctx context.Context) ([]LeaderboardScor
 	items := make([]LeaderboardScoreRow, 0)
 	for rows.Next() {
 		var item LeaderboardScoreRow
-		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Avatar, &item.Score, &item.LastCreatedAt); err != nil {
+		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Avatar, &item.NicknameModerationStatus, &item.AvatarModerationStatus, &item.Score, &item.LastCreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -145,12 +150,15 @@ const listFriendLeaderboard = `-- name: ListFriendLeaderboard :many
 SELECT submission.user_id,
        u.nickname,
        u.avatar,
+       u.nickname_moderation_status,
+       u.avatar_moderation_status,
        MAX(submission.score) AS score,
        MAX(submission.created_at) AS last_created_at
 FROM player_leaderboard_submissions AS submission
 INNER JOIN users AS u ON u.id = submission.user_id
 WHERE submission.mode = 'friend' AND u.status = 1
-GROUP BY submission.user_id, u.nickname, u.avatar
+GROUP BY submission.user_id, u.nickname, u.avatar,
+         u.nickname_moderation_status, u.avatar_moderation_status
 ORDER BY score DESC, submission.user_id ASC
 `
 
@@ -163,7 +171,7 @@ func (q *Queries) ListFriendLeaderboard(ctx context.Context) ([]LeaderboardScore
 	items := make([]LeaderboardScoreRow, 0)
 	for rows.Next() {
 		var item LeaderboardScoreRow
-		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Avatar, &item.Score, &item.LastCreatedAt); err != nil {
+		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Avatar, &item.NicknameModerationStatus, &item.AvatarModerationStatus, &item.Score, &item.LastCreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

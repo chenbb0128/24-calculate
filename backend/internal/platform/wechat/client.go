@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/example/go-service/internal/config"
@@ -16,6 +17,7 @@ import (
 var (
 	ErrNotConfigured = errors.New("wechat client is not configured")
 	ErrInvalidCode   = errors.New("wechat login code is invalid")
+	ErrRemoteFailure = errors.New("wechat service request failed")
 )
 
 type LoginResult struct {
@@ -28,10 +30,15 @@ type LoginClient interface {
 }
 
 type Client struct {
-	appID      string
-	appSecret  string
-	apiBaseURL string
-	httpClient *http.Client
+	appID                   string
+	appSecret               string
+	apiBaseURL              string
+	httpClient              *http.Client
+	contentTokenMu          sync.Mutex
+	contentToken            string
+	contentTokenExpiresAt   time.Time
+	contentSafetyTimeout    time.Duration
+	contentSafetyMaxRetries int
 }
 
 func NewClient(cfg config.WeChatConfig) *Client {
@@ -40,10 +47,26 @@ func NewClient(cfg config.WeChatConfig) *Client {
 		timeout = 5 * time.Second
 	}
 	return &Client{
-		appID:      strings.TrimSpace(cfg.AppID),
-		appSecret:  strings.TrimSpace(cfg.AppSecret),
-		apiBaseURL: strings.TrimRight(strings.TrimSpace(cfg.APIBaseURL), "/"),
-		httpClient: &http.Client{Timeout: timeout},
+		appID:                   strings.TrimSpace(cfg.AppID),
+		appSecret:               strings.TrimSpace(cfg.AppSecret),
+		apiBaseURL:              strings.TrimRight(strings.TrimSpace(cfg.APIBaseURL), "/"),
+		httpClient:              &http.Client{Timeout: timeout},
+		contentSafetyTimeout:    timeout,
+		contentSafetyMaxRetries: 1,
+	}
+}
+
+// SetContentSafetyPolicy configures the bounded timeout and retry policy for
+// WeChat content-safety requests during process startup.
+func (c *Client) SetContentSafetyPolicy(timeout time.Duration, maxRetries int) {
+	if c == nil {
+		return
+	}
+	if timeout > 0 {
+		c.contentSafetyTimeout = timeout
+	}
+	if maxRetries >= 0 {
+		c.contentSafetyMaxRetries = maxRetries
 	}
 }
 
@@ -76,23 +99,32 @@ func (c *Client) ExchangeCode(ctx context.Context, code string) (LoginResult, er
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return LoginResult{}, fmt.Errorf("create wechat request: %w", err)
+		return LoginResult{}, fmt.Errorf("%w: create wechat request: %v", ErrRemoteFailure, err)
 	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return LoginResult{}, fmt.Errorf("request wechat login: %w", err)
+		// http.Client errors may include the complete request URL. The URL
+		// contains the AppSecret query parameter, so never wrap or log that
+		// error verbatim.
+		return LoginResult{}, fmt.Errorf("%w: request wechat login failed", ErrRemoteFailure)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return LoginResult{}, fmt.Errorf("wechat login returned status %d", response.StatusCode)
+		return LoginResult{}, fmt.Errorf("%w: wechat login returned status %d", ErrRemoteFailure, response.StatusCode)
 	}
 	var payload code2SessionResponse
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return LoginResult{}, fmt.Errorf("decode wechat login response: %w", err)
+		return LoginResult{}, fmt.Errorf("%w: decode wechat login response: %v", ErrRemoteFailure, err)
 	}
-	if payload.ErrCode != 0 || strings.TrimSpace(payload.OpenID) == "" {
-		return LoginResult{}, fmt.Errorf("%w: code=%d message=%s", ErrInvalidCode, payload.ErrCode, payload.ErrMessage)
+	if payload.ErrCode != 0 {
+		if payload.ErrCode == 40029 || payload.ErrCode == 40163 {
+			return LoginResult{}, fmt.Errorf("%w: code=%d message=%s", ErrInvalidCode, payload.ErrCode, payload.ErrMessage)
+		}
+		return LoginResult{}, fmt.Errorf("%w: code=%d message=%s", ErrRemoteFailure, payload.ErrCode, payload.ErrMessage)
+	}
+	if strings.TrimSpace(payload.OpenID) == "" {
+		return LoginResult{}, fmt.Errorf("%w: wechat response did not include openid", ErrRemoteFailure)
 	}
 	return LoginResult{OpenID: strings.TrimSpace(payload.OpenID), UnionID: strings.TrimSpace(payload.UnionID)}, nil
 }
