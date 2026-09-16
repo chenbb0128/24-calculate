@@ -41,21 +41,77 @@ func TestGetProfileReturnsPublicDTO(t *testing.T) {
 	}
 }
 
-func TestUpdateProfileRejectsNicknameWithStableBusinessCode(t *testing.T) {
+func TestUpdateProfileAllowsNicknameAfterModerationApproval(t *testing.T) {
 	store := &fakeStore{user: db.User{ID: 7, Username: "alice", Nickname: "Old", Avatar: "old", Status: StatusActive}}
 	service := NewService(store)
+	service.SetContentModerator(moderation.NewService(fakeModerationProvider{
+		text: moderation.ProviderResult{Status: moderation.StatusApproved},
+	}, nil))
+	nickname := " New "
+
+	profile, err := service.UpdateProfile(context.Background(), 7, UpdateProfileInput{Nickname: &nickname})
+	if err != nil {
+		t.Fatalf("UpdateProfile() error = %v, want approval", err)
+	}
+	if profile.Nickname != "New" || store.updated.Nickname != "New" {
+		t.Fatalf("profile = %+v, update = %+v", profile, store.updated)
+	}
+	if store.updated.NicknameModerationStatus != string(moderation.StatusApproved) {
+		t.Fatalf("nickname moderation status = %q, want approved", store.updated.NicknameModerationStatus)
+	}
+}
+
+func TestUpdateProfileRejectsNicknameWithoutChangingOldValue(t *testing.T) {
+	store := &fakeStore{user: db.User{ID: 7, Username: "alice", Nickname: "Old", Avatar: "old", Status: StatusActive}}
+	service := NewService(store)
+	service.SetContentModerator(moderation.NewService(fakeModerationProvider{
+		text: moderation.ProviderResult{Status: moderation.StatusRejected, ReasonCode: "87014"},
+	}, nil))
+	nickname := "违规昵称"
+
+	_, err := service.UpdateProfile(context.Background(), 7, UpdateProfileInput{Nickname: &nickname})
+	var appErr *apperror.AppError
+	if !errors.As(err, &appErr) || appErr.BusinessCode != "NICKNAME_REJECTED" || appErr.HTTPStatus != 400 {
+		t.Fatalf("error = %v, app error = %+v", err, appErr)
+	}
+	if store.updated.ID != 0 || store.user.Nickname != "Old" {
+		t.Fatalf("rejected nickname changed profile: user = %+v, update = %+v", store.user, store.updated)
+	}
+}
+
+func TestUpdateProfileFailsClosedWhenNicknameModerationUnavailable(t *testing.T) {
+	store := &fakeStore{user: db.User{ID: 7, Username: "alice", Nickname: "Old", Avatar: "old", Status: StatusActive}}
+	service := NewService(store)
+	service.SetContentModerator(moderation.NewService(fakeModerationProvider{
+		err: errors.New("provider down"),
+	}, nil))
 	nickname := "New"
 
 	_, err := service.UpdateProfile(context.Background(), 7, UpdateProfileInput{Nickname: &nickname})
-	if err == nil {
-		t.Fatal("UpdateProfile() error = nil, want nickname edit disabled")
-	}
 	var appErr *apperror.AppError
-	if !errors.As(err, &appErr) || appErr.BusinessCode != "NICKNAME_EDIT_DISABLED" || appErr.HTTPStatus != 400 {
+	if !errors.As(err, &appErr) || appErr.BusinessCode != "MODERATION_PROVIDER_UNAVAILABLE" || appErr.HTTPStatus != 503 {
 		t.Fatalf("error = %v, app error = %+v", err, appErr)
 	}
-	if store.updated.ID != 0 {
-		t.Fatalf("disabled nickname changed profile: %+v", store.updated)
+	if store.updated.ID != 0 || store.user.Nickname != "Old" {
+		t.Fatalf("unavailable moderation changed profile: user = %+v, update = %+v", store.user, store.updated)
+	}
+}
+
+func TestUpdateProfileLeavesNicknameUnchangedWhenModerationIsPending(t *testing.T) {
+	store := &fakeStore{user: db.User{ID: 7, Username: "alice", Nickname: "Old", Avatar: "old", Status: StatusActive}}
+	service := NewService(store)
+	service.SetContentModerator(moderation.NewService(fakeModerationProvider{
+		text: moderation.ProviderResult{Status: moderation.StatusPending},
+	}, nil))
+	nickname := "New"
+
+	_, err := service.UpdateProfile(context.Background(), 7, UpdateProfileInput{Nickname: &nickname})
+	var appErr *apperror.AppError
+	if !errors.As(err, &appErr) || appErr.BusinessCode != "NICKNAME_PENDING" || appErr.HTTPStatus != 409 {
+		t.Fatalf("error = %v, app error = %+v", err, appErr)
+	}
+	if store.updated.ID != 0 || store.user.Nickname != "Old" {
+		t.Fatalf("pending nickname changed profile: user = %+v, update = %+v", store.user, store.updated)
 	}
 }
 

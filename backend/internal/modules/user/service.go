@@ -116,9 +116,6 @@ func (s *Service) GetProfile(ctx context.Context, id uint64) (ProfileResponse, e
 }
 
 func (s *Service) UpdateProfile(ctx context.Context, id uint64, input UpdateProfileInput) (ProfileResponse, error) {
-	if input.Nickname != nil {
-		return ProfileResponse{}, apperror.NewBusiness("NICKNAME_EDIT_DISABLED", http.StatusBadRequest, "昵称暂时无法修改", nil)
-	}
 	user, err := s.store.GetUserByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -134,6 +131,27 @@ func (s *Service) UpdateProfile(ctx context.Context, id uint64, input UpdateProf
 	avatar := user.Avatar
 	nicknameStatus := user.NicknameModerationStatus
 	avatarStatus := user.AvatarModerationStatus
+	if input.Nickname != nil {
+		candidate, normalizeErr := NormalizeNickname(*input.Nickname)
+		if normalizeErr != nil {
+			return ProfileResponse{}, invalidProfile(normalizeErr.Error())
+		}
+		decision, moderationErr := s.moderator.ModerateText(ctx, id, fmt.Sprintf("user:%d", id), "profile_patch", candidate)
+		if moderationErr != nil || decision.Status == moderation.StatusUnavailable {
+			return ProfileResponse{}, apperror.NewBusiness("MODERATION_PROVIDER_UNAVAILABLE", http.StatusServiceUnavailable, "内容审核服务暂不可用", moderationErr)
+		}
+		switch decision.Status {
+		case moderation.StatusApproved:
+			nickname = candidate
+			nicknameStatus = string(moderation.StatusApproved)
+		case moderation.StatusRejected:
+			return ProfileResponse{}, apperror.NewBusiness("NICKNAME_REJECTED", http.StatusBadRequest, "昵称未通过内容审核，请更换后再试", nil)
+		case moderation.StatusPending:
+			return ProfileResponse{}, apperror.NewBusiness("NICKNAME_PENDING", http.StatusConflict, "昵称正在审核，请稍后再试", nil)
+		default:
+			return ProfileResponse{}, apperror.NewBusiness("MODERATION_PROVIDER_UNAVAILABLE", http.StatusServiceUnavailable, "内容审核服务暂不可用", nil)
+		}
+	}
 	if input.Avatar != nil {
 		var err error
 		avatar, err = s.normalizeProfileAvatar(*input.Avatar, id)
