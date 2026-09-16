@@ -41,20 +41,29 @@ func NewManager(cfg config.JWTConfig) (*Manager, error) {
 }
 
 func (m *Manager) IssueAccessToken(userID uint64) (string, *Claims, error) {
-	return m.issue(userID, TokenTypeAccess, m.accessTTL)
+	return m.IssueAccessTokenWithRole(userID, RoleUser)
 }
 
 func (m *Manager) IssueRefreshToken(userID uint64) (string, *Claims, error) {
-	return m.issue(userID, TokenTypeRefresh, m.refreshTTL)
+	return m.IssueRefreshTokenWithRole(userID, RoleUser)
 }
 
-func (m *Manager) issue(userID uint64, tokenType string, ttl time.Duration) (string, *Claims, error) {
+func (m *Manager) IssueAccessTokenWithRole(userID uint64, role string) (string, *Claims, error) {
+	return m.issue(userID, role, TokenTypeAccess, m.accessTTL)
+}
+
+func (m *Manager) IssueRefreshTokenWithRole(userID uint64, role string) (string, *Claims, error) {
+	return m.issue(userID, role, TokenTypeRefresh, m.refreshTTL)
+}
+
+func (m *Manager) issue(userID uint64, role, tokenType string, ttl time.Duration) (string, *Claims, error) {
 	if m == nil || len(m.secret) == 0 {
 		return "", nil, errors.New("jwt manager is not initialized")
 	}
 	now := time.Now().UTC()
 	claims := &Claims{
 		UserID:    userID,
+		Role:      role,
 		TokenType: tokenType,
 		RegisteredClaims: goJWT.RegisteredClaims{
 			Issuer:    m.issuer,

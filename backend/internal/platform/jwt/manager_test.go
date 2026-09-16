@@ -31,6 +31,59 @@ func TestManagerIssuesAndParsesAccessToken(t *testing.T) {
 	if parsed.UserID != 42 || parsed.ID != issued.ID {
 		t.Fatalf("claims = %+v, want user 42 and matching jti", parsed)
 	}
+	if parsed.Role != RoleUser {
+		t.Fatalf("role = %q, want %q", parsed.Role, RoleUser)
+	}
+}
+
+func TestManagerIssuesAndParsesAdminAccessToken(t *testing.T) {
+	manager, err := NewManager(config.JWTConfig{
+		Secret:     "01234567890123456789012345678901",
+		Algorithm:  "HS256",
+		Issuer:     "go-service",
+		AccessTTL:  time.Minute,
+		RefreshTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	token, _, err := manager.IssueAccessTokenWithRole(42, RoleAdmin)
+	if err != nil {
+		t.Fatalf("IssueAccessTokenWithRole() error = %v", err)
+	}
+	parsed, err := manager.ParseAccessToken(token)
+	if err != nil {
+		t.Fatalf("ParseAccessToken() error = %v", err)
+	}
+	if parsed.UserID != 42 || parsed.Role != RoleAdmin {
+		t.Fatalf("claims = %+v, want user 42 and role %q", parsed, RoleAdmin)
+	}
+}
+
+func TestManagerParsesLegacyEmptyRoleAccessToken(t *testing.T) {
+	manager, err := NewManager(config.JWTConfig{
+		Secret:     "01234567890123456789012345678901",
+		Algorithm:  "HS256",
+		Issuer:     "go-service",
+		AccessTTL:  time.Minute,
+		RefreshTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	token, _, err := manager.IssueAccessTokenWithRole(42, "")
+	if err != nil {
+		t.Fatalf("IssueAccessTokenWithRole() error = %v", err)
+	}
+	parsed, err := manager.ParseAccessToken(token)
+	if err != nil {
+		t.Fatalf("ParseAccessToken() error = %v", err)
+	}
+	if parsed.UserID != 42 || parsed.Role != "" {
+		t.Fatalf("claims = %+v, want user 42 and empty role", parsed)
+	}
 }
 
 func TestManagerRejectsWrongTokenType(t *testing.T) {

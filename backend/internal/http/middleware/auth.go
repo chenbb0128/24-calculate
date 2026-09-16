@@ -22,6 +22,22 @@ type AccessTokenRevocationChecker interface {
 }
 
 func RequireAuth(manager *jwtplatform.Manager, checkers ...AccessTokenRevocationChecker) gin.HandlerFunc {
+	return requireRoles(manager, checkers, nil)
+}
+
+func RequireUser(manager *jwtplatform.Manager, checkers ...AccessTokenRevocationChecker) gin.HandlerFunc {
+	return requireRoles(manager, checkers, func(role string) bool {
+		return role == "" || role == jwtplatform.RoleUser
+	})
+}
+
+func RequireAdmin(manager *jwtplatform.Manager, checkers ...AccessTokenRevocationChecker) gin.HandlerFunc {
+	return requireRoles(manager, checkers, func(role string) bool {
+		return role == jwtplatform.RoleAdmin
+	})
+}
+
+func requireRoles(manager *jwtplatform.Manager, checkers []AccessTokenRevocationChecker, accepted func(string) bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		value := c.GetHeader("Authorization")
 		parts := strings.Fields(value)
@@ -54,6 +70,11 @@ func RequireAuth(manager *jwtplatform.Manager, checkers ...AccessTokenRevocation
 				c.Abort()
 				return
 			}
+		}
+		if accepted != nil && !accepted(claims.Role) {
+			response.WriteError(c, apperror.New(apperror.CodeForbidden, http.StatusForbidden, "无权访问", nil))
+			c.Abort()
+			return
 		}
 
 		c.Set(userIDKey, claims.UserID)

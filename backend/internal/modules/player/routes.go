@@ -13,7 +13,7 @@ import (
 // in any environment.
 func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatform.Manager, revocation ...middleware.AccessTokenRevocationChecker) {
 	routes := group.Group("/player")
-	routes.Use(middleware.RequireAuth(manager, revocation...))
+	routes.Use(middleware.RequireUser(manager, revocation...))
 	routes.GET("/bootstrap", handler.Bootstrap)
 	routes.GET("/rank", handler.Rank)
 	routes.GET("/ranked/summary", handler.RankedSummary)
