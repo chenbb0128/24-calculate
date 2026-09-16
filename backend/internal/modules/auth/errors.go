@@ -14,6 +14,14 @@ func WeChatUnavailable(err error) error {
 	return apperror.New(50001, http.StatusServiceUnavailable, "微信登录暂不可用", err)
 }
 
+func InvalidTapTapCode(err error) error {
+	return apperror.New(20005, http.StatusUnauthorized, "TapTap 登录凭证无效", err)
+}
+
+func TapTapUnavailable(err error) error {
+	return apperror.New(50002, http.StatusServiceUnavailable, "TapTap 登录暂不可用", err)
+}
+
 func MissingToken(err error) error {
 	return apperror.New(20001, http.StatusUnauthorized, "Token 缺失", err)
 }

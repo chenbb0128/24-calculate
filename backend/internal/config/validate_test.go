@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func validConfigForTest() Config {
 	return Config{
@@ -20,8 +23,9 @@ func validConfigForTest() Config {
 			CampaignContentSecret:  "real-campaign-content-secret",
 			MatchmakingWaitSeconds: 12,
 		},
-		Avatar: AvatarConfig{StorageDir: "var/avatars", PublicBaseURL: "https://cdn.example.com", MaxBytes: 2 << 20, MaxDimension: 4096, UploadCooldownSeconds: 30},
-		Log:    LogConfig{Level: "info"},
+		Avatar:     AvatarConfig{StorageDir: "var/avatars", PublicBaseURL: "https://cdn.example.com", MaxBytes: 2 << 20, MaxDimension: 4096, UploadCooldownSeconds: 30},
+		Moderation: ModerationConfig{Timeout: 5 * time.Second, MaxRetries: 1},
+		Log:        LogConfig{Level: "info"},
 	}
 }
 
@@ -53,6 +57,23 @@ func TestValidateProductionAcceptsRealSecrets(t *testing.T) {
 		return &cfg
 	}()); err != nil {
 		t.Fatalf("Validate() error = %v for real production configuration", err)
+	}
+}
+
+func TestProductionConfigKeepsModerationTimeoutWithinBounds(t *testing.T) {
+	cfg := validConfigForTest()
+	if cfg.Moderation.Timeout != 5*time.Second || cfg.Moderation.MaxRetries != 1 {
+		t.Fatalf("moderation defaults = %+v, want 5s and one retry", cfg.Moderation)
+	}
+
+	cfg.Moderation.Timeout = 500 * time.Millisecond
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("Validate() error = nil for too-short moderation timeout")
+	}
+	cfg = validConfigForTest()
+	cfg.Moderation.MaxRetries = 3
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("Validate() error = nil for excessive moderation retries")
 	}
 }
 

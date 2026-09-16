@@ -30,13 +30,15 @@ type LoginClient interface {
 }
 
 type Client struct {
-	appID                 string
-	appSecret             string
-	apiBaseURL            string
-	httpClient            *http.Client
-	contentTokenMu        sync.Mutex
-	contentToken          string
-	contentTokenExpiresAt time.Time
+	appID                   string
+	appSecret               string
+	apiBaseURL              string
+	httpClient              *http.Client
+	contentTokenMu          sync.Mutex
+	contentToken            string
+	contentTokenExpiresAt   time.Time
+	contentSafetyTimeout    time.Duration
+	contentSafetyMaxRetries int
 }
 
 func NewClient(cfg config.WeChatConfig) *Client {
@@ -45,10 +47,26 @@ func NewClient(cfg config.WeChatConfig) *Client {
 		timeout = 5 * time.Second
 	}
 	return &Client{
-		appID:      strings.TrimSpace(cfg.AppID),
-		appSecret:  strings.TrimSpace(cfg.AppSecret),
-		apiBaseURL: strings.TrimRight(strings.TrimSpace(cfg.APIBaseURL), "/"),
-		httpClient: &http.Client{Timeout: timeout},
+		appID:                   strings.TrimSpace(cfg.AppID),
+		appSecret:               strings.TrimSpace(cfg.AppSecret),
+		apiBaseURL:              strings.TrimRight(strings.TrimSpace(cfg.APIBaseURL), "/"),
+		httpClient:              &http.Client{Timeout: timeout},
+		contentSafetyTimeout:    timeout,
+		contentSafetyMaxRetries: 1,
+	}
+}
+
+// SetContentSafetyPolicy configures the bounded timeout and retry policy for
+// WeChat content-safety requests during process startup.
+func (c *Client) SetContentSafetyPolicy(timeout time.Duration, maxRetries int) {
+	if c == nil {
+		return
+	}
+	if timeout > 0 {
+		c.contentSafetyTimeout = timeout
+	}
+	if maxRetries >= 0 {
+		c.contentSafetyMaxRetries = maxRetries
 	}
 }
 

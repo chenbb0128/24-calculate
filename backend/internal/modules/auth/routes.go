@@ -7,6 +7,7 @@ func RegisterRoutes(group *gin.RouterGroup, handler *Handler, allowDevAuth bool)
 	routes.POST("/register", handler.Register)
 	routes.POST("/login", handler.Login)
 	routes.POST("/wechat-login", handler.WeChatLogin)
+	routes.POST("/taptap-login", handler.TapTapLogin)
 	if allowDevAuth {
 		routes.POST("/dev-login", handler.DevLogin)
 	}

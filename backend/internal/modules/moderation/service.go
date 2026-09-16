@@ -3,6 +3,7 @@ package moderation
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 type Service struct {
@@ -15,6 +16,10 @@ func NewService(provider Provider, audit AuditStore) *Service {
 }
 
 func (s *Service) ModerateText(ctx context.Context, userID uint64, subject, source, content string) (Decision, error) {
+	return s.moderateText(ctx, userID, subject, source, content, true)
+}
+
+func (s *Service) moderateText(ctx context.Context, userID uint64, subject, source, content string, recordAudit bool) (Decision, error) {
 	normalized, err := NormalizeText(content)
 	if err != nil {
 		return Decision{Status: StatusRejected, ReasonCode: "invalid_text"}, nil
@@ -29,12 +34,14 @@ func (s *Service) ModerateText(ctx context.Context, userID uint64, subject, sour
 		return Decision{Status: StatusUnavailable}, fmt.Errorf("moderation text provider failed")
 	}
 	decision := normalizeDecision(result)
-	if err := s.record(ctx, AuditEvent{
-		UserID: userID, ResourceType: "nickname", Source: source,
-		ModerationStatus: decision.Status, ReasonCode: decision.ReasonCode,
-		ProviderRequestID: decision.ProviderRequestID,
-	}); err != nil {
-		return Decision{Status: StatusUnavailable}, fmt.Errorf("record moderation event: %w", err)
+	if recordAudit {
+		if err := s.record(ctx, AuditEvent{
+			UserID: userID, ResourceType: "nickname", Source: source,
+			ModerationStatus: decision.Status, ReasonCode: decision.ReasonCode,
+			ProviderRequestID: decision.ProviderRequestID,
+		}); err != nil {
+			return Decision{Status: StatusUnavailable}, fmt.Errorf("record moderation event: %w", err)
+		}
 	}
 	return decision, nil
 }
@@ -66,6 +73,9 @@ func (s *Service) ModerateImage(ctx context.Context, userID uint64, source strin
 func (s *Service) record(ctx context.Context, event AuditEvent) error {
 	if s == nil || s.audit == nil {
 		return nil
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
 	}
 	return s.audit.RecordModerationEvent(ctx, event)
 }

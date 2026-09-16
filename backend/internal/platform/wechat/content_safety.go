@@ -39,14 +39,18 @@ type contentSafetyResponse struct {
 var errContentSafetyTokenInvalid = fmt.Errorf("wechat content safety access token is invalid")
 
 func (c *Client) CheckText(ctx context.Context, request moderation.TextCheckRequest) (moderation.ProviderResult, error) {
-	return c.withContentSafetyToken(ctx, func(token string) (moderation.ProviderResult, error) {
-		return c.checkTextOnce(ctx, token, request)
+	requestContext, cancel := c.contentSafetyContext(ctx)
+	defer cancel()
+	return c.withContentSafetyToken(requestContext, func(token string) (moderation.ProviderResult, error) {
+		return c.checkTextOnce(requestContext, token, request)
 	})
 }
 
 func (c *Client) CheckImage(ctx context.Context, request moderation.ImageCheckRequest) (moderation.ProviderResult, error) {
-	return c.withContentSafetyToken(ctx, func(token string) (moderation.ProviderResult, error) {
-		return c.checkImageOnce(ctx, token, request)
+	requestContext, cancel := c.contentSafetyContext(ctx)
+	defer cancel()
+	return c.withContentSafetyToken(requestContext, func(token string) (moderation.ProviderResult, error) {
+		return c.checkImageOnce(requestContext, token, request)
 	})
 }
 
@@ -55,16 +59,28 @@ func (c *Client) withContentSafetyToken(ctx context.Context, check func(string) 
 	if err != nil {
 		return moderation.ProviderResult{}, err
 	}
-	result, err := check(token)
-	if err != errContentSafetyTokenInvalid {
-		return result, err
+	for attempt := 0; ; attempt++ {
+		result, err := check(token)
+		if err != errContentSafetyTokenInvalid || attempt >= c.contentSafetyMaxRetries {
+			return result, err
+		}
+		c.invalidateServerAccessToken(token)
+		token, err = c.serverAccessToken(ctx)
+		if err != nil {
+			return moderation.ProviderResult{}, err
+		}
 	}
-	c.invalidateServerAccessToken(token)
-	token, err = c.serverAccessToken(ctx)
-	if err != nil {
-		return moderation.ProviderResult{}, err
+}
+
+func (c *Client) contentSafetyContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if c == nil {
+		return context.WithCancel(ctx)
 	}
-	return check(token)
+	timeout := c.contentSafetyTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (c *Client) checkTextOnce(ctx context.Context, token string, request moderation.TextCheckRequest) (moderation.ProviderResult, error) {

@@ -37,6 +37,24 @@ redis:
   write_timeout: 3s
   # password must come from GO_SERVICE_REDIS_PASSWORD.
 
+wechat:
+  app_id: wx1e7ac815548c561c
+  # app_secret must come from GO_SERVICE_WECHAT_APP_SECRET.
+  api_base_url: https://api.weixin.qq.com
+  timeout: 5s
+
+moderation:
+  timeout: 5s
+  max_retries: 1
+
+taptap:
+  # Optional for the TapTap Mini Game build. Keep both fields empty for a
+  # WeChat-only deployment. The MiniApp ID and secret come from TapTap.
+  app_id: ""
+  # app_secret must come from GO_SERVICE_TAPTAP_APP_SECRET.
+  api_base_url: https://cloud-miniapp.tapapis.cn
+  timeout: 5s
+
 jwt:
   algorithm: HS256
   issuer: go-service

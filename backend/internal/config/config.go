@@ -9,16 +9,18 @@ import (
 const OfficialWeChatAppID = "wx1e7ac815548c561c"
 
 type Config struct {
-	App      AppConfig      `mapstructure:"app"`
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	WeChat   WeChatConfig   `mapstructure:"wechat"`
-	JWT      JWTConfig      `mapstructure:"jwt"`
-	Queue    QueueConfig    `mapstructure:"queue"`
-	Game     GameConfig     `mapstructure:"game"`
-	Avatar   AvatarConfig   `mapstructure:"avatar"`
-	Log      LogConfig      `mapstructure:"log"`
+	App        AppConfig        `mapstructure:"app"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Database   DatabaseConfig   `mapstructure:"database"`
+	Redis      RedisConfig      `mapstructure:"redis"`
+	WeChat     WeChatConfig     `mapstructure:"wechat"`
+	TapTap     TapTapConfig     `mapstructure:"taptap"`
+	JWT        JWTConfig        `mapstructure:"jwt"`
+	Queue      QueueConfig      `mapstructure:"queue"`
+	Game       GameConfig       `mapstructure:"game"`
+	Avatar     AvatarConfig     `mapstructure:"avatar"`
+	Moderation ModerationConfig `mapstructure:"moderation"`
+	Log        LogConfig        `mapstructure:"log"`
 }
 
 type AppConfig struct {
@@ -73,6 +75,16 @@ type WeChatConfig struct {
 	Timeout    time.Duration `mapstructure:"timeout"`
 }
 
+// TapTapConfig is optional so existing WeChat-only deployments remain valid.
+// When AppID and AppSecret are provided, the API exposes TapTap login for the
+// TapTap Mini Game build.
+type TapTapConfig struct {
+	AppID      string        `mapstructure:"app_id"`
+	AppSecret  string        `mapstructure:"app_secret"`
+	APIBaseURL string        `mapstructure:"api_base_url"`
+	Timeout    time.Duration `mapstructure:"timeout"`
+}
+
 type JWTConfig struct {
 	Secret     string        `mapstructure:"secret"`
 	Algorithm  string        `mapstructure:"algorithm"`
@@ -102,6 +114,11 @@ type AvatarConfig struct {
 	MaxBytes              int64  `mapstructure:"max_bytes"`
 	MaxDimension          int    `mapstructure:"max_dimension"`
 	UploadCooldownSeconds int    `mapstructure:"upload_cooldown_seconds"`
+}
+
+type ModerationConfig struct {
+	Timeout    time.Duration `mapstructure:"timeout"`
+	MaxRetries int           `mapstructure:"max_retries"`
 }
 
 type LogConfig struct {

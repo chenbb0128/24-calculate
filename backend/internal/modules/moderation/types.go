@@ -1,6 +1,9 @@
 package moderation
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Status string
 
@@ -44,6 +47,7 @@ type AuditEvent struct {
 	ModerationStatus  Status
 	ReasonCode        string
 	ProviderRequestID string
+	CreatedAt         time.Time
 }
 
 type AuditStore interface {

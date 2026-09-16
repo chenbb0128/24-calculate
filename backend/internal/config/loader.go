@@ -87,6 +87,9 @@ func setDefaults(v *viper.Viper) {
 		"wechat.app_id":  OfficialWeChatAppID,
 		"wechat.timeout": "5s",
 
+		"taptap.api_base_url": "https://cloud-miniapp.tapapis.cn",
+		"taptap.timeout":      "5s",
+
 		"jwt.algorithm":   "HS256",
 		"jwt.issuer":      "go-service",
 		"jwt.access_ttl":  "15m",
@@ -107,6 +110,9 @@ func setDefaults(v *viper.Viper) {
 		"avatar.max_bytes":               2 << 20,
 		"avatar.max_dimension":           4096,
 		"avatar.upload_cooldown_seconds": 30,
+
+		"moderation.timeout":     "5s",
+		"moderation.max_retries": 1,
 
 		"log.level":  "info",
 		"log.format": "json",
@@ -130,12 +136,14 @@ func bindEnvironment(v *viper.Viper) {
 		"redis.addr", "redis.password", "redis.db", "redis.dial_timeout", "redis.read_timeout",
 		"redis.write_timeout",
 		"wechat.app_id", "wechat.app_secret", "wechat.api_base_url", "wechat.timeout",
+		"taptap.app_id", "taptap.app_secret", "taptap.api_base_url", "taptap.timeout",
 		"jwt.secret", "jwt.algorithm", "jwt.issuer", "jwt.access_ttl", "jwt.refresh_ttl",
 		"queue.name", "queue.concurrency", "queue.task_timeout", "queue.max_retry",
 		"game.daily_seed_secret", "game.campaign_content_version", "game.campaign_content_secret",
 		"game.matchmaking_wait_seconds", "game.rank_season_id",
 		"avatar.storage_dir", "avatar.public_base_url", "avatar.max_bytes", "avatar.max_dimension",
 		"avatar.upload_cooldown_seconds",
+		"moderation.timeout", "moderation.max_retries",
 		"log.level", "log.format",
 	}
 

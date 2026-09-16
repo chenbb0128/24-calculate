@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: Sanhuo Arithmetic Practice Backend API
-  version: 2.1.0
-  description: Server-authoritative API for authentication, runs, rooms, matchmaking, rewards, and leaderboards.
+  version: 2.2.0
+  description: Server-authoritative API for WeChat and TapTap authentication, runs, rooms, matchmaking, rewards, and leaderboards.
 servers:
   - url: /
 tags:
@@ -34,6 +34,7 @@ paths:
     post:
       tags: [auth]
       summary: Exchange a WeChat login code for tokens
+      description: Nickname and avatar are optional because privacy authorization may be declined. The server keeps safe defaults for rejected, pending or unavailable profile moderation and never accepts an AppSecret from the client.
       requestBody:
         required: true
         content:
@@ -41,6 +42,20 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/Success'}
         '401': {$ref: '#/components/responses/Error'}
+  /api/v1/auth/taptap-login:
+    post:
+      tags: [auth]
+      summary: Exchange a TapTap login code for tokens
+      description: Accepts the temporary code returned by tap.login(). The server exchanges it with TapTap using server-side MiniApp credentials; the TapTap secret must never be sent by the client.
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/TapTapLoginInput'}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '401': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /api/v1/auth/refresh:
     post:
       tags: [auth]
@@ -62,6 +77,7 @@ paths:
       tags: [auth]
       security: [{bearerAuth: []}]
       summary: Update profile after explicit user authorization
+      description: Avatar may be changed only to a built-in preset or a backend-generated HTTPS avatar owned by the authenticated user. Nickname edits are currently disabled; the server returns NICKNAME_EDIT_DISABLED.
       requestBody:
         required: true
         content:
@@ -400,7 +416,7 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/SuccessResponse'}
     Error:
-      description: Error response with a legacy numeric code and request ID
+      description: Error response with a legacy numeric or stable business code, request ID and null data
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorResponse'}
@@ -416,13 +432,25 @@ components:
       type: object
       required: [code, message, data]
       properties:
-        code: {type: integer, example: 10001}
+        code:
+          oneOf:
+            - {type: integer, example: 10001}
+            - {type: string, example: NICKNAME_EDIT_DISABLED}
+          description: Legacy errors use numeric codes; moderation/business errors may use a stable string code.
         message: {type: string}
         request_id: {type: string}
         data: {nullable: true, example: null}
     WechatLoginInput:
       type: object
       required: [code]
+      properties:
+        code: {type: string, maxLength: 512}
+        nickname: {type: string, maxLength: 12}
+        avatar: {type: string, maxLength: 500}
+    TapTapLoginInput:
+      type: object
+      required: [code]
+      description: The code is returned by tap.login(). Nickname and avatar are optional local profile fields; TapTap does not provide WeChat profile authorization through this endpoint.
       properties:
         code: {type: string, maxLength: 512}
         nickname: {type: string, maxLength: 12}
