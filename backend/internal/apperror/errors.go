@@ -15,10 +15,11 @@ const (
 )
 
 type AppError struct {
-	Code       int
-	HTTPStatus int
-	Message    string
-	Err        error
+	Code         int
+	BusinessCode string
+	HTTPStatus   int
+	Message      string
+	Err          error
 }
 
 func (e *AppError) Error() string {
@@ -37,6 +38,14 @@ func (e *AppError) Unwrap() error {
 
 func New(code, status int, message string, err error) *AppError {
 	return &AppError{Code: code, HTTPStatus: status, Message: message, Err: err}
+}
+
+func NewBusiness(code string, status int, message string, err error) *AppError {
+	numericCode := CodeBadRequest
+	if status >= http.StatusInternalServerError {
+		numericCode = CodeInternal
+	}
+	return &AppError{Code: numericCode, BusinessCode: code, HTTPStatus: status, Message: message, Err: err}
 }
 
 func BadRequest(message string, err error) *AppError {
