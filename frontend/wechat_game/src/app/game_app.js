@@ -5080,6 +5080,9 @@ class GameApp {
       avatar: changes.avatar !== undefined ? String(changes.avatar || '').trim() : previous.avatar,
       wechat_auth_status: changes.wechat_auth_status || (this.progress.profile && this.progress.profile.wechat_auth_status) || 'pending',
     };
+    const updatePayload = {};
+    if (changes.nickname !== undefined) updatePayload.nickname = next.nickname;
+    if (changes.avatar !== undefined) updatePayload.avatar = next.avatar;
     if (next.nickname.length < 1 || next.nickname.length > 12) {
       this.profileNotice = '\u6635\u79f0\u9700\u89811\u523012\u4e2a\u5b57\u7b26';
       this.triggerFeedback('error', this.profileNotice);
@@ -5107,7 +5110,7 @@ class GameApp {
     }
     this.profileSaving = true;
     this.profileNotice = '\u6b63\u5728\u4fdd\u5b58\u8d44\u6599\u2026';
-    apiClient.updateProfile(next).then((remote) => {
+    apiClient.updateProfile(updatePayload).then((remote) => {
       const profile = remote && typeof remote === 'object' ? remote : next;
       const saved = {
         nickname: String(profile.nickname || next.nickname).trim().slice(0, 12),
