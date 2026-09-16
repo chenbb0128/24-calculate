@@ -2,6 +2,10 @@
 
 This no-build dashboard uses the server-side administration API. In production, serve `frontend/admin` from the same origin as the Go API, or configure the reverse proxy so `/api/v1/admin` reaches the API service. The browser uses the default API base URL `/api/v1/admin`.
 
+The production Nginx example is `backend/deployments/nginx-api.conf.example`.
+It redirects `/admin` to `/admin/` and serves this directory without exposing
+the Go API's JSON 404 page.
+
 Start the Go API with its normal environment and migrations applied, then serve the dashboard through that same origin. For a local static-server session against a separately running API, define a development-only base URL before `api.js` is loaded:
 
 ```html

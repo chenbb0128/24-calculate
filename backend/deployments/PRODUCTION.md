@@ -46,6 +46,31 @@ The production server no longer compiles Go during normal deployment. It only:
 
 Do not run `docker compose down -v` on the production server.
 
+## Admin dashboard
+
+The Go image includes the one-shot `/app/admin-seed` command, but the static
+dashboard is served by the existing Nginx container. Mount the repository's
+`frontend/admin` directory into that container as
+`/var/www/24-calculate-admin`, then add the `/admin` locations from
+`deployments/nginx-api.conf.example`. The dashboard uses same-origin requests
+to `/api/v1/admin/*` and does not contain provider credentials.
+
+After deploying an image that contains the migration and seed binary, create
+the first administrator with a temporary environment-only password:
+
+```bash
+cd /data/website/24-calculate/server/backend/deployments
+export GO_SERVICE_ADMIN_USERNAME='admin'
+read -r -s GO_SERVICE_ADMIN_PASSWORD
+export GO_SERVICE_ADMIN_PASSWORD
+docker compose --env-file .env \
+  --profile seed run --rm --no-deps admin-seed
+unset GO_SERVICE_ADMIN_USERNAME GO_SERVICE_ADMIN_PASSWORD
+```
+
+Run the seed command only after the migration profile has completed. It refuses
+to overwrite an existing username.
+
 ## GitHub Secrets
 
 The production workflow needs these repository secrets:

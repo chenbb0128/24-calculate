@@ -112,6 +112,27 @@ services:
       - shared_services
     logging: *default-logging
 
+  admin-seed:
+    profiles: [seed]
+    <<: *backend-image
+    container_name: twenty_four_calculate_admin_seed
+    init: true
+    restart: "no"
+    mem_limit: 256m
+    cpus: "1.0"
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    command: ["/app/admin-seed"]
+    environment:
+      <<: *backend-environment
+      GO_SERVICE_ADMIN_USERNAME: ${GO_SERVICE_ADMIN_USERNAME:-}
+      GO_SERVICE_ADMIN_PASSWORD: ${GO_SERVICE_ADMIN_PASSWORD:-}
+    extra_hosts: *extra-hosts
+    networks:
+      - shared_services
+    logging: *default-logging
+
 networks:
   shared_services:
     external: true

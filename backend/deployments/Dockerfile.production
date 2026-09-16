@@ -17,7 +17,8 @@ RUN CGO_ENABLED=0 go install -p="${GO_BUILD_PARALLELISM}" github.com/pressly/goo
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p="${GO_BUILD_PARALLELISM}" -trimpath -ldflags="-s -w" -o /out/api ./cmd/api \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p="${GO_BUILD_PARALLELISM}" -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p="${GO_BUILD_PARALLELISM}" -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p="${GO_BUILD_PARALLELISM}" -trimpath -ldflags="-s -w" -o /out/admin-seed ./cmd/admin-seed
 
 FROM alpine:3.22
 
@@ -30,6 +31,7 @@ RUN sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${ALPINE_MIRROR}#g" /etc/apk
 WORKDIR /app
 COPY --from=builder /out/api /app/api
 COPY --from=builder /out/worker /app/worker
+COPY --from=builder /out/admin-seed /app/admin-seed
 COPY --from=builder /go/bin/goose /app/goose
 COPY --from=builder /src/database/migrations /app/database/migrations
 COPY --from=builder /src/configs /app/configs
