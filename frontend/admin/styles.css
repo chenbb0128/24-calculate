@@ -73,6 +73,74 @@ a {
   border: 0;
 }
 
+.login-gate[hidden] {
+  display: none;
+}
+
+.login-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: linear-gradient(135deg, #101c36 0%, #18314c 55%, #0f8a83 180%);
+}
+
+.login-card {
+  display: grid;
+  width: min(100%, 420px);
+  gap: 16px;
+  padding: 32px;
+  background: var(--surface);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: var(--radius-md);
+  box-shadow: 0 24px 64px rgba(10, 22, 47, 0.35);
+}
+
+.login-card h1,
+.login-card p {
+  margin: 0;
+}
+
+.login-card > p:not(.eyebrow) {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.login-card .field-group {
+  display: grid;
+  gap: 7px;
+}
+
+.login-card label {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.login-card input {
+  min-height: 42px;
+  padding: 0 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.login-card button {
+  min-height: 44px;
+  color: #fff;
+  font-weight: 700;
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: 8px;
+}
+
+.login-card button:hover:not(:disabled) {
+  background: #0a756f;
+  border-color: #0a756f;
+}
+
 .admin-app {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);

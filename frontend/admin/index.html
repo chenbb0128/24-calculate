@@ -7,6 +7,22 @@
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
+    <section id="loginGate" class="login-gate" aria-labelledby="loginTitle">
+      <form id="loginForm" class="login-card">
+        <p class="eyebrow">运营后台</p>
+        <h1 id="loginTitle">管理员登录</h1>
+        <p>请使用已在服务端配置的管理员账号登录。</p>
+        <div class="field-group">
+          <label for="loginUsername">用户名</label>
+          <input id="loginUsername" name="username" type="text" autocomplete="username" required>
+        </div>
+        <div class="field-group">
+          <label for="loginPassword">密码</label>
+          <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button id="loginSubmitButton" type="submit">登录</button>
+      </form>
+    </section>
     <div id="app" class="admin-app">
       <aside id="sidebar" class="sidebar" aria-label="后台导航">
         <div class="brand">
@@ -80,8 +96,9 @@
               <label for="platformFilter">注册平台</label>
               <select id="platformFilter" name="platform">
                 <option value="all">全部平台</option>
-                <option value="微信">微信</option>
-                <option value="TapTap">TapTap</option>
+                <option value="wechat">微信</option>
+                <option value="taptap">TapTap</option>
+                <option value="password">账号</option>
               </select>
             </div>
             <button type="submit">应用筛选</button>
@@ -134,8 +151,8 @@
             <div><dt>注册来源</dt><dd id="detailPlatform">--</dd></div>
             <div><dt>注册时间</dt><dd id="detailCreatedAt">--</dd></div>
             <div><dt>最近活跃</dt><dd id="detailLastActiveAt">--</dd></div>
-            <div><dt>活跃场次</dt><dd id="detailSessions">--</dd></div>
-            <div><dt>总对局数</dt><dd id="detailTotalMatches">--</dd></div>
+            <div><dt>昵称审核</dt><dd id="detailNicknameModeration">--</dd></div>
+            <div><dt>头像审核</dt><dd id="detailAvatarModeration">--</dd></div>
           </dl>
         </div>
       </aside>
@@ -154,6 +171,7 @@
       <div id="toastRegion" role="status" aria-live="polite" aria-atomic="true"></div>
     </div>
 
+    <script src="api.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

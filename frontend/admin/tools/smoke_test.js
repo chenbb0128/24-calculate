@@ -5,141 +5,62 @@ const {
   filterUsers,
   paginateUsers,
   setUserStatus,
-  serializeUserState,
-  restoreUserState,
   getStats,
-  formatDate,
   getInitials,
   getStatusChangeTargets,
-  STORAGE_KEY,
-  SEED_USERS
+  mapServerUser,
+  moderationLabel
 } = require('../app');
 
-const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-const appSource = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+const root = path.join(__dirname, '..');
+const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+const appSource = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+const apiSource = fs.readFileSync(path.join(root, 'api.js'), 'utf8');
+
 for (const id of ['app', 'sidebar', 'statCards', 'searchInput', 'statusFilter', 'platformFilter',
-  'userTableBody', 'pagination', 'detailDrawer', 'confirmDialog', 'toastRegion']) {
+  'userTableBody', 'pagination', 'detailDrawer', 'confirmDialog', 'toastRegion', 'loginGate',
+  'loginForm', 'loginUsername', 'loginPassword']) {
   assert.match(html, new RegExp(`id=["']${id}["']`));
 }
-assert.match(html, /app\.js/);
-assert.match(html, /styles\.css/);
+assert.match(html, /<script src=["']api\.js["']><\/script>\s*<script src=["']app\.js["']>/);
 assert.match(html, /<title>三火算术 · 运营后台<\/title>/);
-assert.match(html, /class=["']brand__name["'][^>]*>三火算术 · 运营后台<\/a>/);
-for (const id of ['detailNickname', 'detailAvatar', 'detailStatus']) {
-  assert.match(html, new RegExp(`id=["']${id}["']`));
-}
 assert.match(html, /id=["']detailDrawer["'][^>]*aria-describedby=["']detailIdentitySummary["']/);
+assert.match(html, /id=["']detailNicknameModeration["']/);
+assert.match(html, /id=["']detailAvatarModeration["']/);
 
-assert.equal(typeof getStatusChangeTargets, 'function');
-const batchUsers = [
-  { id: 'U2001', status: 'active' },
-  { id: 'U2002', status: 'disabled' },
-  { id: 'U2003', status: 'active' }
-];
-assert.deepEqual(
-  getStatusChangeTargets(batchUsers, ['U2002', 'U2001', 'U2001', 'UNKNOWN'], 'disabled'),
-  ['U2001']
-);
-assert.deepEqual(getStatusChangeTargets(batchUsers, ['U2002'], 'disabled'), []);
-assert.deepEqual(getStatusChangeTargets(batchUsers, ['U2002'], 'active'), ['U2002']);
-assert.deepEqual(
-  setUserStatus(batchUsers, getStatusChangeTargets(batchUsers, ['U2001', 'U2002'], 'disabled'), 'disabled')
-    .map((user) => user.status),
-  ['disabled', 'disabled', 'active']
-);
-
-const drawerSource = appSource.slice(
-  appSource.indexOf('function renderDrawer'),
-  appSource.indexOf('function ensureSelectAllCheckbox')
-);
-assert.match(drawerSource, /detailNickname[^\n]*\.textContent = user\.nickname/);
-assert.match(drawerSource, /detailStatus[^\n]*\.replaceChildren\(createStatusTag\(user\.status\)\)/);
-assert.match(drawerSource, /detailAvatar/);
-assert.match(drawerSource, /replaceChildren/);
-assert.doesNotMatch(drawerSource, /innerHTML/);
-
-const statusRequestSource = appSource.slice(
-  appSource.indexOf('function requestStatusChange'),
-  appSource.indexOf('function confirmPendingAction')
-);
-assert.match(statusRequestSource, /getStatusChangeTargets\(state\.users, ids, status\)/);
-assert.match(statusRequestSource, /所选用户中没有可禁用的活跃账号，无需重复操作/);
-assert.match(statusRequestSource, /return;\s*}\s*if \(status === 'disabled'\)/);
-const completeStatusChangeSource = appSource.slice(
-  appSource.indexOf('function completeStatusChange'),
-  appSource.indexOf('function requestStatusChange')
-);
-assert.match(completeStatusChangeSource, /`已禁用 \$\{targetIds\.length\} 个账号`/);
-
-const closeConfirmationSource = appSource.slice(
-  appSource.indexOf('function closeConfirmation'),
-  appSource.indexOf('function openConfirmation')
-);
-const openConfirmationSource = appSource.slice(
-  appSource.indexOf('function openConfirmation'),
-  appSource.indexOf('function completeStatusChange')
-);
-assert.match(closeConfirmationSource,
-  /if \(typeof dialog\.close === 'function'\) \{\s*if \(dialog\.open\) dialog\.close\(\);\s*dialog\.hidden = false;/);
-assert.match(closeConfirmationSource, /else \{\s*dialog\.hidden = true;/);
-assert.match(openConfirmationSource,
-  /if \(typeof dialog\.showModal === 'function'\) \{\s*dialog\.hidden = false;\s*if \(!dialog\.open\) dialog\.showModal\(\);/);
+assert.doesNotMatch(appSource, /localStorage/);
+assert.doesNotMatch(appSource, /SEED_USERS/);
+assert.doesNotMatch(appSource, /innerHTML|\beval\s*\(/);
+assert.doesNotMatch(apiSource, /localStorage|innerHTML|\beval\s*\(/);
+assert.match(appSource, /window\.AdminApi\.createAdminApi/);
+assert.match(appSource, /state\.api\.listUsers/);
+assert.match(appSource, /state\.api\.getUser/);
+assert.match(appSource, /state\.api\.disableUser/);
+assert.match(appSource, /state\.api\.enableUser/);
+assert.match(appSource, /returnFocus\.focus/);
+assert.match(appSource, /event\.key !== 'Escape'/);
+assert.match(appSource, /function closeConfirmation[\s\S]*dialog\.close/);
+assert.match(appSource, /function openConfirmation[\s\S]*dialog\.showModal/);
+assert.match(appSource, /replaceChildren\(createStatusTag\(user\.status\)\)/);
 
 const users = [
-  { id: 'U1001', username: 'wx_1001', nickname: '晴天小猫', platform: '微信', status: 'active' },
-  { id: 'U1002', username: 'tap_1002', nickname: '夜航星', platform: 'TapTap', status: 'disabled' },
-  { id: 'U1003', username: 'wx_1003', nickname: '小火花', platform: '微信', status: 'active' }
+  { id: '1', username: 'wx_1', nickname: '晴天小猫', platform: '微信', status: 'active' },
+  { id: '2', username: 'tap_2', nickname: '夜航星', platform: 'TapTap', status: 'disabled' },
+  { id: '3', username: 'wx_3', nickname: '小火花', platform: '微信', status: 'active' }
 ];
-
 assert.deepEqual(getStats(users), { total: 3, newToday: 0, active: 2, disabled: 1 });
 assert.equal(getInitials('晴天小猫'), '晴猫');
-assert.match(formatDate('2026-09-16T09:18:00+08:00'), /2026/);
-
 assert.equal(filterUsers(users, { query: '晴天', status: 'all', platform: 'all' }).length, 1);
-assert.equal(filterUsers(users, { query: 'tap_1002', status: 'all', platform: 'all' })[0].id, 'U1002');
-assert.equal(filterUsers(users, { query: 'U1002', status: 'all', platform: 'all' })[0].id, 'U1002');
-assert.equal(filterUsers(users, { query: '', status: 'active', platform: '微信' }).length, 2);
-assert.equal(filterUsers(users, { query: '不存在', status: 'all', platform: 'all' }).length, 0);
+assert.equal(filterUsers(users, { query: 'tap_2', status: 'all', platform: 'all' })[0].id, '2');
+assert.deepEqual(paginateUsers(users, 2, 2), { page: 2, pageSize: 2, total: 3, totalPages: 2, items: [users[2]] });
+assert.deepEqual(getStatusChangeTargets(users, ['2', '1', '1', 'unknown'], 'disabled'), ['1']);
+assert.deepEqual(setUserStatus(users, ['1'], 'disabled').map((user) => user.status), ['disabled', 'disabled', 'active']);
+assert.deepEqual(mapServerUser({ id: 7, username: 'operator', nickname: '安全昵称', avatar: '', platform: 'password', status: 0,
+  created_at: '2026-09-16T00:00:00Z', updated_at: '2026-09-16T01:00:00Z' }), {
+  id: '7', username: 'operator', nickname: '安全昵称', avatar: '', platform: '账号', status: 'disabled',
+  createdAt: '2026-09-16T00:00:00Z', lastActiveAt: '2026-09-16T01:00:00Z',
+  nicknameModerationStatus: undefined, avatarModerationStatus: undefined
+});
+assert.equal(moderationLabel('rejected'), '未通过');
 
-const page = paginateUsers(users, 2, 2);
-assert.deepEqual(page, { page: 2, pageSize: 2, total: 3, totalPages: 2, items: [users[2]] });
-assert.equal(paginateUsers(users, 9, 2).page, 2);
-
-const changed = setUserStatus(users, ['U1001', 'U1003'], 'disabled');
-assert.equal(changed[0].status, 'disabled');
-assert.equal(changed[1].status, 'disabled');
-assert.equal(changed[2].status, 'disabled');
-assert.equal(users[0].status, 'active');
-
-const unsupportedStatus = setUserStatus(users, ['U1001'], 'pending');
-assert.deepEqual(unsupportedStatus.map((user) => user.status), ['active', 'disabled', 'active']);
-assert.deepEqual(JSON.parse(serializeUserState(unsupportedStatus)), [
-  { id: 'U1001', status: 'active' },
-  { id: 'U1002', status: 'disabled' },
-  { id: 'U1003', status: 'active' }
-]);
-assert.deepEqual(JSON.parse(serializeUserState([{ id: 'U1001', status: 'pending' }])), []);
-
-const restored = restoreUserState(serializeUserState(changed), users);
-assert.deepEqual(JSON.parse(serializeUserState(changed)), [
-  { id: 'U1001', status: 'disabled' },
-  { id: 'U1002', status: 'disabled' },
-  { id: 'U1003', status: 'disabled' }
-]);
-assert.deepEqual(restored.map((user) => user.status), ['disabled', 'disabled', 'disabled']);
-assert.equal(restoreUserState('{broken', users)[0].status, 'active');
-assert.equal(restoreUserState(JSON.stringify([{ id: 'UNKNOWN', status: 'disabled' }]), users)[0].status, 'active');
-assert.equal(restoreUserState(JSON.stringify([{ id: 'U1001', status: 'pending' }]), users)[0].status, 'active');
-
-assert.equal(STORAGE_KEY, 'sanhuo.admin.users.v1');
-assert.equal(SEED_USERS.length, 18);
-assert.deepEqual([...new Set(SEED_USERS.map((user) => user.platform))].sort(), ['TapTap', '微信']);
-assert.deepEqual([...new Set(SEED_USERS.map((user) => user.status))].sort(), ['active', 'disabled']);
-for (const user of SEED_USERS) {
-  assert.ok(user.id && user.username && user.nickname && user.avatar && user.platform && user.status);
-  assert.ok(user.createdAt && user.lastActiveAt);
-  assert.equal(typeof user.sessions, 'number');
-  assert.equal(typeof user.totalMatches, 'number');
-}
-
-console.log('PASS: admin data core smoke test');
+console.log('PASS: admin API dashboard smoke test');

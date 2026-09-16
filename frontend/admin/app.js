@@ -38,76 +38,11 @@ function getStatusChangeTargets(users, ids, status) {
   });
 }
 
-function serializeUserState(users) {
-  return JSON.stringify(users
-    .filter((user) => VALID_STATUSES.has(user.status))
-    .map((user) => ({ id: user.id, status: user.status })));
-}
-
-function restoreUserState(raw, fallbackUsers) {
-  const fallback = fallbackUsers.map((user) => ({ ...user }));
-  let persisted;
-  try {
-    persisted = typeof raw === 'string' ? JSON.parse(raw) : null;
-  } catch (error) {
-    return fallback;
-  }
-
-  if (!Array.isArray(persisted)) return fallback;
-
-  const persistedStatuses = new Map();
-  for (const entry of persisted) {
-    if (entry && typeof entry === 'object' && typeof entry.id === 'string') {
-      persistedStatuses.set(entry.id, entry.status);
-    }
-  }
-
-  return fallback.map((user) => {
-    const savedStatus = persistedStatuses.get(user.id);
-    const status = VALID_STATUSES.has(savedStatus)
-      ? savedStatus
-      : user.status;
-    return { ...user, status };
-  });
-}
-
-const STORAGE_KEY = 'sanhuo.admin.users.v1';
-const DEMO_AVATAR = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%2232%22 fill=%22%23dbeafe%22/%3E%3C/svg%3E';
-const SEED_USERS = [
-  { id: 'U1001', username: 'wx_1001', nickname: '晴天小猫', avatar: DEMO_AVATAR, platform: '微信', status: 'active', createdAt: '2026-09-01T10:20:00+08:00', lastActiveAt: '2026-09-16T09:18:00+08:00', sessions: 128, totalMatches: 42 },
-  { id: 'U1002', username: 'tap_1002', nickname: '夜航星', avatar: DEMO_AVATAR, platform: 'TapTap', status: 'disabled', createdAt: '2026-08-28T14:06:00+08:00', lastActiveAt: '2026-09-15T21:42:00+08:00', sessions: 64, totalMatches: 18 },
-  { id: 'U1003', username: 'wx_1003', nickname: '小火花', avatar: DEMO_AVATAR, platform: '微信', status: 'active', createdAt: '2026-09-03T08:36:00+08:00', lastActiveAt: '2026-09-16T08:54:00+08:00', sessions: 96, totalMatches: 31 },
-  { id: 'U1004', username: 'tap_1004', nickname: '山风', avatar: DEMO_AVATAR, platform: 'TapTap', status: 'active', createdAt: '2026-09-05T16:12:00+08:00', lastActiveAt: '2026-09-16T08:21:00+08:00', sessions: 77, totalMatches: 24 },
-  { id: 'U1005', username: 'wx_1005', nickname: '白露', avatar: DEMO_AVATAR, platform: '微信', status: 'disabled', createdAt: '2026-09-06T11:48:00+08:00', lastActiveAt: '2026-09-14T19:30:00+08:00', sessions: 41, totalMatches: 12 },
-  { id: 'U1006', username: 'tap_1006', nickname: '星河', avatar: DEMO_AVATAR, platform: 'TapTap', status: 'active', createdAt: '2026-09-08T09:25:00+08:00', lastActiveAt: '2026-09-16T07:58:00+08:00', sessions: 118, totalMatches: 39 },
-  { id: 'U1007', username: 'wx_1007', nickname: '稻草人', avatar: DEMO_AVATAR, platform: '微信', status: 'active', createdAt: '2026-09-09T13:17:00+08:00', lastActiveAt: '2026-09-16T07:26:00+08:00', sessions: 52, totalMatches: 16 },
-  { id: 'U1008', username: 'tap_1008', nickname: '云朵汽水', avatar: DEMO_AVATAR, platform: 'TapTap', status: 'disabled', createdAt: '2026-09-10T17:04:00+08:00', lastActiveAt: '2026-09-13T16:40:00+08:00', sessions: 33, totalMatches: 9 },
-  { id: 'U1009', username: 'wx_1009', nickname: '小树懒', avatar: DEMO_AVATAR, platform: '微信', status: 'active', createdAt: '2026-09-11T07:42:00+08:00', lastActiveAt: '2026-09-16T06:52:00+08:00', sessions: 88, totalMatches: 27 },
-  { id: 'U1010', username: 'tap_1010', nickname: '月半弯', avatar: DEMO_AVATAR, platform: 'TapTap', status: 'active', createdAt: '2026-09-12T12:32:00+08:00', lastActiveAt: '2026-09-16T06:16:00+08:00', sessions: 70, totalMatches: 21 },
-  { id: 'U1011', username: 'wx_1011', nickname: '小太阳', avatar: DEMO_AVATAR, platform: '微信', status: 'disabled', createdAt: '2026-09-13T10:05:00+08:00', lastActiveAt: '2026-09-15T18:11:00+08:00', sessions: 29, totalMatches: 7 },
-  { id: 'U1012', username: 'tap_1012', nickname: '蓝莓汽水', avatar: DEMO_AVATAR, platform: 'TapTap', status: 'active', createdAt: '2026-09-14T15:26:00+08:00', lastActiveAt: '2026-09-16T05:48:00+08:00', sessions: 45, totalMatches: 14 },
-  { id: 'U1013', username: 'wx_1013', nickname: '橘子海', avatar: DEMO_AVATAR, platform: '微信', status: 'active', createdAt: '2026-09-15T08:14:00+08:00', lastActiveAt: '2026-09-16T05:09:00+08:00', sessions: 36, totalMatches: 11 },
-  { id: 'U1014', username: 'tap_1014', nickname: '风筝线', avatar: DEMO_AVATAR, platform: 'TapTap', status: 'disabled', createdAt: '2026-09-15T11:43:00+08:00', lastActiveAt: '2026-09-15T15:37:00+08:00', sessions: 24, totalMatches: 6 },
-  { id: 'U1015', username: 'wx_1015', nickname: '纸飞机', avatar: DEMO_AVATAR, platform: '微信', status: 'active', createdAt: '2026-09-16T07:12:00+08:00', lastActiveAt: '2026-09-16T04:56:00+08:00', sessions: 19, totalMatches: 5 },
-  { id: 'U1016', username: 'tap_1016', nickname: '甜筒熊', avatar: DEMO_AVATAR, platform: 'TapTap', status: 'active', createdAt: '2026-09-16T07:46:00+08:00', lastActiveAt: '2026-09-16T04:31:00+08:00', sessions: 17, totalMatches: 4 },
-  { id: 'U1017', username: 'wx_1017', nickname: '海盐柠檬', avatar: DEMO_AVATAR, platform: '微信', status: 'disabled', createdAt: '2026-09-16T08:03:00+08:00', lastActiveAt: '2026-09-16T03:54:00+08:00', sessions: 12, totalMatches: 3 },
-  { id: 'U1018', username: 'tap_1018', nickname: '夏夜灯', avatar: DEMO_AVATAR, platform: 'TapTap', status: 'active', createdAt: '2026-09-16T08:47:00+08:00', lastActiveAt: '2026-09-16T03:20:00+08:00', sessions: 9, totalMatches: 2 }
-];
-
-function getChinaDate(iso) {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '';
-  const chinaDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
-  const month = String(chinaDate.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(chinaDate.getUTCDate()).padStart(2, '0');
-  return `${chinaDate.getUTCFullYear()}-${month}-${day}`;
-}
-
 function getStats(users) {
   const list = Array.isArray(users) ? users : [];
   return {
     total: list.length,
-    newToday: list.filter((user) => getChinaDate(user.createdAt) === '2026-09-16').length,
+    newToday: 0,
     active: list.filter((user) => user.status === 'active').length,
     disabled: list.filter((user) => user.status === 'disabled').length
   };
@@ -117,13 +52,8 @@ function formatDate(iso) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '--';
   return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
   }).format(date);
 }
 
@@ -133,43 +63,43 @@ function getInitials(nickname) {
   return text.length <= 2 ? text : `${text.slice(0, 1)}${text.slice(-1)}`;
 }
 
-function loadUsers() {
-  try {
-    const raw = typeof window !== 'undefined' && window.localStorage
-      ? window.localStorage.getItem(STORAGE_KEY)
-      : null;
-    return restoreUserState(raw, SEED_USERS);
-  } catch (error) {
-    return restoreUserState(null, SEED_USERS);
-  }
+function mapPlatform(platform) {
+  return { wechat: '微信', taptap: 'TapTap', password: '账号' }[platform] || '账号';
 }
 
-function saveUsers(users) {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(STORAGE_KEY, serializeUserState(users));
-    }
-  } catch (error) {
-    // Storage is optional for the demo; UI operations should still complete.
-  }
+function mapStatus(status) {
+  return Number(status) === 0 || status === 'disabled' ? 'disabled' : 'active';
+}
+
+function mapServerUser(raw) {
+  const user = raw || {};
+  return {
+    id: String(user.id || ''),
+    username: String(user.username || '--'),
+    nickname: String(user.nickname || '算术玩家'),
+    avatar: String(user.avatar || ''),
+    platform: mapPlatform(user.platform),
+    status: mapStatus(user.status),
+    createdAt: user.created_at || user.createdAt || '',
+    lastActiveAt: user.last_active_at || user.updated_at || user.updatedAt || '',
+    nicknameModerationStatus: user.nickname_moderation_status,
+    avatarModerationStatus: user.avatar_moderation_status
+  };
+}
+
+function moderationLabel(status) {
+  return {
+    approved: '已通过', passed: '已通过', pending: '审核中', rejected: '未通过',
+    unavailable: '暂不可用', unreviewed: '待审核'
+  }[String(status || '').toLowerCase()] || '未提供';
 }
 
 const state = {
-  users: loadUsers(), query: '', status: 'all', platform: 'all',
-  page: 1, pageSize: 6, selectedIds: new Set(), detailId: null,
-  pendingAction: null, drawerReturnFocus: null
+  api: null, users: [], stats: { total: 0, new_today: 0, active: 0, disabled: 0 },
+  query: '', status: 'all', platform: 'all', page: 1, pageSize: 20, total: 0,
+  selectedIds: new Set(), detailId: null, detailUser: null, pendingAction: null,
+  drawerReturnFocus: null, listRequest: 0
 };
-
-function getVisiblePage() {
-  const filteredUsers = filterUsers(state.users, {
-    query: state.query,
-    status: state.status,
-    platform: state.platform
-  });
-  const page = paginateUsers(filteredUsers, state.page, state.pageSize);
-  state.page = page.page;
-  return { ...page, filteredUsers };
-}
 
 function getElement(id) {
   return document.getElementById(id);
@@ -182,24 +112,26 @@ function createTextElement(tagName, className, text) {
   return element;
 }
 
+function getVisiblePage() {
+  const totalPages = Math.max(1, Math.ceil(state.total / state.pageSize));
+  return { page: state.page, pageSize: state.pageSize, total: state.total, totalPages, items: state.users };
+}
+
 function renderStats() {
   const container = getElement('statCards');
   if (!container) return;
-
-  const stats = getStats(state.users);
+  const stats = state.stats || {};
   const cards = [
-    ['用户总数', stats.total, '全部演示账号', ''],
-    ['今日新增', stats.newToday, '按中国时区统计', 'stat-card__trend--positive'],
-    ['活跃用户', stats.active, '当前正常状态', 'stat-card__trend--positive'],
-    ['已禁用用户', stats.disabled, '需要关注的账号', 'stat-card__trend--negative']
+    ['用户总数', stats.total || 0, '服务端统计', ''],
+    ['今日新增', stats.new_today || 0, '按服务端时区统计', 'stat-card__trend--positive'],
+    ['活跃用户', stats.active || 0, '当前正常状态', 'stat-card__trend--positive'],
+    ['已禁用用户', stats.disabled || 0, '需要关注的账号', 'stat-card__trend--negative']
   ];
   const fragment = document.createDocumentFragment();
   for (const [label, value, trend, trendClass] of cards) {
     const card = createTextElement('article', 'stat-card', '');
-    const heading = createTextElement('h2', '', label);
-    const count = createTextElement('strong', '', String(value));
-    const note = createTextElement('span', `stat-card__trend ${trendClass}`.trim(), trend);
-    card.append(heading, count, note);
+    card.append(createTextElement('h2', '', label), createTextElement('strong', '', String(value)),
+      createTextElement('span', `stat-card__trend ${trendClass}`.trim(), trend));
     fragment.append(card);
   }
   container.replaceChildren(fragment);
@@ -207,14 +139,30 @@ function renderStats() {
 
 function createStatusTag(status) {
   const label = status === 'disabled' ? '已禁用' : '正常';
-  const tag = createTextElement('span', `status-tag status-tag--${VALID_STATUSES.has(status) ? status : 'active'}`, label);
-  return tag;
+  return createTextElement('span', `status-tag status-tag--${VALID_STATUSES.has(status) ? status : 'active'}`, label);
 }
 
 function createPlatformChip(platform) {
   const platformClass = platform === '微信' ? 'wechat' : platform === 'TapTap' ? 'taptap' : '';
-  const className = platformClass ? `platform-chip platform-chip--${platformClass}` : 'platform-chip';
-  return createTextElement('span', className, platform);
+  return createTextElement('span', platformClass ? `platform-chip platform-chip--${platformClass}` : 'platform-chip', platform);
+}
+
+function createAvatar(user, large) {
+  const avatar = createTextElement('span', `avatar${large ? ' avatar--large' : ''}`, '');
+  const fallback = () => {
+    avatar.classList.add('avatar--fallback');
+    avatar.replaceChildren(createTextElement('span', 'avatar__initials', getInitials(user.nickname)));
+  };
+  if (!user.avatar) {
+    fallback();
+    return avatar;
+  }
+  const image = document.createElement('img');
+  image.src = user.avatar;
+  image.alt = `${user.nickname}头像`;
+  image.addEventListener('error', fallback, { once: true });
+  avatar.append(image);
+  return avatar;
 }
 
 function createUserCell(user, selected) {
@@ -226,23 +174,9 @@ function createUserCell(user, selected) {
   checkbox.dataset.action = 'select-user';
   checkbox.dataset.userId = user.id;
   checkbox.setAttribute('aria-label', `选择${user.nickname}`);
-  const avatar = createTextElement('span', 'avatar', '');
-  const image = document.createElement('img');
-  image.src = user.avatar;
-  image.alt = `${user.nickname}头像`;
-  image.addEventListener('error', () => {
-    avatar.classList.add('avatar--fallback');
-    image.remove();
-    avatar.textContent = getInitials(user.nickname);
-  }, { once: true });
-  avatar.append(image);
-
   const details = createTextElement('div', '', '');
-  details.append(
-    createTextElement('div', 'user-name', user.nickname),
-    createTextElement('div', 'user-meta', user.username)
-  );
-  wrapper.append(checkbox, avatar, details);
+  details.append(createTextElement('div', 'user-name', user.nickname), createTextElement('div', 'user-meta', user.username));
+  wrapper.append(checkbox, createAvatar(user, false), details);
   cell.append(wrapper);
   return cell;
 }
@@ -250,17 +184,13 @@ function createUserCell(user, selected) {
 function renderTable() {
   const body = getElement('userTableBody');
   if (!body) return;
-
   const view = getVisiblePage();
   const fragment = document.createDocumentFragment();
   if (!view.items.length) {
     const row = document.createElement('tr');
     const cell = createTextElement('td', 'empty-state', '');
     cell.colSpan = 6;
-    cell.append(
-      createTextElement('strong', '', '暂无匹配用户'),
-      createTextElement('p', '', '请调整搜索词或筛选条件后重试。')
-    );
+    cell.append(createTextElement('strong', '', '暂无匹配用户'), createTextElement('p', '', '请调整搜索词或筛选条件后重试。'));
     row.append(cell);
     fragment.append(row);
   } else {
@@ -270,33 +200,21 @@ function renderTable() {
       row.dataset.userId = user.id;
       row.className = selected ? 'is-selected' : '';
       row.setAttribute('aria-selected', String(selected));
-      row.append(
-        createUserCell(user, selected),
-        (() => {
-          const cell = createTextElement('td', '', '');
-          cell.append(createPlatformChip(user.platform));
-          return cell;
-        })(),
-        createTextElement('td', '', formatDate(user.createdAt)),
-        createTextElement('td', '', formatDate(user.lastActiveAt)),
-        (() => {
-          const cell = createTextElement('td', '', '');
-          cell.append(createStatusTag(user.status));
-          return cell;
-        })(),
-        (() => {
-          const cell = createTextElement('td', '', '');
-          const actions = createTextElement('div', 'row-actions', '');
-          const button = createTextElement('button', 'row-action', '查看详情');
-          button.type = 'button';
-          button.dataset.action = 'detail';
-          button.dataset.userId = user.id;
-          button.setAttribute('aria-label', `查看${user.nickname}详情`);
-          actions.append(button);
-          cell.append(actions);
-          return cell;
-        })()
-      );
+      const platform = createTextElement('td', '', '');
+      platform.append(createPlatformChip(user.platform));
+      const status = createTextElement('td', '', '');
+      status.append(createStatusTag(user.status));
+      const actions = createTextElement('div', 'row-actions', '');
+      const detail = createTextElement('button', 'row-action', '查看详情');
+      detail.type = 'button';
+      detail.dataset.action = 'detail';
+      detail.dataset.userId = user.id;
+      detail.setAttribute('aria-label', `查看${user.nickname}详情`);
+      actions.append(detail);
+      const actionCell = createTextElement('td', '', '');
+      actionCell.append(actions);
+      row.append(createUserCell(user, selected), platform, createTextElement('td', '', formatDate(user.createdAt)),
+        createTextElement('td', '', formatDate(user.lastActiveAt)), status, actionCell);
       fragment.append(row);
     }
   }
@@ -306,24 +224,18 @@ function renderTable() {
 function renderPagination() {
   const container = getElement('pagination');
   if (!container) return;
-
   const view = getVisiblePage();
-  const summary = createTextElement('p', 'pagination__summary',
-    `第 ${view.page} / ${view.totalPages} 页，共 ${view.total} 位用户`);
+  const summary = createTextElement('p', 'pagination__summary', `第 ${view.page} / ${view.totalPages} 页，共 ${view.total} 位用户`);
   const controls = createTextElement('div', 'pagination__controls', '');
-  const previous = createTextElement('button', '', '上一页');
-  previous.type = 'button';
-  previous.dataset.action = 'page';
-  previous.dataset.page = String(view.page - 1);
-  previous.disabled = view.page <= 1;
-  previous.setAttribute('aria-label', '上一页');
-  const next = createTextElement('button', '', '下一页');
-  next.type = 'button';
-  next.dataset.action = 'page';
-  next.dataset.page = String(view.page + 1);
-  next.disabled = view.page >= view.totalPages;
-  next.setAttribute('aria-label', '下一页');
-  controls.append(previous, next);
+  for (const [label, page, disabled] of [['上一页', view.page - 1, view.page <= 1], ['下一页', view.page + 1, view.page >= view.totalPages]]) {
+    const button = createTextElement('button', '', label);
+    button.type = 'button';
+    button.dataset.action = 'page';
+    button.dataset.page = String(page);
+    button.disabled = disabled;
+    button.setAttribute('aria-label', label);
+    controls.append(button);
+  }
   container.replaceChildren(summary, controls);
 }
 
@@ -331,12 +243,10 @@ function renderBulkBar() {
   const bar = getElement('batchActions');
   const count = getElement('selectedCount');
   if (!bar || !count) return;
-
   const existingIds = new Set(state.users.map((user) => user.id));
   state.selectedIds = new Set([...state.selectedIds].filter((id) => existingIds.has(id)));
-  const selectedCount = state.selectedIds.size;
-  bar.hidden = selectedCount === 0;
-  count.textContent = `已选择 ${selectedCount} 位用户`;
+  bar.hidden = state.selectedIds.size === 0;
+  count.textContent = `已选择 ${state.selectedIds.size} 位用户`;
 }
 
 function ensureDrawerAction(drawer) {
@@ -355,45 +265,28 @@ function ensureDrawerAction(drawer) {
   return button;
 }
 
-function renderDrawerAvatar(container, user) {
-  container.classList.remove('avatar--fallback');
-  const image = document.createElement('img');
-  image.src = user.avatar;
-  image.alt = `${user.nickname}头像`;
-  image.addEventListener('error', () => {
-    container.classList.add('avatar--fallback');
-    container.replaceChildren(createTextElement('span', 'avatar__initials', getInitials(user.nickname)));
-  }, { once: true });
-  container.replaceChildren(image);
-}
-
 function renderDrawer() {
   const drawer = getElement('detailDrawer');
   if (!drawer) return;
-  const user = state.users.find((item) => item.id === state.detailId);
-  if (!user) {
-    const wasOpen = state.detailId !== null;
-    state.detailId = null;
+  const user = state.detailUser || state.users.find((item) => item.id === state.detailId);
+  if (!user || state.detailId === null) {
     drawer.hidden = true;
     drawer.setAttribute('aria-hidden', 'true');
-    if (wasOpen) showToast('用户数据已更新，详情已关闭', 'warning');
     return;
   }
-
   drawer.hidden = false;
   drawer.setAttribute('aria-hidden', 'false');
   getElement('detailNickname').textContent = user.nickname;
   getElement('detailIdentitySummary').textContent = `${user.nickname} · ${user.platform}用户`;
   getElement('detailStatus').replaceChildren(createStatusTag(user.status));
-  renderDrawerAvatar(getElement('detailAvatar'), user);
+  getElement('detailAvatar').replaceChildren(createAvatar(user, true));
   getElement('detailUserId').textContent = user.id;
   getElement('detailUsername').textContent = user.username;
   getElement('detailPlatform').textContent = user.platform;
   getElement('detailCreatedAt').textContent = formatDate(user.createdAt);
   getElement('detailLastActiveAt').textContent = formatDate(user.lastActiveAt);
-  getElement('detailSessions').textContent = String(user.sessions);
-  getElement('detailTotalMatches').textContent = String(user.totalMatches);
-
+  getElement('detailNicknameModeration').textContent = moderationLabel(user.nicknameModerationStatus);
+  getElement('detailAvatarModeration').textContent = moderationLabel(user.avatarModerationStatus);
   const action = ensureDrawerAction(drawer);
   action.dataset.userId = user.id;
   action.textContent = user.status === 'disabled' ? '启用账号' : '禁用账号';
@@ -402,9 +295,7 @@ function renderDrawer() {
 
 function ensureSelectAllCheckbox() {
   const body = getElement('userTableBody');
-  const header = body && body.closest('table')
-    ? body.closest('table').querySelector('thead th:first-child')
-    : null;
+  const header = body && body.closest('table') ? body.closest('table').querySelector('thead th:first-child') : null;
   if (!header) return null;
   let checkbox = header.querySelector('[data-action="select-all"]');
   if (!checkbox) {
@@ -420,8 +311,7 @@ function ensureSelectAllCheckbox() {
 function syncSelectAll() {
   const checkbox = ensureSelectAllCheckbox();
   if (!checkbox) return;
-  const view = getVisiblePage();
-  const visibleIds = view.items.map((user) => user.id);
+  const visibleIds = state.users.map((user) => user.id);
   const selectedCount = visibleIds.filter((id) => state.selectedIds.has(id)).length;
   checkbox.checked = visibleIds.length > 0 && selectedCount === visibleIds.length;
   checkbox.indeterminate = selectedCount > 0 && selectedCount < visibleIds.length;
@@ -479,21 +369,120 @@ function openConfirmation(count) {
   }
 }
 
-function completeStatusChange(ids, status) {
+function closeDrawer() {
+  const returnFocus = state.drawerReturnFocus;
+  state.drawerReturnFocus = null;
+  state.detailId = null;
+  state.detailUser = null;
+  renderDrawer();
+  if (returnFocus && typeof returnFocus.focus === 'function') returnFocus.focus();
+}
+
+function showLogin() {
+  const gate = getElement('loginGate');
+  const app = getElement('app');
+  if (gate) gate.hidden = false;
+  if (app) app.setAttribute('aria-hidden', 'true');
+  getElement('loginPassword').value = '';
+  getElement('loginUsername').focus();
+}
+
+function showDashboard() {
+  const gate = getElement('loginGate');
+  const app = getElement('app');
+  if (gate) gate.hidden = true;
+  if (app) app.removeAttribute('aria-hidden');
+}
+
+function handleApiError(error) {
+  if (error && error.isAuthError) {
+    state.api.clearSession();
+    closeConfirmation();
+    closeDrawer();
+    showLogin();
+    showToast('登录已失效，请重新登录', 'warning');
+    return true;
+  }
+  showToast(error && error.message ? error.message : '请求失败，请稍后重试', 'error');
+  return false;
+}
+
+async function loadUsers() {
+  const request = ++state.listRequest;
+  try {
+    const data = await state.api.listUsers({
+      query: state.query, status: state.status, platform: state.platform,
+      page: state.page, pageSize: state.pageSize
+    });
+    if (request !== state.listRequest) return;
+    state.users = Array.isArray(data.items) ? data.items.map(mapServerUser) : [];
+    state.stats = data.stats || state.stats;
+    state.page = Number(data.page) || state.page;
+    state.pageSize = Number(data.page_size) || state.pageSize;
+    state.total = Number(data.total) || 0;
+    renderAll();
+  } catch (error) {
+    if (request === state.listRequest) handleApiError(error);
+  }
+}
+
+async function openDrawer(id) {
+  const listedUser = state.users.find((user) => user.id === id);
+  if (!listedUser) return;
+  state.drawerReturnFocus = document.activeElement && typeof document.activeElement.focus === 'function' ? document.activeElement : null;
+  state.detailId = id;
+  state.detailUser = listedUser;
+  renderDrawer();
+  const drawer = getElement('detailDrawer');
+  if (drawer && typeof drawer.focus === 'function') drawer.focus();
+  try {
+    const detail = await state.api.getUser(id);
+    if (state.detailId === id) {
+      state.detailUser = mapServerUser(detail);
+      renderDrawer();
+    }
+  } catch (error) {
+    handleApiError(error);
+  }
+}
+
+async function refreshOpenDetail() {
+  if (state.detailId === null) return;
+  try {
+    state.detailUser = mapServerUser(await state.api.getUser(state.detailId));
+    renderDrawer();
+  } catch (error) {
+    handleApiError(error);
+  }
+}
+
+async function completeStatusChange(ids, status) {
   const targetIds = getStatusChangeTargets(state.users, ids, status);
   closeConfirmation();
   if (!targetIds.length) {
     showToast(status === 'disabled' ? '所选用户中没有可禁用的活跃账号，无需重复操作' : '没有找到可操作的用户', 'warning');
     return;
   }
-
-  state.users = setUserStatus(state.users, targetIds, status);
-  saveUsers(state.users);
+  let completed = 0;
+  const failures = [];
+  for (const id of targetIds) {
+    try {
+      if (status === 'disabled') await state.api.disableUser(id);
+      else await state.api.enableUser(id);
+      completed += 1;
+    } catch (error) {
+      failures.push(error);
+      if (handleApiError(error)) return;
+    }
+  }
   state.selectedIds = new Set([...state.selectedIds].filter((id) => !targetIds.includes(id)));
-  renderAll();
-  showToast(status === 'disabled'
-    ? `已禁用 ${targetIds.length} 个账号`
-    : `已启用 ${targetIds.length} 个账号`, 'success');
+  await loadUsers();
+  await refreshOpenDetail();
+  if (failures.length) {
+    showToast(`已完成 ${completed} 个账号操作，${failures.length} 个未完成`, 'warning');
+  } else {
+    showToast(status === 'disabled' ? `已禁用 ${completed} 个账号` : `已启用 ${completed} 个账号`, 'success');
+  }
 }
 
 function requestStatusChange(ids, status) {
@@ -519,72 +508,53 @@ function confirmPendingAction() {
   completeStatusChange(action.ids, action.status);
 }
 
-function closeDrawer() {
-  const returnFocus = state.drawerReturnFocus;
-  state.drawerReturnFocus = null;
-  state.detailId = null;
-  renderDrawer();
-  if (returnFocus && typeof returnFocus.focus === 'function') returnFocus.focus();
-}
-
-function openDrawer(id) {
-  if (state.users.some((user) => user.id === id)) {
-    state.drawerReturnFocus = document.activeElement && typeof document.activeElement.focus === 'function'
-      ? document.activeElement
-      : null;
-    state.detailId = id;
-    renderDrawer();
-    const drawer = getElement('detailDrawer');
-    if (drawer && typeof drawer.focus === 'function') drawer.focus();
-  }
-}
-
 function bindEvents() {
   const search = getElement('searchInput');
   const statusFilter = getElement('statusFilter');
   const platformFilter = getElement('platformFilter');
   const filters = getElement('userFilters');
-  const table = getElement('userTableBody') && getElement('userTableBody').closest('table');
+  const table = getElement('userTableBody').closest('table');
   const pagination = getElement('pagination');
   const drawer = getElement('detailDrawer');
   const dialog = getElement('confirmDialog');
+  const loginForm = getElement('loginForm');
 
-  search.addEventListener('input', () => {
+  const applyFilters = () => {
     state.query = search.value;
-    state.page = 1;
-    renderAll();
-  });
-  statusFilter.addEventListener('change', () => {
     state.status = statusFilter.value;
-    state.page = 1;
-    renderAll();
-  });
-  platformFilter.addEventListener('change', () => {
     state.platform = platformFilter.value;
     state.page = 1;
-    renderAll();
-  });
-  filters.addEventListener('submit', (event) => {
+    state.selectedIds.clear();
+    loadUsers();
+  };
+  search.addEventListener('input', applyFilters);
+  statusFilter.addEventListener('change', applyFilters);
+  platformFilter.addEventListener('change', applyFilters);
+  filters.addEventListener('submit', (event) => { event.preventDefault(); applyFilters(); });
+  loginForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    state.query = search.value;
-    state.status = statusFilter.value;
-    state.platform = platformFilter.value;
-    state.page = 1;
-    renderAll();
+    const button = getElement('loginSubmitButton');
+    button.disabled = true;
+    try {
+      await state.api.login(getElement('loginUsername').value, getElement('loginPassword').value);
+      showDashboard();
+      state.page = 1;
+      await loadUsers();
+    } catch (error) {
+      handleApiError(error);
+    } finally {
+      button.disabled = false;
+    }
   });
-
   table.addEventListener('change', (event) => {
     const target = event.target;
     if (!target || !target.matches('input[type="checkbox"]')) return;
-    const view = getVisiblePage();
     if (target.dataset.action === 'select-all') {
-      for (const user of view.items) {
+      for (const user of state.users) {
         if (target.checked) state.selectedIds.add(user.id);
         else state.selectedIds.delete(user.id);
       }
-      renderTable();
-      renderBulkBar();
-      syncSelectAll();
+      renderTable(); renderBulkBar(); syncSelectAll();
       return;
     }
     if (target.dataset.action === 'select-user') {
@@ -595,106 +565,75 @@ function bindEvents() {
         row.classList.toggle('is-selected', target.checked);
         row.setAttribute('aria-selected', String(target.checked));
       }
-      renderBulkBar();
-      syncSelectAll();
+      renderBulkBar(); syncSelectAll();
     }
   });
   table.addEventListener('click', (event) => {
     const target = event.target;
     const button = target.closest('button[data-action="detail"]');
-    if (button) {
-      openDrawer(button.dataset.userId);
-      return;
-    }
+    if (button) return openDrawer(button.dataset.userId);
     if (target.closest('input, button, a')) return;
     const row = target.closest('tr[data-user-id]');
     if (row) openDrawer(row.dataset.userId);
   });
-
   pagination.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-action="page"]');
     if (!button || button.disabled) return;
     state.page = Number(button.dataset.page) || 1;
-    renderAll();
+    loadUsers();
   });
-
-  getElement('refreshButton').addEventListener('click', () => {
-    state.users = loadUsers();
-    state.selectedIds.clear();
-    state.page = 1;
-    renderAll();
-    showToast('用户数据已刷新', 'success');
-  });
+  getElement('refreshButton').addEventListener('click', () => { state.selectedIds.clear(); loadUsers(); });
   getElement('batchDisableButton').addEventListener('click', () => {
-    if (!state.selectedIds.size) {
-      showToast('请先选择要禁用的用户', 'warning');
-      return;
-    }
+    if (!state.selectedIds.size) return showToast('请先选择要禁用的用户', 'warning');
     requestStatusChange([...state.selectedIds], 'disabled');
   });
   getElement('closeDetailButton').addEventListener('click', closeDrawer);
   drawer.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-action="detail-status"]');
     if (!button) return;
-    const user = state.users.find((item) => item.id === button.dataset.userId);
+    const user = state.detailUser || state.users.find((item) => item.id === button.dataset.userId);
     if (user) requestStatusChange([user.id], user.status === 'disabled' ? 'active' : 'disabled');
   });
-
-  const dialogForm = dialog.querySelector('form');
-  dialogForm.addEventListener('submit', (event) => {
+  dialog.querySelector('form').addEventListener('submit', (event) => {
     event.preventDefault();
     if (event.submitter && event.submitter.value === 'confirm') confirmPendingAction();
     else closeConfirmation();
   });
-  dialog.addEventListener('cancel', (event) => {
-    event.preventDefault();
-    closeConfirmation();
-  });
-  dialog.addEventListener('click', (event) => {
-    if (event.target === dialog) closeConfirmation();
-  });
+  dialog.addEventListener('cancel', (event) => { event.preventDefault(); closeConfirmation(); });
+  dialog.addEventListener('click', (event) => { if (event.target === dialog) closeConfirmation(); });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
-    if (isDialogOpen(dialog)) {
-      event.preventDefault();
-      closeConfirmation();
-    } else if (state.detailId !== null) {
-      event.preventDefault();
-      closeDrawer();
-    }
+    if (isDialogOpen(dialog)) { event.preventDefault(); closeConfirmation(); }
+    else if (state.detailId !== null) { event.preventDefault(); closeDrawer(); }
   });
 }
 
-function boot() {
+async function boot() {
   if (document.documentElement.dataset.adminBooted === 'true') return;
   document.documentElement.dataset.adminBooted = 'true';
   const dialog = getElement('confirmDialog');
   if (dialog && typeof dialog.showModal !== 'function') dialog.hidden = true;
+  state.api = window.AdminApi.createAdminApi({ baseUrl: window.ADMIN_API_BASE_URL || '/api/v1/admin' });
   ensureSelectAllCheckbox();
   bindEvents();
-  renderAll();
+  if (state.api.hasAccessToken()) {
+    showDashboard();
+    await loadUsers();
+    return;
+  }
+  try {
+    await state.api.refresh();
+    showDashboard();
+    await loadUsers();
+  } catch (error) {
+    showLogin();
+  }
 }
 
-const AdminCore = {
-  STORAGE_KEY,
-  SEED_USERS,
-  filterUsers,
-  paginateUsers,
-  setUserStatus,
-  getStatusChangeTargets,
-  serializeUserState,
-  restoreUserState,
-  getStats,
-  formatDate,
-  getInitials
-};
+const AdminCore = { filterUsers, paginateUsers, setUserStatus, getStatusChangeTargets, getStats, formatDate, getInitials, mapServerUser, moderationLabel };
 if (typeof module !== 'undefined' && module.exports) module.exports = AdminCore;
 if (typeof window !== 'undefined') window.AdminCore = AdminCore;
-
 if (typeof document !== 'undefined') {
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot, { once: true });
-  } else {
-    boot();
-  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true });
+  else boot();
 }
