@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   filterUsers,
   paginateUsers,
@@ -8,6 +10,14 @@ const {
   STORAGE_KEY,
   SEED_USERS
 } = require('../app');
+
+const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+for (const id of ['app', 'sidebar', 'statCards', 'searchInput', 'statusFilter', 'platformFilter',
+  'userTableBody', 'pagination', 'detailDrawer', 'confirmDialog', 'toastRegion']) {
+  assert.match(html, new RegExp(`id=["']${id}["']`));
+}
+assert.match(html, /app\.js/);
+assert.match(html, /styles\.css/);
 
 const users = [
   { id: 'U1001', username: 'wx_1001', nickname: '晴天小猫', platform: '微信', status: 'active' },

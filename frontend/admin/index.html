@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>用户管理 - 三火小游戏管理后台</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div id="app" class="admin-app">
+      <aside id="sidebar" class="sidebar" aria-label="后台导航">
+        <div class="brand">
+          <a href="#app" class="brand__name">三火小游戏</a>
+          <span class="brand__label">管理后台</span>
+        </div>
+
+        <nav aria-label="主导航">
+          <ul class="nav-list">
+            <li><button type="button" disabled>概览</button></li>
+            <li>
+              <a href="#user-management" aria-current="page">用户管理</a>
+            </li>
+            <li><button type="button" disabled>内容审核</button></li>
+            <li><button type="button" disabled>运营设置</button></li>
+          </ul>
+        </nav>
+      </aside>
+
+      <main id="user-management" class="main-content">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">用户中心</p>
+            <h1>用户管理</h1>
+            <p>管理小程序用户资料与账号状态</p>
+          </div>
+          <button type="button" id="refreshButton">刷新</button>
+        </header>
+
+        <section id="statCards" class="stat-cards" aria-label="用户数据概览">
+          <article class="stat-card">
+            <h2>用户总数</h2>
+            <strong>--</strong>
+          </article>
+          <article class="stat-card">
+            <h2>今日新增</h2>
+            <strong>--</strong>
+          </article>
+          <article class="stat-card">
+            <h2>活跃用户</h2>
+            <strong>--</strong>
+          </article>
+          <article class="stat-card">
+            <h2>已禁用用户</h2>
+            <strong>--</strong>
+          </article>
+        </section>
+
+        <section class="user-list" aria-labelledby="user-list-title">
+          <div class="section-heading">
+            <div>
+              <h2 id="user-list-title">用户列表</h2>
+              <p>搜索、筛选并管理小程序用户。</p>
+            </div>
+          </div>
+
+          <form id="userFilters" class="filter-bar" role="search">
+            <div class="field-group">
+              <label for="searchInput">搜索用户</label>
+              <input id="searchInput" name="query" type="search" placeholder="昵称、用户名或用户 ID" autocomplete="off">
+            </div>
+            <div class="field-group">
+              <label for="statusFilter">账号状态</label>
+              <select id="statusFilter" name="status">
+                <option value="all">全部状态</option>
+                <option value="active">正常</option>
+                <option value="disabled">已禁用</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label for="platformFilter">注册平台</label>
+              <select id="platformFilter" name="platform">
+                <option value="all">全部平台</option>
+                <option value="微信">微信</option>
+                <option value="TapTap">TapTap</option>
+              </select>
+            </div>
+            <button type="submit">应用筛选</button>
+          </form>
+
+          <section id="batchActions" class="batch-actions" aria-label="批量操作" hidden>
+            <span id="selectedCount">已选择 0 位用户</span>
+            <button type="button" id="batchDisableButton">批量禁用</button>
+          </section>
+
+          <div class="table-scroll" tabindex="0" aria-label="用户列表横向滚动区域">
+            <table>
+              <caption class="sr-only">小程序用户列表</caption>
+              <thead>
+                <tr>
+                  <th scope="col">用户</th>
+                  <th scope="col">平台</th>
+                  <th scope="col">注册时间</th>
+                  <th scope="col">最近活跃</th>
+                  <th scope="col">状态</th>
+                  <th scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody id="userTableBody"></tbody>
+            </table>
+          </div>
+
+          <nav id="pagination" aria-label="用户列表分页"></nav>
+        </section>
+      </main>
+
+      <aside id="detailDrawer" aria-labelledby="detailDrawerTitle" aria-hidden="true" hidden>
+        <div class="drawer-header">
+          <h2 id="detailDrawerTitle">用户详情</h2>
+          <button type="button" id="closeDetailButton" aria-label="关闭用户详情">关闭</button>
+        </div>
+        <div class="drawer-content">
+          <dl>
+            <div><dt>用户 ID</dt><dd id="detailUserId">--</dd></div>
+            <div><dt>用户名</dt><dd id="detailUsername">--</dd></div>
+            <div><dt>注册来源</dt><dd id="detailPlatform">--</dd></div>
+            <div><dt>注册时间</dt><dd id="detailCreatedAt">--</dd></div>
+            <div><dt>最近活跃</dt><dd id="detailLastActiveAt">--</dd></div>
+            <div><dt>活跃场次</dt><dd id="detailSessions">--</dd></div>
+            <div><dt>总对局数</dt><dd id="detailTotalMatches">--</dd></div>
+          </dl>
+        </div>
+      </aside>
+
+      <dialog id="confirmDialog" aria-labelledby="confirmDialogTitle">
+        <form method="dialog">
+          <h2 id="confirmDialogTitle">确认操作</h2>
+          <p id="confirmDialogMessage">确定要禁用选中的用户吗？</p>
+          <div class="dialog-actions">
+            <button type="submit" value="cancel">取消</button>
+            <button type="submit" value="confirm" id="confirmActionButton">确认禁用</button>
+          </div>
+        </form>
+      </dialog>
+
+      <div id="toastRegion" role="status" aria-live="polite" aria-atomic="true"></div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
