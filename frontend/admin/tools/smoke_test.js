@@ -10,6 +10,7 @@ const {
   getStats,
   formatDate,
   getInitials,
+  getStatusChangeTargets,
   STORAGE_KEY,
   SEED_USERS
 } = require('../app');
@@ -22,6 +23,53 @@ for (const id of ['app', 'sidebar', 'statCards', 'searchInput', 'statusFilter', 
 }
 assert.match(html, /app\.js/);
 assert.match(html, /styles\.css/);
+assert.match(html, /<title>三火算术 · 运营后台<\/title>/);
+assert.match(html, /class=["']brand__name["'][^>]*>三火算术 · 运营后台<\/a>/);
+for (const id of ['detailNickname', 'detailAvatar', 'detailStatus']) {
+  assert.match(html, new RegExp(`id=["']${id}["']`));
+}
+assert.match(html, /id=["']detailDrawer["'][^>]*aria-describedby=["']detailIdentitySummary["']/);
+
+assert.equal(typeof getStatusChangeTargets, 'function');
+const batchUsers = [
+  { id: 'U2001', status: 'active' },
+  { id: 'U2002', status: 'disabled' },
+  { id: 'U2003', status: 'active' }
+];
+assert.deepEqual(
+  getStatusChangeTargets(batchUsers, ['U2002', 'U2001', 'U2001', 'UNKNOWN'], 'disabled'),
+  ['U2001']
+);
+assert.deepEqual(getStatusChangeTargets(batchUsers, ['U2002'], 'disabled'), []);
+assert.deepEqual(getStatusChangeTargets(batchUsers, ['U2002'], 'active'), ['U2002']);
+assert.deepEqual(
+  setUserStatus(batchUsers, getStatusChangeTargets(batchUsers, ['U2001', 'U2002'], 'disabled'), 'disabled')
+    .map((user) => user.status),
+  ['disabled', 'disabled', 'active']
+);
+
+const drawerSource = appSource.slice(
+  appSource.indexOf('function renderDrawer'),
+  appSource.indexOf('function ensureSelectAllCheckbox')
+);
+assert.match(drawerSource, /detailNickname[^\n]*\.textContent = user\.nickname/);
+assert.match(drawerSource, /detailStatus[^\n]*\.replaceChildren\(createStatusTag\(user\.status\)\)/);
+assert.match(drawerSource, /detailAvatar/);
+assert.match(drawerSource, /replaceChildren/);
+assert.doesNotMatch(drawerSource, /innerHTML/);
+
+const statusRequestSource = appSource.slice(
+  appSource.indexOf('function requestStatusChange'),
+  appSource.indexOf('function confirmPendingAction')
+);
+assert.match(statusRequestSource, /getStatusChangeTargets\(state\.users, ids, status\)/);
+assert.match(statusRequestSource, /所选用户中没有可禁用的活跃账号，无需重复操作/);
+assert.match(statusRequestSource, /return;\s*}\s*if \(status === 'disabled'\)/);
+const completeStatusChangeSource = appSource.slice(
+  appSource.indexOf('function completeStatusChange'),
+  appSource.indexOf('function requestStatusChange')
+);
+assert.match(completeStatusChangeSource, /`已禁用 \$\{targetIds\.length\} 个账号`/);
 
 const closeConfirmationSource = appSource.slice(
   appSource.indexOf('function closeConfirmation'),
@@ -48,6 +96,7 @@ assert.equal(getInitials('晴天小猫'), '晴猫');
 assert.match(formatDate('2026-09-16T09:18:00+08:00'), /2026/);
 
 assert.equal(filterUsers(users, { query: '晴天', status: 'all', platform: 'all' }).length, 1);
+assert.equal(filterUsers(users, { query: 'tap_1002', status: 'all', platform: 'all' })[0].id, 'U1002');
 assert.equal(filterUsers(users, { query: 'U1002', status: 'all', platform: 'all' })[0].id, 'U1002');
 assert.equal(filterUsers(users, { query: '', status: 'active', platform: '微信' }).length, 2);
 assert.equal(filterUsers(users, { query: '不存在', status: 'all', platform: 'all' }).length, 0);

@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>用户管理 - 三火小游戏管理后台</title>
+    <title>三火算术 · 运营后台</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <div id="app" class="admin-app">
       <aside id="sidebar" class="sidebar" aria-label="后台导航">
         <div class="brand">
-          <a href="#app" class="brand__name">三火小游戏</a>
+          <a href="#app" class="brand__name">三火算术 · 运营后台</a>
           <span class="brand__label">管理后台</span>
         </div>
 
@@ -113,12 +113,21 @@
         </section>
       </main>
 
-      <aside id="detailDrawer" aria-labelledby="detailDrawerTitle" aria-hidden="true" hidden>
+      <aside id="detailDrawer" aria-labelledby="detailDrawerTitle" aria-describedby="detailIdentitySummary"
+        aria-hidden="true" tabindex="-1" hidden>
         <div class="drawer-header">
           <h2 id="detailDrawerTitle">用户详情</h2>
           <button type="button" id="closeDetailButton" aria-label="关闭用户详情">关闭</button>
         </div>
         <div class="drawer-content">
+          <section class="drawer-identity" aria-labelledby="detailNickname">
+            <div id="detailAvatar" class="avatar avatar--large" aria-hidden="true"></div>
+            <div class="drawer-identity__text">
+              <h3 id="detailNickname">--</h3>
+              <p id="detailIdentitySummary">--</p>
+              <div id="detailStatus" aria-label="账号状态"></div>
+            </div>
+          </section>
           <dl>
             <div><dt>用户 ID</dt><dd id="detailUserId">--</dd></div>
             <div><dt>用户名</dt><dd id="detailUsername">--</dd></div>

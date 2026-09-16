@@ -27,6 +27,17 @@ function setUserStatus(users, ids, status) {
     : { ...user });
 }
 
+function getStatusChangeTargets(users, ids, status) {
+  if (!VALID_STATUSES.has(status)) return [];
+  const selected = new Set(Array.isArray(ids) ? ids : []);
+  const usersById = new Map(users.map((user) => [user.id, user]));
+  return [...selected].filter((id) => {
+    const user = usersById.get(id);
+    return Boolean(user && user.status !== status
+      && (status !== 'disabled' || user.status === 'active'));
+  });
+}
+
 function serializeUserState(users) {
   return JSON.stringify(users
     .filter((user) => VALID_STATUSES.has(user.status))
@@ -146,7 +157,7 @@ function saveUsers(users) {
 const state = {
   users: loadUsers(), query: '', status: 'all', platform: 'all',
   page: 1, pageSize: 6, selectedIds: new Set(), detailId: null,
-  pendingAction: null
+  pendingAction: null, drawerReturnFocus: null
 };
 
 function getVisiblePage() {
@@ -344,6 +355,18 @@ function ensureDrawerAction(drawer) {
   return button;
 }
 
+function renderDrawerAvatar(container, user) {
+  container.classList.remove('avatar--fallback');
+  const image = document.createElement('img');
+  image.src = user.avatar;
+  image.alt = `${user.nickname}头像`;
+  image.addEventListener('error', () => {
+    container.classList.add('avatar--fallback');
+    container.replaceChildren(createTextElement('span', 'avatar__initials', getInitials(user.nickname)));
+  }, { once: true });
+  container.replaceChildren(image);
+}
+
 function renderDrawer() {
   const drawer = getElement('detailDrawer');
   if (!drawer) return;
@@ -359,6 +382,10 @@ function renderDrawer() {
 
   drawer.hidden = false;
   drawer.setAttribute('aria-hidden', 'false');
+  getElement('detailNickname').textContent = user.nickname;
+  getElement('detailIdentitySummary').textContent = `${user.nickname} · ${user.platform}用户`;
+  getElement('detailStatus').replaceChildren(createStatusTag(user.status));
+  renderDrawerAvatar(getElement('detailAvatar'), user);
   getElement('detailUserId').textContent = user.id;
   getElement('detailUsername').textContent = user.username;
   getElement('detailPlatform').textContent = user.platform;
@@ -453,34 +480,34 @@ function openConfirmation(count) {
 }
 
 function completeStatusChange(ids, status) {
-  const existingIds = [...new Set(ids)].filter((id) => state.users.some((user) => user.id === id));
+  const targetIds = getStatusChangeTargets(state.users, ids, status);
   closeConfirmation();
-  if (!existingIds.length) {
-    showToast('没有找到可操作的用户', 'warning');
+  if (!targetIds.length) {
+    showToast(status === 'disabled' ? '所选用户中没有可禁用的活跃账号，无需重复操作' : '没有找到可操作的用户', 'warning');
     return;
   }
 
-  state.users = setUserStatus(state.users, existingIds, status);
+  state.users = setUserStatus(state.users, targetIds, status);
   saveUsers(state.users);
-  state.selectedIds = new Set([...state.selectedIds].filter((id) => !existingIds.includes(id)));
+  state.selectedIds = new Set([...state.selectedIds].filter((id) => !targetIds.includes(id)));
   renderAll();
   showToast(status === 'disabled'
-    ? `已禁用 ${existingIds.length} 个账号`
-    : `已启用 ${existingIds.length} 个账号`, 'success');
+    ? `已禁用 ${targetIds.length} 个账号`
+    : `已启用 ${targetIds.length} 个账号`, 'success');
 }
 
 function requestStatusChange(ids, status) {
-  const existingIds = [...new Set(ids)].filter((id) => state.users.some((user) => user.id === id));
-  if (!existingIds.length) {
-    showToast('没有选择可操作的用户', 'warning');
+  const targetIds = getStatusChangeTargets(state.users, ids, status);
+  if (!targetIds.length) {
+    showToast(status === 'disabled' ? '所选用户中没有可禁用的活跃账号，无需重复操作' : '没有选择可操作的用户', 'warning');
     return;
   }
   if (status === 'disabled') {
-    state.pendingAction = { ids: existingIds, status };
-    openConfirmation(existingIds.length);
+    state.pendingAction = { ids: targetIds, status };
+    openConfirmation(targetIds.length);
     return;
   }
-  completeStatusChange(existingIds, status);
+  completeStatusChange(targetIds, status);
 }
 
 function confirmPendingAction() {
@@ -493,14 +520,22 @@ function confirmPendingAction() {
 }
 
 function closeDrawer() {
+  const returnFocus = state.drawerReturnFocus;
+  state.drawerReturnFocus = null;
   state.detailId = null;
   renderDrawer();
+  if (returnFocus && typeof returnFocus.focus === 'function') returnFocus.focus();
 }
 
 function openDrawer(id) {
   if (state.users.some((user) => user.id === id)) {
+    state.drawerReturnFocus = document.activeElement && typeof document.activeElement.focus === 'function'
+      ? document.activeElement
+      : null;
     state.detailId = id;
     renderDrawer();
+    const drawer = getElement('detailDrawer');
+    if (drawer && typeof drawer.focus === 'function') drawer.focus();
   }
 }
 
@@ -646,6 +681,7 @@ const AdminCore = {
   filterUsers,
   paginateUsers,
   setUserStatus,
+  getStatusChangeTargets,
   serializeUserState,
   restoreUserState,
   getStats,

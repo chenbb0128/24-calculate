@@ -798,6 +798,42 @@ input[type="checkbox"] {
   padding: 24px;
 }
 
+.drawer-identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 22px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.drawer-identity .avatar {
+  flex-basis: 64px;
+  width: 64px;
+  height: 64px;
+  font-size: 18px;
+}
+
+.drawer-identity__text {
+  min-width: 0;
+}
+
+.drawer-identity__text h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 19px;
+}
+
+.drawer-identity__text p {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#detailStatus {
+  display: inline-flex;
+}
+
 .drawer-content dl {
   margin: 0;
 }
