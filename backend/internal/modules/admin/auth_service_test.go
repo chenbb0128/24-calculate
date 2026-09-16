@@ -2,7 +2,9 @@ package admin
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
@@ -16,9 +18,10 @@ import (
 )
 
 func TestAdminAuthLoginIssuesAdminTokens(t *testing.T) {
-	service, manager, tokens := newAdminAuthService(t, activeAdmin(t, 7, "correct-password"))
+	password := generatedPassword(t)
+	service, manager, tokens := newAdminAuthService(t, activeAdmin(t, 7, password))
 
-	result, err := service.Login(context.Background(), LoginInput{Username: " admin ", Password: "correct-password"}, "127.0.0.1")
+	result, err := service.Login(context.Background(), LoginInput{Username: " admin ", Password: password}, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
@@ -32,9 +35,10 @@ func TestAdminAuthLoginIssuesAdminTokens(t *testing.T) {
 }
 
 func TestAdminAuthLoginUsesGenericInvalidCredentials(t *testing.T) {
-	service, _, _ := newAdminAuthService(t, activeAdmin(t, 7, "correct-password"))
-	wrongPasswordErr := loginAdmin(t, service, "admin", "wrong-password")
-	missingUsernameErr := loginAdmin(t, service, "missing", "correct-password")
+	password := generatedPassword(t)
+	service, _, _ := newAdminAuthService(t, activeAdmin(t, 7, password))
+	wrongPasswordErr := loginAdmin(t, service, "admin", generatedPassword(t))
+	missingUsernameErr := loginAdmin(t, service, "missing", password)
 
 	if wrongPasswordErr == nil || missingUsernameErr == nil || wrongPasswordErr.Error() != missingUsernameErr.Error() {
 		t.Fatalf("credential errors must use the same generic message")
@@ -42,10 +46,11 @@ func TestAdminAuthLoginUsesGenericInvalidCredentials(t *testing.T) {
 }
 
 func TestAdminAuthRejectsDisabledAdminOnLoginAndRefresh(t *testing.T) {
-	disabled := activeAdmin(t, 7, "correct-password")
+	password := generatedPassword(t)
+	disabled := activeAdmin(t, 7, password)
 	disabled.Status = 0
 	service, manager, tokens := newAdminAuthService(t, disabled)
-	if err := loginAdmin(t, service, "admin", "correct-password"); err == nil {
+	if err := loginAdmin(t, service, "admin", password); err == nil {
 		t.Fatal("Login() error = nil for disabled admin")
 	}
 	refreshToken, refreshClaims, err := manager.IssueRefreshTokenWithRole(disabled.ID, jwtplatform.RoleAdmin)
@@ -59,7 +64,7 @@ func TestAdminAuthRejectsDisabledAdminOnLoginAndRefresh(t *testing.T) {
 }
 
 func TestAdminAuthRefreshConsumesTokenAndRequiresMatchingID(t *testing.T) {
-	service, manager, tokens := newAdminAuthService(t, activeAdmin(t, 7, "correct-password"))
+	service, manager, tokens := newAdminAuthService(t, activeAdmin(t, 7, generatedPassword(t)))
 	refreshToken, claims, err := manager.IssueRefreshTokenWithRole(7, jwtplatform.RoleAdmin)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +88,7 @@ func TestAdminAuthRefreshConsumesTokenAndRequiresMatchingID(t *testing.T) {
 }
 
 func TestAdminAuthLogoutRevokesRefreshJTI(t *testing.T) {
-	service, manager, tokens := newAdminAuthService(t, activeAdmin(t, 7, "correct-password"))
+	service, manager, tokens := newAdminAuthService(t, activeAdmin(t, 7, generatedPassword(t)))
 	refreshToken, claims, err := manager.IssueRefreshTokenWithRole(7, jwtplatform.RoleAdmin)
 	if err != nil {
 		t.Fatal(err)
@@ -93,6 +98,25 @@ func TestAdminAuthLogoutRevokesRefreshJTI(t *testing.T) {
 	}
 	if tokens.revokedJTI != claims.ID {
 		t.Fatal("Logout() did not revoke the submitted refresh token JTI")
+	}
+}
+
+func TestAdminAuthRejectsUserRoleRefreshAndLogout(t *testing.T) {
+	service, manager, tokens := newAdminAuthService(t, activeAdmin(t, 7, generatedPassword(t)))
+	refreshToken, claims, err := manager.IssueRefreshToken(7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens.refreshes[claims.ID] = 7
+
+	if _, err := service.Refresh(context.Background(), auth.RefreshInput{RefreshToken: refreshToken}); err == nil {
+		t.Fatal("Refresh() error = nil for a user-role token")
+	}
+	if err := service.Logout(context.Background(), auth.LogoutInput{RefreshToken: refreshToken}); err == nil {
+		t.Fatal("Logout() error = nil for a user-role token")
+	}
+	if tokens.revokedJTI != "" {
+		t.Fatal("Logout() revoked a user-role token")
 	}
 }
 
@@ -113,14 +137,27 @@ func activeAdmin(t *testing.T, id uint64, password string) db.AdminAccount {
 
 func newAdminAuthService(t *testing.T, account db.AdminAccount) (*AdminAuthService, *jwtplatform.Manager, *fakeAdminAuthTokenStore) {
 	t.Helper()
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatal(err)
+	}
 	manager, err := jwtplatform.NewManager(config.JWTConfig{
-		Secret: "01234567890123456789012345678901", Algorithm: "HS256", Issuer: "go-service", AccessTTL: time.Minute, RefreshTTL: time.Hour,
+		Secret: string(secret), Algorithm: "HS256", Issuer: "go-service", AccessTTL: time.Minute, RefreshTTL: time.Hour,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	tokens := &fakeAdminAuthTokenStore{refreshes: make(map[string]uint64)}
 	return NewAdminAuthService(&fakeAdminAuthStore{account: account}, tokens, manager, time.Minute, time.Hour), manager, tokens
+}
+
+func generatedPassword(t *testing.T) string {
+	t.Helper()
+	fixture := make([]byte, 18)
+	if _, err := rand.Read(fixture); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(fixture)
 }
 
 type fakeAdminAuthStore struct{ account db.AdminAccount }
