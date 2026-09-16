@@ -54,6 +54,14 @@ cd D:\微信小游戏\backend
 
 如果出现 `Error 1045 (28000): Access denied`，说明 MySQL 用户名或密码不正确，需要先确认本机 MySQL 的 root 密码。
 
+创建管理员账号（密码只通过环境变量传入，不写入迁移、代码或日志）：
+
+```powershell
+$env:GO_SERVICE_ADMIN_USERNAME = "admin"
+$env:GO_SERVICE_ADMIN_PASSWORD = "replace-with-a-strong-password"
+D:/bin/go.exe run ./cmd/admin-seed
+```
+
 ## 主要接口
 
 - `POST /api/v1/auth/wechat-login`、`POST /api/v1/auth/taptap-login`、`POST /api/v1/auth/refresh`

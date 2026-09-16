@@ -10,32 +10,36 @@ import (
 )
 
 type Querier interface {
-	GetLeaderboardSubmissionByKey(ctx context.Context, arg GetLeaderboardSubmissionByKeyParams) (PlayerLeaderboardSubmission, error)
+	CreateAdminAccount(ctx context.Context, arg CreateAdminAccountParams) (sql.Result, error)
 	CreateLeaderboardSubmission(ctx context.Context, arg CreateLeaderboardSubmissionParams) error
-	ListEndlessLeaderboard(ctx context.Context) ([]LeaderboardScoreRow, error)
-	ListFriendLeaderboard(ctx context.Context) ([]LeaderboardScoreRow, error)
-	ListFriendUserIDs(ctx context.Context, userID uint64) ([]uint64, error)
-	ListCampaignLeaderboard(ctx context.Context) ([]CampaignLeaderboardRow, error)
-	ListDailyLeaderboard(ctx context.Context, arg ListDailyLeaderboardParams) ([]DailyLeaderboardRow, error)
+	CreatePlayerDailyCompletion(ctx context.Context, arg CreatePlayerDailyCompletionParams) error
+	CreatePlayerLevelCompletion(ctx context.Context, arg CreatePlayerLevelCompletionParams) error
+	CreatePlayerProfile(ctx context.Context, arg CreatePlayerProfileParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) (sql.Result, error)
 	CreateUserIdentity(ctx context.Context, arg CreateUserIdentityParams) error
-	CreatePlayerProfile(ctx context.Context, arg CreatePlayerProfileParams) error
-	CreatePlayerLevelCompletion(ctx context.Context, arg CreatePlayerLevelCompletionParams) error
-	CreatePlayerDailyCompletion(ctx context.Context, arg CreatePlayerDailyCompletionParams) error
 	DisableUser(ctx context.Context, arg DisableUserParams) error
 	EnsurePlayerProfile(ctx context.Context, arg EnsurePlayerProfileParams) error
-	GetPlayerLevelCompletionByKey(ctx context.Context, arg GetPlayerLevelCompletionByKeyParams) (PlayerLevelCompletion, error)
+	GetAdminAccountByID(ctx context.Context, id uint64) (AdminAccount, error)
+	GetAdminAccountByUsername(ctx context.Context, username string) (AdminAccount, error)
+	GetLeaderboardSubmissionByKey(ctx context.Context, arg GetLeaderboardSubmissionByKeyParams) (PlayerLeaderboardSubmission, error)
 	GetPlayerDailyCompletionByDate(ctx context.Context, arg GetPlayerDailyCompletionByDateParams) (PlayerDailyCompletion, error)
-	GetPlayerProfileForUpdate(ctx context.Context, userID uint64) (PlayerProfile, error)
+	GetPlayerLevelCompletionByKey(ctx context.Context, arg GetPlayerLevelCompletionByKeyParams) (PlayerLevelCompletion, error)
 	GetPlayerProfile(ctx context.Context, userID uint64) (PlayerProfile, error)
-	GetUserByID(ctx context.Context, id uint64) (User, error)
-	GetUserByProviderSubject(ctx context.Context, arg GetUserByProviderSubjectParams) (User, error)
-	GetUserByUsername(ctx context.Context, username string) (User, error)
-	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
-	ListUsersForModeration(ctx context.Context, arg ListUsersForModerationParams) ([]User, error)
-	UpdateUserModeration(ctx context.Context, arg UpdateUserModerationParams) error
+	GetPlayerProfileForUpdate(ctx context.Context, userID uint64) (PlayerProfile, error)
+	GetUserByID(ctx context.Context, id uint64) (GetUserByIDRow, error)
+	GetUserByProviderSubject(ctx context.Context, arg GetUserByProviderSubjectParams) (GetUserByProviderSubjectRow, error)
+	GetUserByUsername(ctx context.Context, username string) (GetUserByUsernameRow, error)
+	ListCampaignLeaderboard(ctx context.Context) ([]ListCampaignLeaderboardRow, error)
+	ListDailyLeaderboard(ctx context.Context, dateKey string) ([]ListDailyLeaderboardRow, error)
+	ListEndlessLeaderboard(ctx context.Context) ([]ListEndlessLeaderboardRow, error)
+	ListFriendLeaderboard(ctx context.Context) ([]ListFriendLeaderboardRow, error)
+	ListFriendUserIDs(ctx context.Context, arg ListFriendUserIDsParams) ([]uint64, error)
+	ListUsersForModeration(ctx context.Context, arg ListUsersForModerationParams) ([]ListUsersForModerationRow, error)
 	RecordModerationEvent(ctx context.Context, arg RecordModerationEventParams) error
+	TouchAdminLastLogin(ctx context.Context, arg TouchAdminLastLoginParams) error
 	UpdatePlayerProfileProgress(ctx context.Context, arg UpdatePlayerProfileProgressParams) error
+	UpdateUserModeration(ctx context.Context, arg UpdateUserModerationParams) error
+	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 }
 
 var _ Querier = (*Queries)(nil)
