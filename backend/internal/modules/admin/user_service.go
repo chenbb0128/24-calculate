@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -30,10 +31,17 @@ type AdminUserService struct {
 	store     AdminUserStore
 	blocker   AdminAccountBlocker
 	accessTTL time.Duration
+	logger    *slog.Logger
 }
 
 func NewAdminUserService(store AdminUserStore, blocker AdminAccountBlocker, accessTTL time.Duration) *AdminUserService {
-	return &AdminUserService{store: store, blocker: blocker, accessTTL: accessTTL}
+	return &AdminUserService{store: store, blocker: blocker, accessTTL: accessTTL, logger: slog.Default()}
+}
+
+func (s *AdminUserService) SetLogger(logger *slog.Logger) {
+	if s != nil && logger != nil {
+		s.logger = logger
+	}
 }
 
 func (s *AdminUserService) List(ctx context.Context, input ListAdminUsersInput) (AdminUserListResponse, error) {

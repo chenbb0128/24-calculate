@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ type AdminAuthService struct {
 	refreshTTL  time.Duration
 	loginLimit  int64
 	loginWindow time.Duration
+	logger      *slog.Logger
 }
 
 func NewAdminAuthService(accounts AdminAuthAccountStore, tokens AdminAuthTokenStore, manager *jwtplatform.Manager, accessTTL, refreshTTL time.Duration) *AdminAuthService {
@@ -43,6 +45,13 @@ func NewAdminAuthService(accounts AdminAuthAccountStore, tokens AdminAuthTokenSt
 		accounts: accounts, tokens: tokens, jwt: manager,
 		accessTTL: accessTTL, refreshTTL: refreshTTL,
 		loginLimit: 5, loginWindow: time.Minute,
+		logger: slog.Default(),
+	}
+}
+
+func (s *AdminAuthService) SetLogger(logger *slog.Logger) {
+	if s != nil && logger != nil {
+		s.logger = logger
 	}
 }
 
