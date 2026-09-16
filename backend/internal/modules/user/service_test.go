@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"net/http"
 	"testing"
 	"time"
 
@@ -127,6 +128,45 @@ func TestGetProfileHidesUnreviewedProfileFromPublicDTO(t *testing.T) {
 	}
 	if profile.Nickname != DefaultNickname || profile.Avatar != DefaultAvatar {
 		t.Fatalf("unsafe profile = %+v", profile)
+	}
+}
+
+func TestApprovedWeChatAvatarSurvivesNicknameUpdate(t *testing.T) {
+	wechatAvatar := "https://thirdwx.qlogo.cn/mmopen/example/132"
+	store := &fakeStore{user: db.User{
+		ID: 7, Username: "alice", Nickname: "旧昵称", Avatar: wechatAvatar, Status: StatusActive,
+		NicknameModerationStatus: string(moderation.StatusApproved), AvatarModerationStatus: string(moderation.StatusApproved),
+	}}
+	service := NewService(store)
+	service.SetContentModerator(moderation.NewService(fakeModerationProvider{
+		text: moderation.ProviderResult{Status: moderation.StatusApproved},
+	}, nil))
+	nickname := "新昵称"
+
+	profile, err := service.UpdateProfile(context.Background(), 7, UpdateProfileInput{Nickname: &nickname})
+	if err != nil {
+		t.Fatalf("UpdateProfile() error = %v", err)
+	}
+	if profile.Nickname != nickname || profile.Avatar != wechatAvatar {
+		t.Fatalf("profile = %+v, want nickname %q and avatar %q", profile, nickname, wechatAvatar)
+	}
+	if store.updated.Avatar != wechatAvatar {
+		t.Fatalf("stored avatar = %q, want %q", store.updated.Avatar, wechatAvatar)
+	}
+}
+
+func TestUpdateProfileFailsClosedWhenNicknameModeratorIsNotConfigured(t *testing.T) {
+	store := &fakeStore{user: db.User{ID: 7, Username: "alice", Nickname: "旧昵称", Avatar: DefaultAvatar, Status: StatusActive}}
+	service := NewService(store)
+	nickname := "新昵称"
+
+	_, err := service.UpdateProfile(context.Background(), 7, UpdateProfileInput{Nickname: &nickname})
+	var appErr *apperror.AppError
+	if !errors.As(err, &appErr) || appErr.BusinessCode != "MODERATION_PROVIDER_UNAVAILABLE" || appErr.HTTPStatus != http.StatusServiceUnavailable {
+		t.Fatalf("error = %v, app error = %+v", err, appErr)
+	}
+	if store.updated.ID != 0 || store.user.Nickname != "旧昵称" {
+		t.Fatalf("unconfigured moderation changed profile: user = %+v, update = %+v", store.user, store.updated)
 	}
 }
 

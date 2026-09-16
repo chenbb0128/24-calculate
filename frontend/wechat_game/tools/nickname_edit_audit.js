@@ -96,10 +96,84 @@ async function testNicknameOnlyUpdateDoesNotResubmitExternalAvatar() {
   }
 }
 
+async function testWechatAuthorizationUsesVerifiedSyncFlow() {
+  const originalRequestProfile = require('../src/services/platform.js').requestWechatProfile;
+  const originalSync = apiClient.syncWechatProfile;
+  const originalUpdate = apiClient.updateProfile;
+  let syncPayload = null;
+  let patchCalled = false;
+  const platform = require('../src/services/platform.js');
+  platform.requestWechatProfile = () => Promise.resolve({
+    nickname: '授权昵称',
+    avatar: 'https://thirdwx.qlogo.cn/example/132',
+  });
+  apiClient.syncWechatProfile = (profile) => {
+    syncPayload = profile;
+    return Promise.resolve({
+      nickname: '授权昵称',
+      avatar: 'https://thirdwx.qlogo.cn/example/132',
+    });
+  };
+  apiClient.updateProfile = () => {
+    patchCalled = true;
+    return Promise.reject(new Error('微信头像不应提交到普通 PATCH'));
+  };
+  try {
+    const app = profilePopupHarness();
+    app.triggerFeedback = () => {};
+    app.isBackendRequired = () => false;
+    app.importWechatProfile();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    check(syncPayload && syncPayload.avatar === 'https://thirdwx.qlogo.cn/example/132', '微信授权资料没有走服务端验证同步');
+    check(!patchCalled, '微信头像仍然提交到了普通资料 PATCH');
+    check(app.progress.profile.avatar === 'https://thirdwx.qlogo.cn/example/132', '授权成功后头像没有保留');
+  } finally {
+    platform.requestWechatProfile = originalRequestProfile;
+    apiClient.syncWechatProfile = originalSync;
+    apiClient.updateProfile = originalUpdate;
+  }
+}
+
+async function testWechatAuthorizationDoesNotResubmitExistingBackendAvatar() {
+  const platform = require('../src/services/platform.js');
+  const originalRequestProfile = platform.requestWechatProfile;
+  const originalSync = apiClient.syncWechatProfile;
+  const originalUpdate = apiClient.updateProfile;
+  let syncPayload = null;
+  let patchCalled = false;
+  platform.requestWechatProfile = () => Promise.resolve({ nickname: '仅授权昵称', avatar: '' });
+  apiClient.syncWechatProfile = (profile) => {
+    syncPayload = profile;
+    return Promise.resolve({ nickname: '仅授权昵称', avatar: 'https://calc-api.pdurl.cn/avatars/7/avatar.webp' });
+  };
+  apiClient.updateProfile = () => {
+    patchCalled = true;
+    return Promise.reject(new Error('微信授权不应调用普通 PATCH'));
+  };
+  try {
+    const app = profilePopupHarness();
+    app.progress.profile.avatar = 'https://calc-api.pdurl.cn/avatars/7/avatar.webp';
+    app.backendAuth.user.avatar = app.progress.profile.avatar;
+    app.triggerFeedback = () => {};
+    app.isBackendRequired = () => false;
+    app.importWechatProfile();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    check(syncPayload && syncPayload.avatar === '', '微信未返回新头像时重复提交了已有后端头像');
+    check(!patchCalled, '微信授权仍然调用了普通资料 PATCH');
+    check(app.progress.profile.avatar === 'https://calc-api.pdurl.cn/avatars/7/avatar.webp', '已有后端头像被覆盖');
+  } finally {
+    platform.requestWechatProfile = originalRequestProfile;
+    apiClient.syncWechatProfile = originalSync;
+    apiClient.updateProfile = originalUpdate;
+  }
+}
+
 async function run() {
   testProfileHasNicknameEditEntry();
   testNicknameEditOpensInputAndSubmitsValue();
   await testNicknameOnlyUpdateDoesNotResubmitExternalAvatar();
+  await testWechatAuthorizationUsesVerifiedSyncFlow();
+  await testWechatAuthorizationDoesNotResubmitExistingBackendAvatar();
   console.log('NICKNAME_EDIT_AUDIT_OK');
 }
 

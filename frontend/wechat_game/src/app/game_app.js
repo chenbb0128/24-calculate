@@ -4948,22 +4948,37 @@ class GameApp {
       this.profileNotice = '当前版本暂不支持微信资料授权';
       return;
     }
+    this.profileSaving = true;
     this.profileNotice = '正在请求微信头像和昵称…';
     platform.requestWechatProfile().then((profile) => {
       const current = this.getPlayerProfile();
-      this.saveProfileChanges({
-        nickname: profile.nickname || current.nickname,
-        avatar: profile.avatar || current.avatar,
-        wechat_auth_status: 'granted',
-      }, () => {
-        this.progress.profile.wechat_auth_status = 'granted';
+      if (!apiClient.syncWechatProfile) throw new Error('当前版本不支持微信资料同步');
+      this.profileNotice = '正在由服务器验证资料…';
+      // The server preserves fields omitted from the provider response. Do
+      // not re-submit a previously uploaded backend avatar as if it were a
+      // WeChat avatar when privacy authorization returns nickname only.
+      const expectedUserID = this.backendAuth && this.backendAuth.user
+        ? Number(this.backendAuth.user.id) || 0 : 0;
+      return apiClient.syncWechatProfile(profile, expectedUserID).then((remote) => {
+        const saved = remote && typeof remote === 'object' ? remote : {};
+        this.progress.profile = {
+          nickname: String(saved.nickname || profile.nickname || current.nickname || '算术玩家').trim().slice(0, 12),
+          avatar: String(saved.avatar || profile.avatar || current.avatar || '').trim(),
+          wechat_auth_status: 'granted',
+        };
+        if (this.backendAuth && this.backendAuth.user) {
+          this.backendAuth.user = Object.assign({}, this.backendAuth.user, saved);
+        }
         this.profileAuthPending = false;
         this.popup = '';
+        storage.save(this.progress);
+        this.profileNotice = '资料已同步';
+        this.triggerFeedback('success', '微信资料同步成功');
       });
     }).catch((error) => {
       this.profileNotice = String(error && error.message || '未获得微信资料授权');
       this.triggerFeedback('info', '未授权也不影响正常游戏');
-    });
+    }).then(() => { this.profileSaving = false; });
   }
 
   chooseAndUploadAvatar() {

@@ -353,6 +353,14 @@ func SafePublicAvatar(value, status string) string {
 		return DefaultAvatar
 	}
 	avatar, err := NormalizeAvatar(value)
+	if err == nil {
+		return avatar
+	}
+	// WeChat privacy authorization stores the provider's HTTPS avatar URL
+	// after the server has verified and approved it. It is intentionally not
+	// accepted by ordinary PATCH requests, but it must remain visible when a
+	// user later edits only their nickname.
+	avatar, err = NormalizeWeChatAvatar(value)
 	if err != nil {
 		return DefaultAvatar
 	}
