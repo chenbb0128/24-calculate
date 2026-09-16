@@ -13,10 +13,17 @@ import (
 	"github.com/example/go-service/internal/platform/jwt"
 )
 
-type revokedTokenChecker struct{ revoked bool }
+type revokedTokenChecker struct {
+	revoked bool
+	blocked bool
+}
 
 func (f revokedTokenChecker) IsAccessTokenRevoked(context.Context, string) (bool, error) {
 	return f.revoked, nil
+}
+
+func (f revokedTokenChecker) IsAccountBlocked(context.Context, string, uint64) (bool, error) {
+	return f.blocked, nil
 }
 
 func TestRequireAuthRejectsRevokedAccessToken(t *testing.T) {
@@ -112,6 +119,43 @@ func TestRoleMiddleware(t *testing.T) {
 			}
 			if handlerRan != tt.wantHandler {
 				t.Fatalf("handler ran = %t, want %t", handlerRan, tt.wantHandler)
+			}
+		})
+	}
+}
+
+func TestRequireUserChecksRoleQualifiedAccountBlock(t *testing.T) {
+	manager, err := jwt.NewManager(config.JWTConfig{
+		Secret: "01234567890123456789012345678901", Algorithm: "HS256", Issuer: "test",
+		AccessTTL: time.Minute, RefreshTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := manager.IssueAccessTokenWithRole(9, jwt.RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, check := range []struct {
+		name       string
+		blocked    bool
+		wantStatus int
+	}{
+		{name: "blocked user", blocked: true, wantStatus: http.StatusForbidden},
+		{name: "unblocked user", blocked: false, wantStatus: http.StatusNoContent},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			router := gin.New()
+			router.GET("/protected", RequireUser(manager, revokedTokenChecker{blocked: check.blocked}), func(c *gin.Context) {
+				c.Status(http.StatusNoContent)
+			})
+			request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+			request.Header.Set("Authorization", "Bearer "+token)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != check.wantStatus {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 			}
 		})
 	}

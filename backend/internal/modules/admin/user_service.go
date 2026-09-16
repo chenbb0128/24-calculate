@@ -15,6 +15,7 @@ import (
 
 type AdminUserStore interface {
 	ListAdminUsers(context.Context, ListAdminUsersInput) ([]AdminUserRecord, error)
+	CountAdminUsers(context.Context, ListAdminUsersInput) (int64, error)
 	GetAdminUserStats(context.Context) (AdminUserStats, error)
 	GetAdminUser(context.Context, uint64) (AdminUserRecord, error)
 	SetAdminUserStatus(context.Context, uint64, uint8, time.Time) (AdminUserRecord, error)
@@ -41,6 +42,10 @@ func (s *AdminUserService) List(ctx context.Context, input ListAdminUsersInput) 
 	if err != nil {
 		return AdminUserListResponse{}, err
 	}
+	total, err := s.store.CountAdminUsers(ctx, input)
+	if err != nil {
+		return AdminUserListResponse{}, err
+	}
 	stats, err := s.store.GetAdminUserStats(ctx)
 	if err != nil {
 		return AdminUserListResponse{}, err
@@ -49,7 +54,7 @@ func (s *AdminUserService) List(ctx context.Context, input ListAdminUsersInput) 
 	for _, account := range accounts {
 		items = append(items, toAdminUserListItem(account))
 	}
-	return AdminUserListResponse{Items: items, Page: input.Page, PageSize: input.PageSize, Total: stats.Total, Stats: stats}, nil
+	return AdminUserListResponse{Items: items, Page: input.Page, PageSize: input.PageSize, Total: total, Stats: stats}, nil
 }
 
 func (s *AdminUserService) Detail(ctx context.Context, id uint64) (AdminUserDetailResponse, error) {

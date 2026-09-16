@@ -11,6 +11,50 @@ import (
 	"time"
 )
 
+const countAdminUsers = `-- name: CountAdminUsers :one
+SELECT COUNT(*)
+FROM users AS u
+WHERE (CAST(? AS CHAR) = ''
+       OR CAST(u.id AS CHAR) LIKE CONCAT('%', CAST(? AS CHAR), '%')
+       OR u.username LIKE CONCAT('%', CAST(? AS CHAR), '%')
+       OR (CASE WHEN u.nickname_moderation_status = 'approved' THEN u.nickname ELSE '算术玩家' END) LIKE CONCAT('%', CAST(? AS CHAR), '%'))
+  AND (CAST(? AS CHAR) = 'all'
+       OR (CAST(? AS CHAR) = 'active' AND u.status <> 0)
+       OR (CAST(? AS CHAR) = 'disabled' AND u.status = 0))
+  AND (CAST(? AS CHAR) = 'all'
+       OR (CAST(? AS CHAR) = 'wechat' AND EXISTS (SELECT 1 FROM user_identities AS identity_record WHERE identity_record.user_id = u.id AND identity_record.provider = 'wechat'))
+       OR (CAST(? AS CHAR) = 'taptap'
+           AND NOT EXISTS (SELECT 1 FROM user_identities AS identity_record WHERE identity_record.user_id = u.id AND identity_record.provider = 'wechat')
+           AND EXISTS (SELECT 1 FROM user_identities AS identity_record WHERE identity_record.user_id = u.id AND identity_record.provider = 'taptap'))
+       OR (CAST(? AS CHAR) = 'password'
+           AND NOT EXISTS (SELECT 1 FROM user_identities AS identity_record WHERE identity_record.user_id = u.id AND identity_record.provider IN ('wechat', 'taptap'))))
+`
+
+type CountAdminUsersParams struct {
+	Query    interface{}
+	Status   interface{}
+	Platform interface{}
+}
+
+func (q *Queries) CountAdminUsers(ctx context.Context, arg CountAdminUsersParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAdminUsers,
+		arg.Query,
+		arg.Query,
+		arg.Query,
+		arg.Query,
+		arg.Status,
+		arg.Status,
+		arg.Status,
+		arg.Platform,
+		arg.Platform,
+		arg.Platform,
+		arg.Platform,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getAdminUser = `-- name: GetAdminUser :one
 SELECT u.id,
        u.username,

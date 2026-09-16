@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,7 +21,8 @@ func TestAdminUserListNormalizesFiltersAndReturnsSafeStats(t *testing.T) {
 			Platform: "wechat", Status: 1, NicknameModerationStatus: "rejected", AvatarModerationStatus: "pending",
 			CreatedAt: createdAt, UpdatedAt: createdAt,
 		}},
-		stats: AdminUserStats{Total: 12, NewToday: 3, Active: 10, Disabled: 2},
+		filteredTotal: 12,
+		stats:         AdminUserStats{Total: 12, NewToday: 3, Active: 10, Disabled: 2},
 	}
 	service := NewAdminUserService(store, &fakeAccountBlocker{}, time.Minute)
 
@@ -38,6 +41,37 @@ func TestAdminUserListNormalizesFiltersAndReturnsSafeStats(t *testing.T) {
 	item := result.Items[0]
 	if item.Nickname == "rejected name" || item.Avatar == "https://example.com/rejected.webp" || item.Nickname != "算术玩家" || item.Avatar != "sun" {
 		t.Fatalf("unsafe profile material in list item: %+v", item)
+	}
+}
+
+func TestAdminUserListUsesFilteredTotalInsteadOfGlobalStats(t *testing.T) {
+	store := &fakeAdminUserStore{
+		users:         []AdminUserRecord{{ID: 3, Platform: "wechat", Status: 0}},
+		filteredTotal: 1,
+		stats:         AdminUserStats{Total: 12, NewToday: 3, Active: 10, Disabled: 2},
+	}
+	service := NewAdminUserService(store, &fakeAccountBlocker{}, time.Minute)
+
+	result, err := service.List(context.Background(), ListAdminUsersInput{Status: "disabled", Platform: "wechat"})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if result.Total != 1 || result.Stats.Total != 12 {
+		t.Fatalf("filtered total and global stats = %+v", result)
+	}
+}
+
+func TestAdminUserPlatformPrecedenceQueryContract(t *testing.T) {
+	query, err := os.ReadFile("../../../database/queries/admin_users.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listQuery := string(query)
+	wechat := strings.Index(listQuery, "identity_record.provider = 'wechat') THEN 'wechat'")
+	taptap := strings.Index(listQuery, "identity_record.provider = 'taptap') THEN 'taptap'")
+	password := strings.Index(listQuery, "ELSE 'password'")
+	if wechat < 0 || taptap < 0 || password < 0 || !(wechat < taptap && taptap < password) {
+		t.Fatalf("platform derivation must prefer wechat over taptap and password")
 	}
 }
 
@@ -124,9 +158,10 @@ func isNotFound(err error) bool {
 }
 
 type fakeAdminUserStore struct {
-	users     []AdminUserRecord
-	stats     AdminUserStats
-	listInput ListAdminUsersInput
+	users         []AdminUserRecord
+	stats         AdminUserStats
+	filteredTotal int64
+	listInput     ListAdminUsersInput
 }
 
 func (s *fakeAdminUserStore) ListAdminUsers(_ context.Context, input ListAdminUsersInput) ([]AdminUserRecord, error) {
@@ -136,6 +171,10 @@ func (s *fakeAdminUserStore) ListAdminUsers(_ context.Context, input ListAdminUs
 
 func (s *fakeAdminUserStore) GetAdminUserStats(context.Context) (AdminUserStats, error) {
 	return s.stats, nil
+}
+
+func (s *fakeAdminUserStore) CountAdminUsers(context.Context, ListAdminUsersInput) (int64, error) {
+	return s.filteredTotal, nil
 }
 
 func (s *fakeAdminUserStore) GetAdminUser(_ context.Context, id uint64) (AdminUserRecord, error) {

@@ -21,6 +21,10 @@ type AccessTokenRevocationChecker interface {
 	IsAccessTokenRevoked(context.Context, string) (bool, error)
 }
 
+type AccountBlockChecker interface {
+	IsAccountBlocked(context.Context, string, uint64) (bool, error)
+}
+
 func RequireAuth(manager *jwtplatform.Manager, checkers ...AccessTokenRevocationChecker) gin.HandlerFunc {
 	return requireRoles(manager, checkers, nil)
 }
@@ -75,6 +79,25 @@ func requireRoles(manager *jwtplatform.Manager, checkers []AccessTokenRevocation
 			response.WriteError(c, apperror.New(apperror.CodeForbidden, http.StatusForbidden, "无权访问", nil))
 			c.Abort()
 			return
+		}
+		if len(checkers) > 0 && checkers[0] != nil {
+			if blocker, ok := checkers[0].(AccountBlockChecker); ok {
+				role := claims.Role
+				if role == "" {
+					role = jwtplatform.RoleUser
+				}
+				blocked, checkErr := blocker.IsAccountBlocked(c.Request.Context(), role, claims.UserID)
+				if checkErr != nil {
+					response.WriteError(c, apperror.ServiceUnavailable("认证服务暂时不可用", checkErr))
+					c.Abort()
+					return
+				}
+				if blocked {
+					response.WriteError(c, apperror.New(apperror.CodeForbidden, http.StatusForbidden, "账号已被禁用", nil))
+					c.Abort()
+					return
+				}
+			}
 		}
 
 		c.Set(userIDKey, claims.UserID)

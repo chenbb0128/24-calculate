@@ -68,6 +68,15 @@ func (r *AdminRepository) ListAdminUsers(ctx context.Context, input ListAdminUse
 	return items, nil
 }
 
+func (r *AdminRepository) CountAdminUsers(ctx context.Context, input ListAdminUsersInput) (int64, error) {
+	if r == nil || r.queries == nil {
+		return 0, fmt.Errorf("admin repository is not initialized")
+	}
+	return r.queries.CountAdminUsers(ctx, db.CountAdminUsersParams{
+		Query: input.Query, Status: input.Status, Platform: input.Platform,
+	})
+}
+
 func (r *AdminRepository) GetAdminUserStats(ctx context.Context) (AdminUserStats, error) {
 	if r == nil || r.queries == nil {
 		return AdminUserStats{}, fmt.Errorf("admin repository is not initialized")

@@ -11,6 +11,7 @@ import (
 
 type Querier interface {
 	CreateAdminAccount(ctx context.Context, arg CreateAdminAccountParams) (sql.Result, error)
+	CountAdminUsers(ctx context.Context, arg CountAdminUsersParams) (int64, error)
 	GetAdminUser(ctx context.Context, id uint64) (GetAdminUserRow, error)
 	GetAdminUserStats(ctx context.Context) (GetAdminUserStatsRow, error)
 	GetLeaderboardSubmissionByKey(ctx context.Context, arg GetLeaderboardSubmissionByKeyParams) (PlayerLeaderboardSubmission, error)
