@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -9,10 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/example/go-service/internal/config"
+	"github.com/example/go-service/internal/modules/player"
+	"github.com/example/go-service/internal/modules/user"
+	jwtplatform "github.com/example/go-service/internal/platform/jwt"
 )
 
 func TestHealthReturnsSuccessAndRequestID(t *testing.T) {
@@ -81,6 +86,56 @@ func TestUnknownRouteReturnsJSONNotFound(t *testing.T) {
 	}
 }
 
+func TestUnknownAdminRouteReturnsStandardJSONNotFound(t *testing.T) {
+	router, err := NewRouter(testConfig(), slog.Default(), RouterOptions{})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/admin/not-found", nil))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["code"] != float64(10002) || body["data"] != nil {
+		t.Fatalf("not-found envelope = %s", recorder.Body.String())
+	}
+}
+
+func TestOrdinaryRoutesRejectAdminTokens(t *testing.T) {
+	manager := newRouterJWTManager(t)
+	router, err := NewRouter(testConfig(), slog.Default(), RouterOptions{
+		APIRoutes: func(group *gin.RouterGroup) {
+			user.RegisterRoutes(group, nil, manager)
+			player.RegisterRoutes(group, nil, manager)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	token, _, err := manager.IssueAccessTokenWithRole(9, jwtplatform.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/api/v1/users/me", "/api/v1/player/bootstrap"} {
+		t.Run(path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request.Header.Set("Authorization", "Bearer "+token)
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusForbidden, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestAvatarStaticFileIsServedFromConfiguredStorage(t *testing.T) {
 	root := t.TempDir()
 	avatarPath := filepath.Join(root, "avatars", "7", "test.webp")
@@ -110,4 +165,19 @@ func testConfig() *config.Config {
 			MaxRequestBodyBytes: 2 << 20,
 		},
 	}
+}
+
+func newRouterJWTManager(t *testing.T) *jwtplatform.Manager {
+	t.Helper()
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := jwtplatform.NewManager(config.JWTConfig{
+		Secret: string(secret), Algorithm: "HS256", Issuer: "router-test", AccessTTL: time.Minute, RefreshTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager
 }

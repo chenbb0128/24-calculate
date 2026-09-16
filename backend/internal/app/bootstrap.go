@@ -14,6 +14,7 @@ import (
 
 	"github.com/example/go-service/internal/config"
 	httpapi "github.com/example/go-service/internal/http"
+	"github.com/example/go-service/internal/modules/admin"
 	"github.com/example/go-service/internal/modules/auth"
 	"github.com/example/go-service/internal/modules/moderation"
 	"github.com/example/go-service/internal/modules/player"
@@ -87,6 +88,7 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 	queries := db.New(database)
 	txManager := store.NewTxManager(database)
 	userRepository := user.NewRepository(queries, txManager)
+	adminRepository := admin.NewRepository(queries)
 	wechatClient := wechatplatform.NewClient(cfg.WeChat)
 	wechatClient.SetContentSafetyPolicy(cfg.Moderation.Timeout, cfg.Moderation.MaxRetries)
 	contentModerator := moderation.NewService(wechatClient, moderation.NewSQLAuditStore(database))
@@ -100,6 +102,10 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 	userService.SetLogger(logger)
 	userService.SetContentModerator(contentModerator)
 	userHandler := user.NewHandler(userService)
+	adminAuthService := admin.NewAdminAuthService(adminRepository, redisClient, manager, cfg.JWT.AccessTTL, cfg.JWT.RefreshTTL)
+	adminAuthHandler := admin.NewAdminAuthHandler(adminAuthService)
+	adminUserService := admin.NewAdminUserService(adminRepository, redisClient, cfg.JWT.AccessTTL)
+	adminUserHandler := admin.NewAdminUserHandler(adminUserService)
 	playerRepository := player.NewRepository(queries, txManager)
 	friendRoomRepository := player.NewFriendRoomRepository(redisClient, database)
 	playerService := player.NewServiceWithRoomsAndEndless(userService, playerRepository, friendRoomRepository, friendRoomRepository)
@@ -131,6 +137,8 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 			auth.RegisterRoutes(group, authHandler, !strings.EqualFold(strings.TrimSpace(cfg.App.Env), "production"))
 			user.RegisterRoutes(group, userHandler, manager, redisClient)
 			player.RegisterRoutes(group, playerHandler, manager, redisClient)
+			admin.RegisterAuthRoutes(group, adminAuthHandler)
+			admin.RegisterUserRoutes(group, adminUserHandler, manager, redisClient)
 		},
 	})
 	if err != nil {
