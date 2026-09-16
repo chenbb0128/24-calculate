@@ -27,6 +27,7 @@ assert.match(html, /<title>三火算术 · 运营后台<\/title>/);
 assert.match(html, /id=["']detailDrawer["'][^>]*aria-describedby=["']detailIdentitySummary["']/);
 assert.match(html, /id=["']detailNicknameModeration["']/);
 assert.match(html, /id=["']detailAvatarModeration["']/);
+assert.match(html, /id=["']app["'][^>]*\binert\b/);
 
 assert.doesNotMatch(appSource, /localStorage/);
 assert.doesNotMatch(appSource, /SEED_USERS/);
@@ -41,6 +42,8 @@ assert.match(appSource, /returnFocus\.focus/);
 assert.match(appSource, /event\.key !== 'Escape'/);
 assert.match(appSource, /function closeConfirmation[\s\S]*dialog\.close/);
 assert.match(appSource, /function openConfirmation[\s\S]*dialog\.showModal/);
+assert.match(appSource, /function showLogin[\s\S]*app\.setAttribute\('inert', ''\)/);
+assert.match(appSource, /function showDashboard[\s\S]*app\.removeAttribute\('inert'\)/);
 assert.match(appSource, /replaceChildren\(createStatusTag\(user\.status\)\)/);
 
 const users = [

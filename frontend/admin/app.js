@@ -382,7 +382,10 @@ function showLogin() {
   const gate = getElement('loginGate');
   const app = getElement('app');
   if (gate) gate.hidden = false;
-  if (app) app.setAttribute('aria-hidden', 'true');
+  if (app) {
+    app.setAttribute('aria-hidden', 'true');
+    app.setAttribute('inert', '');
+  }
   getElement('loginPassword').value = '';
   getElement('loginUsername').focus();
 }
@@ -391,7 +394,10 @@ function showDashboard() {
   const gate = getElement('loginGate');
   const app = getElement('app');
   if (gate) gate.hidden = true;
-  if (app) app.removeAttribute('aria-hidden');
+  if (app) {
+    app.removeAttribute('aria-hidden');
+    app.removeAttribute('inert');
+  }
 }
 
 function handleApiError(error) {
