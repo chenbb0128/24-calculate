@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/example/go-service/internal/config"
@@ -29,10 +30,13 @@ type LoginClient interface {
 }
 
 type Client struct {
-	appID      string
-	appSecret  string
-	apiBaseURL string
-	httpClient *http.Client
+	appID                 string
+	appSecret             string
+	apiBaseURL            string
+	httpClient            *http.Client
+	contentTokenMu        sync.Mutex
+	contentToken          string
+	contentTokenExpiresAt time.Time
 }
 
 func NewClient(cfg config.WeChatConfig) *Client {
