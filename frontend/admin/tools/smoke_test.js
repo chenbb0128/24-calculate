@@ -15,12 +15,27 @@ const {
 } = require('../app');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+const appSource = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 for (const id of ['app', 'sidebar', 'statCards', 'searchInput', 'statusFilter', 'platformFilter',
   'userTableBody', 'pagination', 'detailDrawer', 'confirmDialog', 'toastRegion']) {
   assert.match(html, new RegExp(`id=["']${id}["']`));
 }
 assert.match(html, /app\.js/);
 assert.match(html, /styles\.css/);
+
+const closeConfirmationSource = appSource.slice(
+  appSource.indexOf('function closeConfirmation'),
+  appSource.indexOf('function openConfirmation')
+);
+const openConfirmationSource = appSource.slice(
+  appSource.indexOf('function openConfirmation'),
+  appSource.indexOf('function completeStatusChange')
+);
+assert.match(closeConfirmationSource,
+  /if \(typeof dialog\.close === 'function'\) \{\s*if \(dialog\.open\) dialog\.close\(\);\s*dialog\.hidden = false;/);
+assert.match(closeConfirmationSource, /else \{\s*dialog\.hidden = true;/);
+assert.match(openConfirmationSource,
+  /if \(typeof dialog\.showModal === 'function'\) \{\s*dialog\.hidden = false;\s*if \(!dialog\.open\) dialog\.showModal\(\);/);
 
 const users = [
   { id: 'U1001', username: 'wx_1001', nickname: '晴天小猫', platform: '微信', status: 'active' },

@@ -427,8 +427,9 @@ function closeConfirmation() {
   const dialog = getElement('confirmDialog');
   state.pendingAction = null;
   if (!dialog) return;
-  if (typeof dialog.close === 'function' && dialog.open) {
-    dialog.close();
+  if (typeof dialog.close === 'function') {
+    if (dialog.open) dialog.close();
+    dialog.hidden = false;
   } else {
     dialog.hidden = true;
     dialog.classList.remove('is-open');
@@ -442,6 +443,7 @@ function openConfirmation(count) {
   if (!dialog || !message) return;
   message.textContent = `确定要禁用选中的 ${count} 个账号吗？`;
   if (typeof dialog.showModal === 'function') {
+    dialog.hidden = false;
     if (!dialog.open) dialog.showModal();
   } else {
     dialog.hidden = false;
