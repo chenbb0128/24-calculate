@@ -7,6 +7,9 @@ const {
   setUserStatus,
   serializeUserState,
   restoreUserState,
+  getStats,
+  formatDate,
+  getInitials,
   STORAGE_KEY,
   SEED_USERS
 } = require('../app');
@@ -24,6 +27,10 @@ const users = [
   { id: 'U1002', username: 'tap_1002', nickname: '夜航星', platform: 'TapTap', status: 'disabled' },
   { id: 'U1003', username: 'wx_1003', nickname: '小火花', platform: '微信', status: 'active' }
 ];
+
+assert.deepEqual(getStats(users), { total: 3, newToday: 0, active: 2, disabled: 1 });
+assert.equal(getInitials('晴天小猫'), '晴猫');
+assert.match(formatDate('2026-09-16T09:18:00+08:00'), /2026/);
 
 assert.equal(filterUsers(users, { query: '晴天', status: 'all', platform: 'all' }).length, 1);
 assert.equal(filterUsers(users, { query: 'U1002', status: 'all', platform: 'all' })[0].id, 'U1002');
