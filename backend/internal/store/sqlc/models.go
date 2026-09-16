@@ -5,7 +5,6 @@
 package db
 
 import (
-	"database/sql"
 	"time"
 )
 
@@ -15,90 +14,39 @@ type AdminAccount struct {
 	PasswordHash string
 	Role         string
 	Status       uint8
-	LastLoginAt  sql.NullTime
+	LastLoginAt  *time.Time
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
 
-type EndlessRun struct {
-	RunID                string
-	UserID               uint64
-	RunSeed              int64
-	Status               string
-	CurrentQuestionIndex uint32
-	Score                uint32
-	Mistakes             uint32
-	BestCombo            uint32
-	TimeLimitMs          uint32
-	StartedAt            time.Time
-	LastActivityAt       time.Time
-	DeadlineAt           time.Time
-	ExpiresAt            time.Time
-	SubmittedAt          sql.NullTime
-	RewardClaimed        bool
-	Version              uint32
-	StateVersion         uint32
-	StartIdempotencyKey  sql.NullString
-	StateJson            string
-	CreatedAt            time.Time
+type User struct {
+	ID                       uint64
+	Username                 string
+	PasswordHash             string
+	Nickname                 string
+	Avatar                   string
+	Status                   uint8
+	NicknameModerationStatus string
+	AvatarModerationStatus   string
+	ModerationUpdatedAt      *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
-type EndlessRunAttempt struct {
-	ID                uint64
-	RunID             string
-	QuestionIndex     uint32
-	IdempotencyKey    string
-	Solved            bool
-	Validated         bool
-	ElapsedMs         uint32
-	Mistakes          uint32
-	Score             uint32
-	ScoreDelta        uint32
-	Combo             uint32
-	SolutionStepsJson string
-	CreatedAt         time.Time
+type UserIdentity struct {
+	ID              uint64
+	UserID          uint64
+	Provider        string
+	ProviderSubject string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
-type EndlessRunQuestion struct {
-	ID                uint64
-	RunID             string
-	QuestionIndex     uint32
-	PuzzleID          string
-	QuestionHash      string
-	NumbersJson       string
-	Target            uint8
-	RulesJson         string
-	SolutionHash      string
-	Difficulty        string
-	ServedAt          time.Time
-	AnsweredAt        sql.NullTime
-	SolutionStepsJson string
-}
-
-type PlayerDailyCompletion struct {
-	ID             uint64
-	UserID         uint64
-	DateKey        string
-	IdempotencyKey string
-	Score          uint32
-	BestScore      uint32
-	Streak         uint32
-	RewardCoins    uint32
-	CreatedAt      time.Time
-}
-
-type PlayerLeaderboardSubmission struct {
-	ID             uint64
-	UserID         uint64
-	Mode           string
-	IdempotencyKey string
-	Score          uint32
-	Questions      uint32
-	ElapsedMs      uint32
-	RoomID         string
-	Outcome        string
-	MetadataJson   string
-	CreatedAt      time.Time
+type PlayerProfile struct {
+	UserID       uint64
+	ProgressJSON string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type PlayerLevelCompletion struct {
@@ -114,93 +62,14 @@ type PlayerLevelCompletion struct {
 	CreatedAt      time.Time
 }
 
-type PlayerProfile struct {
-	UserID       uint64
-	ProgressJson string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-}
-
-type PlayerRankProfile struct {
-	UserID           uint64
-	SeasonID         string
-	Rating           int32
-	Tier             string
-	Division         uint8
-	Stars            uint8
-	PlacementMatches uint32
-	RankedMatches    uint32
-	Wins             uint32
-	Losses           uint32
-	Draws            uint32
-	BestTier         string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-}
-
-type RankedMatchResult struct {
-	ID               uint64
-	MatchID          string
-	UserID           uint64
-	SeasonID         string
-	Outcome          string
-	RatingBefore     int32
-	RatingDelta      int32
-	RatingAfter      int32
-	IdempotencyKey   string
-	CreatedAt        time.Time
-	TierBefore       string
-	TierAfter        string
-	DivisionBefore   uint8
-	DivisionAfter    uint8
-	StarsBefore      uint8
-	StarsAfter       uint8
-	PlacementMatches uint32
-	RankedMatches    uint32
-	Wins             uint32
-	Losses           uint32
-	Draws            uint32
-	BestTier         string
-	OpponentUserID   sql.NullInt64
-	Solved           uint32
-	QuestionCount    uint32
-	ElapsedMs        uint32
-	Mistakes         uint32
-	Score            uint32
-	Verified         bool
-}
-
-type User struct {
-	ID                       uint64
-	Username                 string
-	PasswordHash             string
-	Nickname                 string
-	Avatar                   string
-	Status                   uint8
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-	NicknameModerationStatus string
-	AvatarModerationStatus   string
-	ModerationUpdatedAt      sql.NullTime
-}
-
-type UserIdentity struct {
-	ID              uint64
-	UserID          uint64
-	Provider        string
-	ProviderSubject string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-}
-
-type UserModerationEvent struct {
-	ID                uint64
-	UserID            uint64
-	ResourceType      string
-	ResourceID        string
-	Source            string
-	ModerationStatus  string
-	ReasonCode        string
-	ProviderRequestID string
-	CreatedAt         time.Time
+type PlayerDailyCompletion struct {
+	ID             uint64
+	UserID         uint64
+	DateKey        string
+	IdempotencyKey string
+	Score          uint32
+	BestScore      uint32
+	Streak         uint32
+	RewardCoins    uint32
+	CreatedAt      time.Time
 }

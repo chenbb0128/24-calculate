@@ -3,11 +3,11 @@ package admin
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/bcrypt"
 
 	db "github.com/example/go-service/internal/store/sqlc"
@@ -86,13 +86,36 @@ func TestSeedAdminRejectsPasswordOutsideByteBounds(t *testing.T) {
 	}
 }
 
+func TestSeedAdminUsesUTF8ByteLengthBounds(t *testing.T) {
+	username := strings.Repeat("界", 21) // 63 bytes, within the 64-byte limit.
+	password := strings.Repeat("界", 24) // 72 bytes, within bcrypt's limit.
+	store := &fakeAdminAccountStore{}
+
+	if err := SeedAdmin(context.Background(), store, username, password); err != nil {
+		t.Fatalf("SeedAdmin() rejected valid multibyte byte lengths: %v", err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(store.created.PasswordHash), []byte(password)); err != nil {
+		t.Fatalf("stored password is not a bcrypt hash of the multibyte password: %v", err)
+	}
+
+	if err := SeedAdmin(context.Background(), &fakeAdminAccountStore{}, strings.Repeat("界", 22), "password123"); err == nil {
+		t.Fatal("SeedAdmin() accepted a 66-byte username")
+	}
+	if err := SeedAdmin(context.Background(), &fakeAdminAccountStore{}, "admin", strings.Repeat("界", 24)+"a"); err == nil {
+		t.Fatal("SeedAdmin() accepted a 73-byte password")
+	}
+}
+
 func TestSeedAdminRefusesDuplicateUsername(t *testing.T) {
 	password := "duplicate-secret"
-	store := &fakeAdminAccountStore{err: errors.New("duplicate entry for username")}
+	store := &fakeAdminAccountStore{err: &mysql.MySQLError{Number: 1062, Message: "Duplicate entry"}}
 
 	err := SeedAdmin(context.Background(), store, "admin", password)
 	if err == nil {
 		t.Fatal("SeedAdmin() error = nil, want duplicate error")
+	}
+	if err.Error() != "admin username already exists" {
+		t.Fatalf("duplicate error = %q, want stable duplicate error", err)
 	}
 	if strings.Contains(err.Error(), password) {
 		t.Fatal("duplicate error contains the plain password")
@@ -101,7 +124,7 @@ func TestSeedAdminRefusesDuplicateUsername(t *testing.T) {
 
 func TestSeedAdminDoesNotExposePlainPasswordInStoreError(t *testing.T) {
 	password := "secret-password"
-	store := &fakeAdminAccountStore{err: errors.New("database failed")}
+	store := &fakeAdminAccountStore{err: &mysql.MySQLError{Number: 1105, Message: "database failed"}}
 
 	err := SeedAdmin(context.Background(), store, "admin", password)
 	if err == nil {

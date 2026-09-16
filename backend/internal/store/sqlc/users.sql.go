@@ -27,16 +27,16 @@ INSERT INTO users (
 `
 
 type CreateUserParams struct {
-	Username            string
-	PasswordHash        string
-	Nickname            string
-	Avatar              string
-	Status              uint8
-	NULLIF              interface{}
-	NULLIF_2            interface{}
-	ModerationUpdatedAt sql.NullTime
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	Username                 string
+	PasswordHash             string
+	Nickname                 string
+	Avatar                   string
+	Status                   uint8
+	NicknameModerationStatus string
+	AvatarModerationStatus   string
+	ModerationUpdatedAt      *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (sql.Result, error) {
@@ -46,8 +46,8 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (sql.Res
 		arg.Nickname,
 		arg.Avatar,
 		arg.Status,
-		arg.NULLIF,
-		arg.NULLIF_2,
+		arg.NicknameModerationStatus,
+		arg.AvatarModerationStatus,
 		arg.ModerationUpdatedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
@@ -108,23 +108,9 @@ WHERE id = ?
 LIMIT 1
 `
 
-type GetUserByIDRow struct {
-	ID                       uint64
-	Username                 string
-	PasswordHash             string
-	Nickname                 string
-	Avatar                   string
-	Status                   uint8
-	NicknameModerationStatus string
-	AvatarModerationStatus   string
-	ModerationUpdatedAt      sql.NullTime
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-}
-
-func (q *Queries) GetUserByID(ctx context.Context, id uint64) (GetUserByIDRow, error) {
+func (q *Queries) GetUserByID(ctx context.Context, id uint64) (User, error) {
 	row := q.db.QueryRowContext(ctx, getUserByID, id)
-	var i GetUserByIDRow
+	var i User
 	err := row.Scan(
 		&i.ID,
 		&i.Username,
@@ -156,23 +142,9 @@ type GetUserByProviderSubjectParams struct {
 	ProviderSubject string
 }
 
-type GetUserByProviderSubjectRow struct {
-	ID                       uint64
-	Username                 string
-	PasswordHash             string
-	Nickname                 string
-	Avatar                   string
-	Status                   uint8
-	NicknameModerationStatus string
-	AvatarModerationStatus   string
-	ModerationUpdatedAt      sql.NullTime
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-}
-
-func (q *Queries) GetUserByProviderSubject(ctx context.Context, arg GetUserByProviderSubjectParams) (GetUserByProviderSubjectRow, error) {
+func (q *Queries) GetUserByProviderSubject(ctx context.Context, arg GetUserByProviderSubjectParams) (User, error) {
 	row := q.db.QueryRowContext(ctx, getUserByProviderSubject, arg.Provider, arg.ProviderSubject)
-	var i GetUserByProviderSubjectRow
+	var i User
 	err := row.Scan(
 		&i.ID,
 		&i.Username,
@@ -198,23 +170,9 @@ WHERE username = ?
 LIMIT 1
 `
 
-type GetUserByUsernameRow struct {
-	ID                       uint64
-	Username                 string
-	PasswordHash             string
-	Nickname                 string
-	Avatar                   string
-	Status                   uint8
-	NicknameModerationStatus string
-	AvatarModerationStatus   string
-	ModerationUpdatedAt      sql.NullTime
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-}
-
-func (q *Queries) GetUserByUsername(ctx context.Context, username string) (GetUserByUsernameRow, error) {
+func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User, error) {
 	row := q.db.QueryRowContext(ctx, getUserByUsername, username)
-	var i GetUserByUsernameRow
+	var i User
 	err := row.Scan(
 		&i.ID,
 		&i.Username,
@@ -243,21 +201,21 @@ WHERE id = ?
 `
 
 type UpdateUserProfileParams struct {
-	Nickname            string
-	Avatar              string
-	NULLIF              interface{}
-	NULLIF_2            interface{}
-	ModerationUpdatedAt sql.NullTime
-	UpdatedAt           time.Time
-	ID                  uint64
+	Nickname                 string
+	Avatar                   string
+	NicknameModerationStatus string
+	AvatarModerationStatus   string
+	ModerationUpdatedAt      *time.Time
+	UpdatedAt                time.Time
+	ID                       uint64
 }
 
 func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error {
 	_, err := q.db.ExecContext(ctx, updateUserProfile,
 		arg.Nickname,
 		arg.Avatar,
-		arg.NULLIF,
-		arg.NULLIF_2,
+		arg.NicknameModerationStatus,
+		arg.AvatarModerationStatus,
 		arg.ModerationUpdatedAt,
 		arg.UpdatedAt,
 		arg.ID,
