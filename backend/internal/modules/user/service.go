@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"path"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"unicode"
 
 	"github.com/example/go-service/internal/apperror"
+	"github.com/example/go-service/internal/modules/moderation"
 	db "github.com/example/go-service/internal/store/sqlc"
 )
 
@@ -47,6 +49,7 @@ type Service struct {
 	lastAvatarUploads   map[uint64]time.Time
 	avatarPublicBaseURL string
 	logger              *slog.Logger
+	moderator           *moderation.Service
 }
 
 func NewService(store Store) *Service {
@@ -92,6 +95,12 @@ func (s *Service) SetLogger(logger *slog.Logger) {
 	}
 }
 
+func (s *Service) SetContentModerator(moderator *moderation.Service) {
+	if s != nil {
+		s.moderator = moderator
+	}
+}
+
 func (s *Service) GetProfile(ctx context.Context, id uint64) (ProfileResponse, error) {
 	user, err := s.store.GetUserByID(ctx, id)
 	if err != nil {
@@ -107,6 +116,9 @@ func (s *Service) GetProfile(ctx context.Context, id uint64) (ProfileResponse, e
 }
 
 func (s *Service) UpdateProfile(ctx context.Context, id uint64, input UpdateProfileInput) (ProfileResponse, error) {
+	if input.Nickname != nil {
+		return ProfileResponse{}, apperror.NewBusiness("NICKNAME_EDIT_DISABLED", http.StatusBadRequest, "昵称暂时无法修改", nil)
+	}
 	user, err := s.store.GetUserByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -120,19 +132,15 @@ func (s *Service) UpdateProfile(ctx context.Context, id uint64, input UpdateProf
 
 	nickname := user.Nickname
 	avatar := user.Avatar
-	if input.Nickname != nil {
-		var err error
-		nickname, err = NormalizeNickname(*input.Nickname)
-		if err != nil {
-			return ProfileResponse{}, invalidProfile(err.Error())
-		}
-	}
+	nicknameStatus := user.NicknameModerationStatus
+	avatarStatus := user.AvatarModerationStatus
 	if input.Avatar != nil {
 		var err error
 		avatar, err = s.normalizeProfileAvatar(*input.Avatar, id)
 		if err != nil {
 			return ProfileResponse{}, invalidProfile(err.Error())
 		}
+		avatarStatus = string(moderation.StatusApproved)
 	}
 	// Old accounts may contain empty fields from before profile defaults were
 	// introduced. Normalize them on the next profile read/update as well.
@@ -142,19 +150,31 @@ func (s *Service) UpdateProfile(ctx context.Context, id uint64, input UpdateProf
 	if strings.TrimSpace(avatar) == "" {
 		avatar = DefaultAvatar
 	}
+	if nicknameStatus == "" {
+		nicknameStatus = string(moderation.StatusApproved)
+	}
+	if avatarStatus == "" {
+		avatarStatus = string(moderation.StatusApproved)
+	}
 
 	now := time.Now().UTC()
 	if err := s.store.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
-		Nickname:  nickname,
-		Avatar:    avatar,
-		UpdatedAt: now,
-		ID:        id,
+		Nickname:                 nickname,
+		Avatar:                   avatar,
+		NicknameModerationStatus: nicknameStatus,
+		AvatarModerationStatus:   avatarStatus,
+		ModerationUpdatedAt:      &now,
+		UpdatedAt:                now,
+		ID:                       id,
 	}); err != nil {
 		return ProfileResponse{}, err
 	}
 
 	user.Nickname = nickname
 	user.Avatar = avatar
+	user.NicknameModerationStatus = nicknameStatus
+	user.AvatarModerationStatus = avatarStatus
+	user.ModerationUpdatedAt = &now
 	user.UpdatedAt = now
 	return toProfileResponse(user), nil
 }
@@ -213,6 +233,21 @@ func (s *Service) UploadAvatar(ctx context.Context, id uint64, data []byte, maxD
 		logUpload(false, "invalid_image", "")
 		return AvatarUploadResponse{}, invalidProfile(err.Error())
 	}
+	if s.moderator != nil {
+		decision, moderationErr := s.moderator.ModerateImage(ctx, id, "avatar_upload", encoded)
+		if moderationErr != nil || decision.Status == moderation.StatusUnavailable {
+			logUpload(false, "moderation_provider_unavailable", "")
+			return AvatarUploadResponse{}, apperror.NewBusiness("MODERATION_PROVIDER_UNAVAILABLE", http.StatusServiceUnavailable, "内容审核服务暂不可用", moderationErr)
+		}
+		if decision.Status == moderation.StatusRejected {
+			logUpload(false, "moderation_rejected", "")
+			return AvatarUploadResponse{}, apperror.NewBusiness("AVATAR_REJECTED", http.StatusBadRequest, "头像未通过内容审核，请更换后再试", nil)
+		}
+		if decision.Status == moderation.StatusPending {
+			logUpload(false, "moderation_pending", "")
+			return AvatarUploadResponse{ModerationStatus: string(moderation.StatusPending), Profile: toProfileResponse(user)}, nil
+		}
+	}
 	stored, err := s.avatarStorage.Save(ctx, id, encoded)
 	if err != nil {
 		logUpload(false, "storage_save_failed", "")
@@ -222,13 +257,20 @@ func (s *Service) UploadAvatar(ctx context.Context, id uint64, data []byte, maxD
 	if nickname == "" {
 		nickname = DefaultNickname
 	}
+	nicknameStatus := strings.TrimSpace(user.NicknameModerationStatus)
+	if nicknameStatus == "" {
+		nicknameStatus = string(moderation.StatusApproved)
+	}
 	oldAvatar := strings.TrimSpace(user.Avatar)
 	now := time.Now().UTC()
 	if err := s.store.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
-		Nickname:  nickname,
-		Avatar:    stored.URL,
-		UpdatedAt: now,
-		ID:        id,
+		Nickname:                 nickname,
+		Avatar:                   stored.URL,
+		NicknameModerationStatus: nicknameStatus,
+		AvatarModerationStatus:   string(moderation.StatusApproved),
+		ModerationUpdatedAt:      &now,
+		UpdatedAt:                now,
+		ID:                       id,
 	}); err != nil {
 		_ = s.avatarStorage.Delete(context.Background(), stored.Key)
 		logUpload(false, "profile_update_failed", "")
@@ -244,9 +286,12 @@ func (s *Service) UploadAvatar(ctx context.Context, id uint64, data []byte, maxD
 		}(oldAvatar)
 	}
 	user.Avatar = stored.URL
+	user.NicknameModerationStatus = nicknameStatus
+	user.AvatarModerationStatus = string(moderation.StatusApproved)
+	user.ModerationUpdatedAt = &now
 	user.UpdatedAt = now
 	logUpload(true, "", stored.URL)
-	return AvatarUploadResponse{AvatarURL: stored.URL, AvatarKey: stored.Key, Width: width, Height: height, Format: "webp", Profile: toProfileResponse(user)}, nil
+	return AvatarUploadResponse{AvatarURL: stored.URL, AvatarKey: stored.Key, Width: width, Height: height, Format: "webp", ModerationStatus: string(moderation.StatusApproved), Profile: toProfileResponse(user)}, nil
 }
 
 func (s *Service) allowAvatarUpload(id uint64, now time.Time) bool {
@@ -261,23 +306,39 @@ func (s *Service) allowAvatarUpload(id uint64, now time.Time) bool {
 }
 
 func toProfileResponse(user db.User) ProfileResponse {
-	nickname := strings.TrimSpace(user.Nickname)
-	if nickname == "" {
-		nickname = DefaultNickname
-	}
-	avatar := strings.TrimSpace(user.Avatar)
-	if avatar == "" {
-		avatar = DefaultAvatar
-	}
 	return ProfileResponse{
-		ID:        user.ID,
-		Username:  user.Username,
-		Nickname:  nickname,
-		Avatar:    avatar,
-		Status:    user.Status,
-		CreatedAt: user.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt: user.UpdatedAt.UTC().Format(time.RFC3339),
+		ID:                       user.ID,
+		Username:                 user.Username,
+		Nickname:                 SafePublicNickname(user.Nickname, user.NicknameModerationStatus),
+		Avatar:                   SafePublicAvatar(user.Avatar, user.AvatarModerationStatus),
+		Status:                   user.Status,
+		CreatedAt:                user.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:                user.UpdatedAt.UTC().Format(time.RFC3339),
+		NicknameModerationStatus: user.NicknameModerationStatus,
+		AvatarModerationStatus:   user.AvatarModerationStatus,
 	}
+}
+
+func SafePublicNickname(value, status string) string {
+	if !moderation.IsPubliclyApproved(moderation.Status(strings.TrimSpace(status))) {
+		return DefaultNickname
+	}
+	nickname, err := NormalizeNickname(value)
+	if err != nil {
+		return DefaultNickname
+	}
+	return nickname
+}
+
+func SafePublicAvatar(value, status string) string {
+	if !moderation.IsPubliclyApproved(moderation.Status(strings.TrimSpace(status))) {
+		return DefaultAvatar
+	}
+	avatar, err := NormalizeAvatar(value)
+	if err != nil {
+		return DefaultAvatar
+	}
+	return avatar
 }
 
 func invalidProfile(message string) error {

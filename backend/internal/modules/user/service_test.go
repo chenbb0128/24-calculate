@@ -13,19 +13,22 @@ import (
 	"time"
 
 	"github.com/example/go-service/internal/apperror"
+	"github.com/example/go-service/internal/modules/moderation"
 	db "github.com/example/go-service/internal/store/sqlc"
 	"github.com/gen2brain/webp"
 )
 
 func TestGetProfileReturnsPublicDTO(t *testing.T) {
 	store := &fakeStore{user: db.User{
-		ID:           7,
-		Username:     "alice",
-		PasswordHash: "must-not-leak",
-		Nickname:     "Alice",
-		Status:       StatusActive,
-		CreatedAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt:    time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		ID:                       7,
+		Username:                 "alice",
+		PasswordHash:             "must-not-leak",
+		Nickname:                 "Alice",
+		NicknameModerationStatus: string(moderation.StatusApproved),
+		AvatarModerationStatus:   string(moderation.StatusApproved),
+		Status:                   StatusActive,
+		CreatedAt:                time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:                time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 	}}
 	service := NewService(store)
 
@@ -38,21 +41,36 @@ func TestGetProfileReturnsPublicDTO(t *testing.T) {
 	}
 }
 
-func TestUpdateProfile(t *testing.T) {
+func TestUpdateProfileRejectsNicknameWithStableBusinessCode(t *testing.T) {
 	store := &fakeStore{user: db.User{ID: 7, Username: "alice", Nickname: "Old", Avatar: "old", Status: StatusActive}}
 	service := NewService(store)
 	nickname := "New"
-	avatar := "star"
 
-	profile, err := service.UpdateProfile(context.Background(), 7, UpdateProfileInput{Nickname: &nickname, Avatar: &avatar})
+	_, err := service.UpdateProfile(context.Background(), 7, UpdateProfileInput{Nickname: &nickname})
+	if err == nil {
+		t.Fatal("UpdateProfile() error = nil, want nickname edit disabled")
+	}
+	var appErr *apperror.AppError
+	if !errors.As(err, &appErr) || appErr.BusinessCode != "NICKNAME_EDIT_DISABLED" || appErr.HTTPStatus != 400 {
+		t.Fatalf("error = %v, app error = %+v", err, appErr)
+	}
+	if store.updated.ID != 0 {
+		t.Fatalf("disabled nickname changed profile: %+v", store.updated)
+	}
+}
+
+func TestGetProfileHidesUnreviewedProfileFromPublicDTO(t *testing.T) {
+	service := NewService(&fakeStore{user: db.User{
+		ID: 7, Username: "alice", Nickname: "违规昵称", Avatar: "https://calc-api.pdurl.cn/avatars/7/bad.webp", Status: StatusActive,
+		NicknameModerationStatus: string(moderation.StatusRejected), AvatarModerationStatus: string(moderation.StatusPending),
+	}})
+
+	profile, err := service.GetProfile(context.Background(), 7)
 	if err != nil {
-		t.Fatalf("UpdateProfile() error = %v", err)
+		t.Fatalf("GetProfile() error = %v", err)
 	}
-	if profile.Nickname != nickname || profile.Avatar != avatar {
-		t.Fatalf("profile = %+v", profile)
-	}
-	if store.updated.Nickname != nickname || store.updated.Avatar != avatar {
-		t.Fatalf("updated params = %+v", store.updated)
+	if profile.Nickname != DefaultNickname || profile.Avatar != DefaultAvatar {
+		t.Fatalf("unsafe profile = %+v", profile)
 	}
 }
 
@@ -252,6 +270,65 @@ func TestUploadAvatarUsesConfiguredRateLimit(t *testing.T) {
 	}
 }
 
+func TestUploadAvatarRejectedByModeratorLeavesOldAvatarAndDoesNotSave(t *testing.T) {
+	store := &fakeStore{user: db.User{ID: 7, Username: "alice", Nickname: "玩家", Avatar: DefaultAvatar, Status: StatusActive}}
+	storage := &fakeAvatarStorage{avatar: StoredAvatar{Key: "avatars/7/new.webp", URL: "https://cdn.example.com/avatars/7/new.webp"}}
+	service := NewServiceWithAvatarStorage(store, storage, 2<<20, 4096, time.Minute)
+	service.SetContentModerator(moderation.NewService(fakeModerationProvider{image: moderation.ProviderResult{Status: moderation.StatusRejected, ReasonCode: "87014"}}, nil))
+
+	_, err := service.UploadAvatar(context.Background(), 7, testPNG(t, 300, 300), 4096)
+	var appErr *apperror.AppError
+	if !errors.As(err, &appErr) || appErr.BusinessCode != "AVATAR_REJECTED" {
+		t.Fatalf("error = %v, app error = %+v", err, appErr)
+	}
+	if store.user.Avatar != DefaultAvatar || store.updated.ID != 0 || len(storage.saved) != 0 {
+		t.Fatalf("rejected upload changed state: user = %+v, updated = %+v, saved = %d", store.user, store.updated, len(storage.saved))
+	}
+}
+
+func TestUploadAvatarPendingLeavesOldAvatarAndReturnsNoURL(t *testing.T) {
+	store := &fakeStore{user: db.User{ID: 7, Username: "alice", Nickname: "玩家", Avatar: DefaultAvatar, Status: StatusActive}}
+	storage := &fakeAvatarStorage{avatar: StoredAvatar{Key: "avatars/7/new.webp", URL: "https://cdn.example.com/avatars/7/new.webp"}}
+	service := NewServiceWithAvatarStorage(store, storage, 2<<20, 4096, time.Minute)
+	service.SetContentModerator(moderation.NewService(fakeModerationProvider{image: moderation.ProviderResult{Status: moderation.StatusPending}}, nil))
+
+	result, err := service.UploadAvatar(context.Background(), 7, testPNG(t, 300, 300), 4096)
+	if err != nil || result.ModerationStatus != string(moderation.StatusPending) || result.AvatarURL != "" {
+		t.Fatalf("result = %+v, err = %v", result, err)
+	}
+	if store.user.Avatar != DefaultAvatar || store.updated.ID != 0 || len(storage.saved) != 0 {
+		t.Fatalf("pending upload changed state: user = %+v, updated = %+v, saved = %d", store.user, store.updated, len(storage.saved))
+	}
+}
+
+func TestUploadAvatarProviderUnavailableDoesNotPublish(t *testing.T) {
+	store := &fakeStore{user: db.User{ID: 7, Username: "alice", Nickname: "玩家", Avatar: DefaultAvatar, Status: StatusActive}}
+	storage := &fakeAvatarStorage{avatar: StoredAvatar{Key: "avatars/7/new.webp", URL: "https://cdn.example.com/avatars/7/new.webp"}}
+	service := NewServiceWithAvatarStorage(store, storage, 2<<20, 4096, time.Minute)
+	service.SetContentModerator(moderation.NewService(fakeModerationProvider{err: errors.New("provider down")}, nil))
+
+	_, err := service.UploadAvatar(context.Background(), 7, testPNG(t, 300, 300), 4096)
+	var appErr *apperror.AppError
+	if !errors.As(err, &appErr) || appErr.BusinessCode != "MODERATION_PROVIDER_UNAVAILABLE" || appErr.HTTPStatus != 503 {
+		t.Fatalf("error = %v, app error = %+v", err, appErr)
+	}
+	if store.updated.ID != 0 || len(storage.saved) != 0 {
+		t.Fatalf("unavailable moderation published upload: updated = %+v, saved = %d", store.updated, len(storage.saved))
+	}
+}
+
+func TestSafePublicProfileHidesNonApprovedValues(t *testing.T) {
+	if got := SafePublicNickname("违规昵称", string(moderation.StatusRejected)); got != DefaultNickname {
+		t.Fatalf("SafePublicNickname() = %q", got)
+	}
+	if got := SafePublicAvatar("https://calc-api.pdurl.cn/avatars/7/bad.webp", string(moderation.StatusPending)); got != DefaultAvatar {
+		t.Fatalf("SafePublicAvatar() = %q", got)
+	}
+	if got := SafePublicNickname("玩家", string(moderation.StatusApproved)); got != "玩家" {
+		t.Fatalf("approved nickname = %q", got)
+	}
+}
+
 func testPNG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -321,6 +398,20 @@ type fakeAvatarStorage struct {
 	saved   []byte
 	err     error
 	deleted []string
+}
+
+type fakeModerationProvider struct {
+	text  moderation.ProviderResult
+	image moderation.ProviderResult
+	err   error
+}
+
+func (f fakeModerationProvider) CheckText(context.Context, moderation.TextCheckRequest) (moderation.ProviderResult, error) {
+	return f.text, f.err
+}
+
+func (f fakeModerationProvider) CheckImage(context.Context, moderation.ImageCheckRequest) (moderation.ProviderResult, error) {
+	return f.image, f.err
 }
 
 func (f *fakeAvatarStorage) Save(_ context.Context, _ uint64, data []byte) (StoredAvatar, error) {
