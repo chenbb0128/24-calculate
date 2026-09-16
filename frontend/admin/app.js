@@ -1,3 +1,5 @@
+const VALID_STATUSES = new Set(['active', 'disabled']);
+
 function filterUsers(users, filters) {
   const query = String(filters.query || '').trim().toLowerCase();
   return users.filter((user) => {
@@ -20,11 +22,15 @@ function paginateUsers(users, page, pageSize) {
 
 function setUserStatus(users, ids, status) {
   const selected = new Set(ids);
-  return users.map((user) => selected.has(user.id) ? { ...user, status } : { ...user });
+  return users.map((user) => selected.has(user.id) && VALID_STATUSES.has(status)
+    ? { ...user, status }
+    : { ...user });
 }
 
 function serializeUserState(users) {
-  return JSON.stringify(users.map((user) => ({ id: user.id, status: user.status })));
+  return JSON.stringify(users
+    .filter((user) => VALID_STATUSES.has(user.status))
+    .map((user) => ({ id: user.id, status: user.status })));
 }
 
 function restoreUserState(raw, fallbackUsers) {
@@ -47,7 +53,7 @@ function restoreUserState(raw, fallbackUsers) {
 
   return fallback.map((user) => {
     const savedStatus = persistedStatuses.get(user.id);
-    const status = savedStatus === 'active' || savedStatus === 'disabled'
+    const status = VALID_STATUSES.has(savedStatus)
       ? savedStatus
       : user.status;
     return { ...user, status };

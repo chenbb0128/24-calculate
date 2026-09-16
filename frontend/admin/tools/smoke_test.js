@@ -30,6 +30,15 @@ assert.equal(changed[1].status, 'disabled');
 assert.equal(changed[2].status, 'disabled');
 assert.equal(users[0].status, 'active');
 
+const unsupportedStatus = setUserStatus(users, ['U1001'], 'pending');
+assert.deepEqual(unsupportedStatus.map((user) => user.status), ['active', 'disabled', 'active']);
+assert.deepEqual(JSON.parse(serializeUserState(unsupportedStatus)), [
+  { id: 'U1001', status: 'active' },
+  { id: 'U1002', status: 'disabled' },
+  { id: 'U1003', status: 'active' }
+]);
+assert.deepEqual(JSON.parse(serializeUserState([{ id: 'U1001', status: 'pending' }])), []);
+
 const restored = restoreUserState(serializeUserState(changed), users);
 assert.deepEqual(JSON.parse(serializeUserState(changed)), [
   { id: 'U1001', status: 'disabled' },
