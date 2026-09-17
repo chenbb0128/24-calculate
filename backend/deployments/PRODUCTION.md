@@ -73,7 +73,7 @@ Expected Jenkins credentials:
 
 ```text
 aliyun-acr-zdzq              # username/password for registry.cn-hangzhou.aliyuncs.com
-jenkins-24-calculate-prod    # SSH key authorized for /usr/local/bin/24-calculate-deploy-local-image-entrypoint
+twenty-four-calculate-prod-ssh # SSH key authorized for /usr/local/bin/24-calculate-deploy-local-image-entrypoint
 ```
 
 The Jenkins job reads the non-secret managed environment template from:

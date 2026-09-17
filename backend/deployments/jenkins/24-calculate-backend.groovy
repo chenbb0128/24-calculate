@@ -18,11 +18,12 @@ pipeline {
   environment {
     IMAGE_NAME = 'registry.cn-hangzhou.aliyuncs.com/zdzq/24-calculate-backend'
     NAS_REPO = 'ssh://chenhua@192.168.31.240/volume1/docker/24-calculate-git/24-calculate.git'
+    NAS_GIT_SSH_COMMAND = 'ssh -i /var/jenkins_home/.ssh/nas_mirror_24_calc_ed25519 -o UserKnownHostsFile=/var/jenkins_home/.ssh/known_hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes'
     COMPONENT_PATH = 'backend'
     PROD_HOST = '116.62.159.237'
     PROD_PORT = '22'
     PROD_USER = 'calculate-deploy'
-    PROD_SSH_CREDENTIALS_ID = 'jenkins-24-calculate-prod'
+    PROD_SSH_CREDENTIALS_ID = 'twenty-four-calculate-prod-ssh'
     NO_PROXY = '127.0.0.1,localhost,192.168.31.240,116.62.159.237,calc-api.pdurl.cn'
     no_proxy = '127.0.0.1,localhost,192.168.31.240,116.62.159.237,calc-api.pdurl.cn'
   }
@@ -41,9 +42,7 @@ pipeline {
             echo 'APP_SHA 必须是 40 位小写 Git commit SHA。' >&2
             exit 64
           fi
-          KEY=/var/jenkins_home/.ssh/nas_classmate_git_ed25519
-          KNOWN=/var/jenkins_home/.ssh/known_hosts
-          export GIT_SSH_COMMAND="ssh -i $KEY -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN"
+          export GIT_SSH_COMMAND="$NAS_GIT_SSH_COMMAND"
           git clone --depth=100 --branch "${BRANCH:-master}" "$NAS_REPO" source
           git -C source rev-parse "origin/${BRANCH:-master}" > BRANCH_SHA
           if [ -n "${APP_SHA:-}" ]; then
