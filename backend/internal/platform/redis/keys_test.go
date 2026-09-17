@@ -1,6 +1,20 @@
 package redis
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestWeChatProfileKeysDoNotContainRawCode(t *testing.T) {
+	raw := "wx-code-with-sensitive-value"
+	key := WeChatProfileCodeKey("hashed-code")
+	if strings.Contains(key, raw) || !strings.Contains(key, "wechat-profile") {
+		t.Fatalf("key = %q, must contain only the scoped hash", key)
+	}
+	if got := WeChatProfileSyncRateKey(42); !strings.Contains(got, "wechat-profile") || strings.Contains(got, raw) {
+		t.Fatalf("rate key = %q, must be scoped without raw credentials", got)
+	}
+}
 
 func TestAccountBlockedKeyUsesOnlyRoleAndNumericID(t *testing.T) {
 	key := AccountBlockedKey("user", 42)

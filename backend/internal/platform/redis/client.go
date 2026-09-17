@@ -140,6 +140,36 @@ func (c *Client) AllowAvatarUpload(ctx context.Context, userID uint64, limit int
 	return count <= limit, nil
 }
 
+func (c *Client) ClaimWeChatProfileCode(ctx context.Context, value string, ttl time.Duration) (bool, error) {
+	if c == nil || c.Client == nil {
+		return false, errors.New("redis client is nil")
+	}
+	if strings.TrimSpace(value) == "" || ttl <= 0 {
+		return false, errors.New("WeChat profile code claim parameters are invalid")
+	}
+	return c.SetNX(ctx, WeChatProfileCodeKey(value), "1", ttl).Result()
+}
+
+func (c *Client) AllowWeChatProfileSync(ctx context.Context, userID uint64, limit int64, window time.Duration) (bool, error) {
+	if c == nil || c.Client == nil {
+		return false, errors.New("redis client is nil")
+	}
+	if userID == 0 || limit <= 0 || window <= 0 {
+		return false, errors.New("WeChat profile sync rate limit configuration is invalid")
+	}
+	key := WeChatProfileSyncRateKey(userID)
+	count, err := c.Incr(ctx, key).Result()
+	if err != nil {
+		return false, err
+	}
+	if count == 1 {
+		if err := c.Expire(ctx, key, window).Err(); err != nil {
+			return false, err
+		}
+	}
+	return count <= limit, nil
+}
+
 // AcquireDistributedLock uses a short-lived token so a late release cannot
 // delete a lock acquired by another request after the original lock expired.
 // The scope is hashed by DistributedLockKey and never appears verbatim in a
