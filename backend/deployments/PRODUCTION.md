@@ -1,14 +1,17 @@
 # 24-calculate Production Deployment
 
-This project deploys only the Go backend. The WeChat mini game frontend is not deployed by this server workflow.
+This project deploys only the Go backend. The WeChat mini game frontend is not
+deployed by the production server workflow.
 
 ## Current Server Layout
 
 ```text
 /data/website/24-calculate/server       # Git checkout
 /data/website/24-calculate/avatars      # Avatar volume
-/data/backups/24-calculate/mysql        # Migration backups
+/data/backups/24-calculate/mysql        # MySQL backups
+/data/backups/24-calculate/env          # protected .env backups
 /data/docker-container/services/nginx/sites/calc-api.pdurl.cn.conf
+/etc/24-calculate/docker-compose.production.yml
 ```
 
 Runtime containers:
@@ -28,64 +31,114 @@ Docker network: docker-container_backend
 
 ## Deployment Model
 
-GitHub Actions builds and publishes the production image to GHCR:
+Production follows the same ACR/Jenkins pattern used by the other image-based
+projects on this server.
+
+GitHub Actions is responsible for CI and mirroring `master` to NAS. It does not
+deploy production directly. The old GHCR-based GitHub Actions deployment is
+disabled because the production server now requires a managed config payload.
+
+Jenkins builds and publishes the backend image:
 
 ```text
-ghcr.io/chenbb0128/24-calculate-backend:<commit-sha>
+registry.cn-hangzhou.aliyuncs.com/zdzq/24-calculate-backend:<commit-sha>
 ```
 
-The production server no longer compiles Go during normal deployment. It only:
+Then Jenkins SSHes to the restricted production entrypoint with:
+
+```text
+<commit-sha> --image-input=acr --config-sha=<64-char sha> --env-prod-b64=<base64 managed env>
+```
+
+The production server then:
 
 1. Verifies the requested SHA is the current `origin/master`.
-2. Pulls the immutable GHCR image for that SHA.
+2. Pulls the immutable ACR image for that SHA.
 3. Fast-forwards the server checkout.
-4. Backs up MySQL.
-5. Runs Goose migrations.
-6. Recreates only the API and worker containers.
-7. Checks `/ready` locally and through `https://calc-api.pdurl.cn/ready`.
+4. Installs the managed production environment while preserving protected
+   secret values from the server-side root-owned `.env`.
+5. Backs up MySQL.
+6. Runs Goose migrations.
+7. Recreates only the API and worker containers.
+8. Checks `/ready` locally and through `https://calc-api.pdurl.cn/ready`.
 
 Do not run `docker compose down -v` on the production server.
 
-## GitHub Secrets
+## Jenkins Job
 
-The production workflow needs these repository secrets:
+Use [jenkins/24-calculate-backend.groovy](jenkins/24-calculate-backend.groovy)
+as the production Jenkins pipeline definition.
+
+Expected Jenkins credentials:
 
 ```text
-PROD_HOST=116.62.159.237
-PROD_PORT=22
-PROD_USER=calculate-deploy
-PROD_SSH_KEY=<private key for github-actions-24-calculate>
-PROD_KNOWN_HOSTS=<ssh-keyscan output for the server>
+aliyun-acr-zdzq              # username/password for registry.cn-hangzhou.aliyuncs.com
+jenkins-24-calculate-prod    # SSH key authorized for /usr/local/bin/24-calculate-deploy-local-image-entrypoint
 ```
 
-`GITHUB_TOKEN` is used automatically for GHCR push/pull during the workflow.
+The Jenkins job reads the non-secret managed environment template from:
 
-## Server Install
+```text
+backend/deployments/production.env.managed
+```
 
-Install the restricted deploy user and commands from the server as root:
+Sensitive values in that template must remain `${PROD_SECRET:...}` markers.
+The production server resolves those markers from its existing protected
+`backend/deployments/.env`.
+
+## Server Entrypoints
+
+The Jenkins deployment key is restricted to:
+
+```text
+/usr/local/bin/24-calculate-deploy-local-image-entrypoint
+```
+
+That entrypoint validates the commit SHA, `--image-input`, `--config-sha`, and
+`--env-prod-b64`, then calls:
+
+```text
+/usr/local/sbin/deploy-24-calculate
+```
+
+The repository keeps install scripts for initial setup and recovery, but the
+current production host already has the restricted deploy user and root-owned
+deployment scripts installed.
+
+For recovery installs, run the installer as root with the Jenkins deploy public
+key:
 
 ```bash
 cd /data/website/24-calculate/server
 bash backend/deployments/server/install-deploy-components \
-  backend/deployments/server/24-calculate-deploy-entrypoint \
+  backend/deployments/server/24-calculate-deploy-local-image-entrypoint \
   backend/deployments/server/deploy-24-calculate \
-  /tmp/github-actions-24-calculate.pub
+  backend/deployments/server/24-calculate-managed-env.sh \
+  /tmp/jenkins-24-calculate-prod.pub
 ```
 
-The installer creates `calculate-deploy`, appends one forced-command SSH key, and allows that user to run only `/usr/local/sbin/deploy-24-calculate` through sudo.
+## Manual Server-Side Deploy
 
-## Manual Deploy
-
-A manual server-side deploy can still be run by root when needed:
+A root operator can still deploy manually from the production server if needed:
 
 ```bash
 cd /data/website/24-calculate/server
 git fetch --prune origin master
-sha=$(git rev-parse origin/master)
-printf '%s\n%s\n' '<ghcr-user>' '<ghcr-token>' | /usr/local/sbin/deploy-24-calculate "$sha"
+sha="$(git rev-parse origin/master)"
+env_template="$(mktemp /tmp/24-calculate-env-template.XXXXXX)"
+git show "$sha:backend/deployments/production.env.managed" > "$env_template"
+config_sha="$(grep -m1 '^ZDZQ_CONFIG_SHA=' "$env_template" | cut -d= -f2-)"
+env_prod_b64="$(base64 -w0 "$env_template")"
+rm -f "$env_template"
+printf '%s\n%s\n' '<acr-user>' '<acr-password>' \
+  | /usr/local/sbin/deploy-24-calculate \
+      "$sha" \
+      --image-input=acr \
+      --config-sha="$config_sha" \
+      --env-prod-b64="$env_prod_b64"
 ```
 
-For normal releases, use the GitHub Actions workflow instead.
+For normal releases, use Jenkins instead.
 
 ## Health Checks
 
