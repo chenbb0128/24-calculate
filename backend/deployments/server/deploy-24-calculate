@@ -2,23 +2,36 @@
 
 set -Eeuo pipefail
 
-readonly EXPECTED_SHA="${1:-}"
-readonly REQUESTED_IMAGE_INPUT_MODE="${2:-}"
-if [[ "$REQUESTED_IMAGE_INPUT_MODE" == --image-input=* ]]; then
-    readonly IMAGE_INPUT_MODE="${REQUESTED_IMAGE_INPUT_MODE#--image-input=}"
-elif [[ -z "$REQUESTED_IMAGE_INPUT_MODE" ]]; then
-    readonly IMAGE_INPUT_MODE="${IMAGE_INPUT_MODE:-registry}"
-else
-    printf 'Unsupported argument: %s\n' "$REQUESTED_IMAGE_INPUT_MODE" >&2
-    exit 64
-fi
+EXPECTED_SHA="${1:-}"
+if [[ $# -gt 0 ]]; then shift; fi
+IMAGE_INPUT_MODE="${IMAGE_INPUT_MODE:-registry}"
+CONFIG_SHA=""
+ENV_PROD_B64=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --image-input=*) IMAGE_INPUT_MODE="${1#--image-input=}" ;;
+        --config-sha=*) CONFIG_SHA="${1#--config-sha=}" ;;
+        --env-prod-b64=*) ENV_PROD_B64="${1#--env-prod-b64=}" ;;
+        *) printf 'Unsupported argument: %s\n' "$1" >&2; exit 64 ;;
+    esac
+    shift
+done
+
+readonly EXPECTED_SHA
+readonly IMAGE_INPUT_MODE
+readonly CONFIG_SHA
+readonly ENV_PROD_B64
 
 readonly APP_DIR="/data/website/24-calculate/server"
 readonly DEPLOY_DIR="$APP_DIR/backend/deployments"
-readonly COMPOSE_FILE="$DEPLOY_DIR/docker-compose.production.yml"
+readonly COMPOSE_FILE="/etc/24-calculate/docker-compose.production.yml"
 readonly ENV_FILE="$DEPLOY_DIR/.env"
-readonly IMAGE_NAME="ghcr.io/chenbb0128/24-calculate-backend"
+readonly IMAGE_NAME="registry.cn-hangzhou.aliyuncs.com/zdzq/24-calculate-backend"
+readonly ACR_REGISTRY="${ACR_REGISTRY:-registry.cn-hangzhou.aliyuncs.com}"
+readonly ACR_IMAGE_NAME="${ACR_IMAGE_NAME:-registry.cn-hangzhou.aliyuncs.com/zdzq/24-calculate-backend}"
 readonly API_CONTAINER="twenty_four_calculate_api"
+readonly WORKER_CONTAINER="twenty_four_calculate_worker"
 readonly HEALTH_URL="https://calc-api.pdurl.cn/ready"
 readonly LOCAL_HEALTH_URL="http://127.0.0.1:18082/ready"
 readonly AVATAR_DIR="/data/website/24-calculate/avatars"
@@ -27,14 +40,48 @@ readonly LOCK_FILE="/var/lock/24-calculate-deploy.lock"
 readonly IMAGE_ARCHIVE_MAX_MB="${IMAGE_ARCHIVE_MAX_MB:-2048}"
 readonly IMAGE_UPLOAD_TIMEOUT_SECONDS="${IMAGE_UPLOAD_TIMEOUT_SECONDS:-900}"
 readonly IMAGE_LOAD_TIMEOUT_SECONDS="${IMAGE_LOAD_TIMEOUT_SECONDS:-900}"
+readonly ENV_HELPER="/usr/local/libexec/24-calculate-managed-env.sh"
+readonly ENV_BACKUP_DIR="/data/backups/24-calculate/env"
+readonly -a ENV_SECRET_KEYS=(
+    GO_SERVICE_DATABASE_USER
+    GO_SERVICE_DATABASE_PASSWORD
+    GO_SERVICE_REDIS_PASSWORD
+    GO_SERVICE_WECHAT_APP_SECRET
+    GO_SERVICE_JWT_SECRET
+    GO_SERVICE_GAME_DAILY_SEED_SECRET
+    GO_SERVICE_GAME_CAMPAIGN_CONTENT_SECRET
+)
+readonly -a ENV_NONEMPTY_SECRET_KEYS=(
+    GO_SERVICE_DATABASE_USER
+    GO_SERVICE_DATABASE_PASSWORD
+    GO_SERVICE_WECHAT_APP_SECRET
+    GO_SERVICE_JWT_SECRET
+    GO_SERVICE_GAME_DAILY_SEED_SECRET
+    GO_SERVICE_GAME_CAMPAIGN_CONTENT_SECRET
+)
+readonly -a ENV_REQUIRED_KEYS=(
+    ZDZQ_CONFIG_SHA
+    COMPOSE_PROJECT_NAME
+    SHARED_DOCKER_NETWORK
+    API_BIND_HOST
+    API_PORT
+    GO_SERVICE_DATABASE_HOST
+    GO_SERVICE_DATABASE_PORT
+    GO_SERVICE_DATABASE_USER
+    GO_SERVICE_DATABASE_PASSWORD
+    GO_SERVICE_DATABASE_NAME
+    GO_SERVICE_REDIS_ADDR
+    GO_SERVICE_REDIS_DB
+    GO_SERVICE_JWT_SECRET
+)
 
 docker_config_dir=""
 image_archive=""
 backup_temporary_file=""
 previous_image_id=""
 services_switched=0
-ghcr_user=""
-ghcr_token=""
+registry_user=""
+registry_password=""
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -44,6 +91,10 @@ fail() {
     log "ERROR: $*" >&2
     exit 1
 }
+
+[[ -r "$ENV_HELPER" ]] || fail "Managed environment helper not found: $ENV_HELPER"
+# shellcheck source=/dev/null
+source "$ENV_HELPER"
 
 compose() {
     APP_IMAGE_TAG="$EXPECTED_SHA" docker compose \
@@ -143,26 +194,59 @@ backup_database() {
 }
 
 read_registry_credentials() {
-    IFS= read -r ghcr_user || fail 'Missing GHCR username on standard input'
-    IFS= read -r ghcr_token || fail 'Missing GHCR token on standard input'
-    [[ "$ghcr_user" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] \
-        || fail 'Invalid GHCR username'
-    [[ -n "$ghcr_token" ]] || fail 'GHCR token must not be empty'
+    local label="$1"
+
+    IFS= read -r registry_user || fail "Missing $label username on standard input"
+    IFS= read -r registry_password || fail "Missing $label password on standard input"
+    registry_user=${registry_user//$'\r'/}
+    registry_user=${registry_user//$'\n'/}
+    registry_password=${registry_password//$'\r'/}
+    registry_password=${registry_password//$'\n'/}
+    [[ -n "$registry_user" ]] || fail "$label username must not be empty"
+    [[ -n "$registry_password" ]] || fail "$label password must not be empty"
 }
 
-pull_registry_image() {
-    read_registry_credentials
+pull_image_with_credentials() {
+    local registry="$1"
+    local source_image="$2"
+    local target_image="$3"
+    local label="$4"
+
+    read_registry_credentials "$label"
 
     docker_config_dir="$(mktemp -d /tmp/24-calculate-docker-config.XXXXXX)"
     chmod 0700 "$docker_config_dir"
 
-    log "Pulling immutable image $IMAGE_NAME:$EXPECTED_SHA"
-    printf '%s' "$ghcr_token" | DOCKER_CONFIG="$docker_config_dir" \
-        docker login ghcr.io --username "$ghcr_user" --password-stdin >/dev/null
-    DOCKER_CONFIG="$docker_config_dir" docker pull "$IMAGE_NAME:$EXPECTED_SHA"
-    ghcr_token=""
+    log "Pulling immutable image $source_image"
+    printf '%s' "$registry_password" | DOCKER_CONFIG="$docker_config_dir" \
+        docker login "$registry" --username "$registry_user" --password-stdin >/dev/null
+    DOCKER_CONFIG="$docker_config_dir" docker pull "$source_image"
+    registry_password=""
+
+    if [[ "$source_image" != "$target_image" ]]; then
+        docker tag "$source_image" "$target_image"
+    fi
+    docker image inspect "$target_image" >/dev/null \
+        || fail "Pulled image is missing expected tag: $target_image"
+
     rm -rf -- "$docker_config_dir"
     docker_config_dir=""
+}
+
+pull_registry_image() {
+    pull_image_with_credentials \
+        "$ACR_REGISTRY" \
+        "$IMAGE_NAME:$EXPECTED_SHA" \
+        "$IMAGE_NAME:$EXPECTED_SHA" \
+        "ACR"
+}
+
+pull_acr_image() {
+    pull_image_with_credentials \
+        "$ACR_REGISTRY" \
+        "$ACR_IMAGE_NAME:$EXPECTED_SHA" \
+        "$IMAGE_NAME:$EXPECTED_SHA" \
+        "ACR"
 }
 
 receive_streamed_image() {
@@ -202,6 +286,9 @@ prepare_image() {
         registry)
             pull_registry_image
             ;;
+        acr)
+            pull_acr_image
+            ;;
         tar)
             receive_streamed_image
             ;;
@@ -209,6 +296,38 @@ prepare_image() {
             fail "Unsupported image input mode: $IMAGE_INPUT_MODE"
             ;;
     esac
+}
+
+
+verify_container_image() {
+    local container="$1"
+    local expected_image="$2"
+    local actual_image
+
+    actual_image="$(docker inspect "$container" --format '{{.Config.Image}}')" \
+        || fail "Container was not created: $container"
+    [[ "$actual_image" == "$expected_image" ]] \
+        || fail "Container $container is running $actual_image, expected $expected_image"
+    log "Container $container is running expected image $expected_image"
+}
+
+verify_deployed_revision() {
+    local current_head
+    local expected_image
+    local deployed_config_sha
+
+    current_head="$(git rev-parse HEAD)"
+    [[ "$current_head" == "$EXPECTED_SHA" ]] \
+        || fail "Production worktree HEAD is $current_head, expected $EXPECTED_SHA"
+
+    deployed_config_sha="$(grep -m1 '^ZDZQ_CONFIG_SHA=' "$ENV_FILE" | cut -d= -f2-)" \
+        || fail 'Deployed environment is missing ZDZQ_CONFIG_SHA'
+    [[ "$deployed_config_sha" == "$CONFIG_SHA" ]] \
+        || fail "Deployed CONFIG_SHA is $deployed_config_sha, expected $CONFIG_SHA"
+
+    expected_image="$IMAGE_NAME:$EXPECTED_SHA"
+    verify_container_image "$API_CONTAINER" "$expected_image"
+    verify_container_image "$WORKER_CONTAINER" "$expected_image"
 }
 
 restore_previous_image() {
@@ -225,9 +344,14 @@ restore_previous_image() {
 cleanup() {
     local exit_code=$?
 
-    if [[ "$exit_code" -ne 0 && "$services_switched" -eq 1 ]]; then
-        restore_previous_image || log 'Automatic application rollback failed'
+    if [[ "$exit_code" -ne 0 ]]; then
+        zdzq_env_restore "$ENV_FILE" || log 'Automatic environment rollback failed'
+        if [[ "$services_switched" -eq 1 ]]; then
+            restore_previous_image || log 'Automatic application rollback failed'
+        fi
     fi
+
+    zdzq_env_cleanup
 
     if [[ -n "$backup_temporary_file" ]]; then
         rm -f -- "$backup_temporary_file"
@@ -254,6 +378,10 @@ trap cleanup EXIT
 [[ "$(id -u)" -eq 0 ]] || fail 'This script must run as root'
 [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] \
     || fail 'Expected one lowercase 40-character Git commit SHA'
+[[ "$CONFIG_SHA" =~ ^[0-9a-f]{64}$ ]] \
+    || fail 'Expected one lowercase 64-character CONFIG_SHA'
+[[ -n "$ENV_PROD_B64" ]] \
+    || fail 'Managed production environment payload is required'
 
 exec 9>"$LOCK_FILE"
 flock -n 9 || fail 'Another deployment is already running'
@@ -290,6 +418,14 @@ prepare_image
 log "Updating application from $CURRENT_SHA to $EXPECTED_SHA"
 git merge --quiet --ff-only "$EXPECTED_SHA"
 
+zdzq_env_install \
+    "$ENV_FILE" \
+    "$ENV_PROD_B64" \
+    "$CONFIG_SHA" \
+    "$ENV_BACKUP_DIR" \
+    ENV_SECRET_KEYS \
+    ENV_REQUIRED_KEYS \
+    ENV_NONEMPTY_SECRET_KEYS
 install -d -m 0755 -o 100 -g 101 "$AVATAR_DIR"
 compose config --quiet
 backup_database
@@ -316,8 +452,11 @@ log 'Checking local and public readiness endpoints'
 for attempt in {1..20}; do
     if curl --fail --silent --show-error --max-time 5 "$LOCAL_HEALTH_URL" >/dev/null \
         && curl --fail --silent --show-error --max-time 5 "$HEALTH_URL" >/dev/null; then
+        verify_deployed_revision
         services_switched=0
         log "Deployment completed successfully at $EXPECTED_SHA"
+        ZDZQ_ENV_CHANGED=0
+        zdzq_env_cleanup
         exit 0
     fi
 

@@ -2,11 +2,60 @@
 
 set -Eeuo pipefail
 
-readonly REQUESTED_SHA="${SSH_ORIGINAL_COMMAND:-}"
+read -r REQUESTED_SHA OPT1 OPT2 OPT3 EXTRA <<< "${SSH_ORIGINAL_COMMAND:-}"
+REQUESTED_SHA=${REQUESTED_SHA//$'\r'/}
+REQUESTED_SHA=${REQUESTED_SHA//$'\n'/}
+OPT1=${OPT1:-}
+OPT2=${OPT2:-}
+OPT3=${OPT3:-}
+EXTRA=${EXTRA:-}
 
 if [[ ! "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
     printf 'Only a lowercase 40-character Git commit SHA is accepted.\n' >&2
     exit 64
 fi
+if [[ -n "$EXTRA" ]]; then
+    printf 'Only SHA, image input mode, CONFIG_SHA, and managed env are accepted.\n' >&2
+    exit 64
+fi
 
-exec /usr/bin/sudo -n /usr/local/sbin/deploy-24-calculate "$REQUESTED_SHA" --image-input=tar
+REQUESTED_IMAGE_INPUT_MODE="tar"
+REQUESTED_CONFIG_SHA=""
+REQUESTED_ENV_PROD_B64=""
+
+for arg in "$OPT1" "$OPT2" "$OPT3"; do
+    [[ -z "$arg" ]] && continue
+    arg=${arg//$'\r'/}
+    arg=${arg//$'\n'/}
+    case "$arg" in
+        --image-input=tar|--image-input=acr)
+            REQUESTED_IMAGE_INPUT_MODE="${arg#--image-input=}"
+            ;;
+        --config-sha=*)
+            REQUESTED_CONFIG_SHA="${arg#--config-sha=}"
+            ;;
+        --env-prod-b64=*)
+            REQUESTED_ENV_PROD_B64="${arg#--env-prod-b64=}"
+            ;;
+        *)
+            printf 'Unsupported deployment argument.\n' >&2
+            exit 64
+            ;;
+    esac
+done
+
+if [[ ! "$REQUESTED_CONFIG_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'Only a lowercase 64-character CONFIG_SHA is accepted.\n' >&2
+    exit 64
+fi
+if [[ ! "$REQUESTED_ENV_PROD_B64" =~ ^[A-Za-z0-9+/]+={0,2}$ \
+    || ${#REQUESTED_ENV_PROD_B64} -gt 32768 ]]; then
+    printf 'Managed production env payload must be valid bounded base64.\n' >&2
+    exit 64
+fi
+
+exec /usr/bin/sudo -n /usr/local/sbin/deploy-24-calculate \
+    "$REQUESTED_SHA" \
+    --image-input="$REQUESTED_IMAGE_INPUT_MODE" \
+    --config-sha="$REQUESTED_CONFIG_SHA" \
+    --env-prod-b64="$REQUESTED_ENV_PROD_B64"

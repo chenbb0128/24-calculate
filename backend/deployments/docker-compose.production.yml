@@ -1,7 +1,7 @@
 name: ${COMPOSE_PROJECT_NAME:-twenty_four_calculate}
 
 x-backend-image: &backend-image
-  image: ghcr.io/chenbb0128/24-calculate-backend:${APP_IMAGE_TAG:-latest}
+  image: registry.cn-hangzhou.aliyuncs.com/zdzq/24-calculate-backend:${APP_IMAGE_TAG:-latest}
 
 x-backend-environment: &backend-environment
   GO_SERVICE_APP_NAME: twenty-four-calculate

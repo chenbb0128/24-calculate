@@ -4,10 +4,12 @@ set -Eeuo pipefail
 
 readonly ENTRYPOINT_SOURCE="${1:-}"
 readonly DEPLOY_SOURCE="${2:-}"
-readonly PUBLIC_KEY_SOURCE="${3:-}"
+readonly HELPER_SOURCE="${3:-}"
+readonly PUBLIC_KEY_SOURCE="${4:-}"
 readonly DEPLOY_USER="calculate-deploy"
-readonly ENTRYPOINT_TARGET="/usr/local/bin/24-calculate-deploy-entrypoint"
+readonly ENTRYPOINT_TARGET="/usr/local/bin/24-calculate-deploy-local-image-entrypoint"
 readonly DEPLOY_TARGET="/usr/local/sbin/deploy-24-calculate"
+readonly HELPER_TARGET="/usr/local/libexec/24-calculate-managed-env.sh"
 readonly SUDOERS_TARGET="/etc/sudoers.d/24-calculate-deploy"
 
 fail() {
@@ -20,11 +22,12 @@ fail() {
 for source_file in \
     "$ENTRYPOINT_SOURCE" \
     "$DEPLOY_SOURCE" \
+    "$HELPER_SOURCE" \
     "$PUBLIC_KEY_SOURCE"; do
     [[ -f "$source_file" ]] || fail "Required source file not found: $source_file"
 done
 
-bash -n "$ENTRYPOINT_SOURCE" "$DEPLOY_SOURCE"
+bash -n "$ENTRYPOINT_SOURCE" "$DEPLOY_SOURCE" "$HELPER_SOURCE"
 
 if ! id -u "$DEPLOY_USER" >/dev/null 2>&1; then
     useradd --create-home --shell /bin/bash "$DEPLOY_USER"
@@ -39,12 +42,14 @@ readonly AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
     || fail "Deploy user home directory was not found: $DEPLOY_USER"
 
 readonly PUBLIC_KEY="$(tr -d '\r\n' < "$PUBLIC_KEY_SOURCE")"
-[[ "$PUBLIC_KEY" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+\ github-actions-24-calculate$ ]] \
+[[ "$PUBLIC_KEY" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+\ [A-Za-z0-9._@+-]+$ ]] \
     || fail 'Unexpected deployment public key format'
 readonly PUBLIC_KEY_BLOB="$(printf '%s\n' "$PUBLIC_KEY" | awk '{print $2}')"
 
 install -m 0755 -o root -g root "$ENTRYPOINT_SOURCE" "$ENTRYPOINT_TARGET"
 install -m 0755 -o root -g root "$DEPLOY_SOURCE" "$DEPLOY_TARGET"
+install -d -m 0755 -o root -g root "$(dirname "$HELPER_TARGET")"
+install -m 0644 -o root -g root "$HELPER_SOURCE" "$HELPER_TARGET"
 
 install -d -m 0700 -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" "$SSH_DIR"
 touch "$AUTHORIZED_KEYS"
