@@ -34,6 +34,8 @@ readonly API_CONTAINER="twenty_four_calculate_api"
 readonly WORKER_CONTAINER="twenty_four_calculate_worker"
 readonly HEALTH_URL="https://calc-api.pdurl.cn/ready"
 readonly LOCAL_HEALTH_URL="http://127.0.0.1:18082/ready"
+readonly ADMIN_URL="https://calc-api.pdurl.cn/admin/"
+readonly LOCAL_ADMIN_URL="http://127.0.0.1:18082/admin/"
 readonly AVATAR_DIR="/data/website/24-calculate/avatars"
 readonly BACKUP_DIR="/data/backups/24-calculate/mysql"
 readonly LOCK_FILE="/var/lock/24-calculate-deploy.lock"
@@ -451,7 +453,9 @@ compose up -d --no-build --force-recreate api worker
 log 'Checking local and public readiness endpoints'
 for attempt in {1..20}; do
     if curl --fail --silent --show-error --max-time 5 "$LOCAL_HEALTH_URL" >/dev/null \
-        && curl --fail --silent --show-error --max-time 5 "$HEALTH_URL" >/dev/null; then
+        && curl --fail --silent --show-error --max-time 5 "$HEALTH_URL" >/dev/null \
+        && curl --fail --silent --show-error --max-time 5 "$LOCAL_ADMIN_URL" >/dev/null \
+        && curl --fail --silent --show-error --max-time 5 "$ADMIN_URL" >/dev/null; then
         verify_deployed_revision
         services_switched=0
         log "Deployment completed successfully at $EXPECTED_SHA"
