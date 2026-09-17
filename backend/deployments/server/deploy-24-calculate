@@ -61,6 +61,46 @@ read_env_value() {
     printf '%s' "${line#*=}"
 }
 
+read_optional_env_value() {
+    local key="$1"
+    local line
+
+    line="$(grep -m1 "^${key}=" "$ENV_FILE" || true)"
+    [[ -n "$line" ]] || return 0
+    printf '%s' "${line#*=}"
+}
+
+seed_admin_if_configured() {
+    local admin_username
+    local admin_password
+    local seed_output
+
+    admin_username="$(read_optional_env_value GO_SERVICE_ADMIN_USERNAME)"
+    admin_password="$(read_optional_env_value GO_SERVICE_ADMIN_PASSWORD)"
+
+    if [[ -z "$admin_username" && -z "$admin_password" ]]; then
+        log 'Administrator seed skipped: no admin credentials configured'
+        return 0
+    fi
+
+    [[ -n "$admin_username" && -n "$admin_password" ]] \
+        || fail 'Both GO_SERVICE_ADMIN_USERNAME and GO_SERVICE_ADMIN_PASSWORD must be configured for admin seed'
+
+    log 'Seeding administrator from the server-only environment'
+    if seed_output="$(compose --profile seed run --rm --no-deps admin-seed 2>&1)"; then
+        log 'Administrator seed completed'
+        return 0
+    fi
+
+    if grep -Fq 'admin username already exists' <<<"$seed_output"; then
+        log 'Administrator already exists; leaving its credentials unchanged'
+        return 0
+    fi
+
+    printf '%s\n' "$seed_output" >&2
+    return 1
+}
+
 backup_database() {
     local db_host
     local db_port
@@ -265,6 +305,8 @@ compose rm -f -s migrate >/dev/null 2>&1 || true
 
 log 'Applying database migrations'
 compose --profile migrate run --rm --no-deps migrate
+
+seed_admin_if_configured
 
 log 'Recreating API and worker from the selected image'
 services_switched=1

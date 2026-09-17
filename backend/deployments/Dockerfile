@@ -21,6 +21,7 @@ WORKDIR /app
 COPY --from=builder /out/api /app/api
 COPY --from=builder /out/worker /app/worker
 COPY --from=builder /out/admin-seed /app/admin-seed
+COPY deployments/admin-dashboard /app/admin
 COPY --from=builder /src/configs /app/configs
 COPY --from=builder /src/docs /app/docs
 

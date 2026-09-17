@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -149,6 +150,7 @@ func BootstrapAPI(cfg *config.Config) (*Runtime, error) {
 		_ = redisClient.Close()
 		return nil, err
 	}
+	httpapi.RegisterAdminStatic(router, os.Getenv("GO_SERVICE_ADMIN_STATIC_DIR"))
 
 	server := &http.Server{
 		Addr:              cfg.Server.Address(),

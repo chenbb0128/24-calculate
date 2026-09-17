@@ -48,28 +48,33 @@ Do not run `docker compose down -v` on the production server.
 
 ## Admin dashboard
 
-The Go image includes the one-shot `/app/admin-seed` command, but the static
-dashboard is served by the existing Nginx container. Mount the repository's
-`frontend/admin` directory into that container as
-`/var/www/24-calculate-admin`, then add the `/admin` locations from
-`deployments/nginx-api.conf.example`. The dashboard uses same-origin requests
-to `/api/v1/admin/*` and does not contain provider credentials.
+The Go image includes the one-shot `/app/admin-seed` command and the Vue admin
+dashboard at `/app/admin`. The API serves it at `/admin/`; the existing Nginx
+configuration can keep proxying `/` to the API container. The dashboard uses
+same-origin requests to `/api/v1/admin/*` and does not contain provider
+credentials. The production workflow builds `frontend/admin-vue` and stages
+its `dist` output into the image before publishing it.
 
-After deploying an image that contains the migration and seed binary, create
-the first administrator with a temporary environment-only password:
+The deployment script runs migrations automatically. If both
+`GO_SERVICE_ADMIN_USERNAME` and `GO_SERVICE_ADMIN_PASSWORD` are present in the
+server-only `backend/deployments/.env`, it also runs the one-shot admin seed
+after migrations. The seed refuses to overwrite an existing username, so
+subsequent deployments leave the existing password unchanged and continue.
+
+For the first deployment, add the administrator values to the server-only
+`.env` (use an 8-character-or-longer password), then push the release. Do not
+commit or paste the filled-in file into a ticket:
 
 ```bash
 cd /data/website/24-calculate/server/backend/deployments
-export GO_SERVICE_ADMIN_USERNAME='admin'
-read -r -s GO_SERVICE_ADMIN_PASSWORD
-export GO_SERVICE_ADMIN_PASSWORD
-docker compose --env-file .env \
-  --profile seed run --rm --no-deps admin-seed
-unset GO_SERVICE_ADMIN_USERNAME GO_SERVICE_ADMIN_PASSWORD
+# Edit .env and add these two server-only values:
+# GO_SERVICE_ADMIN_USERNAME=admin
+# GO_SERVICE_ADMIN_PASSWORD=<your 8-character-or-longer password>
 ```
 
-Run the seed command only after the migration profile has completed. It refuses
-to overwrite an existing username.
+The deployment script reads the values from `.env` and never prints the
+password. If both values are absent, the release still deploys but skips the
+administrator seed.
 
 ## GitHub Secrets
 

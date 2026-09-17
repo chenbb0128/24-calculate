@@ -62,6 +62,26 @@ jobs:
         working-directory: backend
         run: go test ./...
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Build admin dashboard
+        working-directory: frontend/admin-vue
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider
+        run: |
+          npm install --no-audit --no-fund
+          npm run test:admin
+          npm run build:prod
+
+      - name: Stage admin dashboard in backend image context
+        shell: bash
+        run: |
+          rm -rf backend/deployments/admin-dashboard
+          cp -R frontend/admin-vue/dist backend/deployments/admin-dashboard
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
