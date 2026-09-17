@@ -175,6 +175,27 @@ function login(profile = {}, generation = sessionGeneration) {
   });
 }
 
+// WeChat profile data must be synchronized through a fresh wx.login code.
+// The ordinary profile PATCH intentionally accepts only backend-generated
+// avatars and presets, so sending qlogo.cn directly to that endpoint would
+// fail and could also bypass the provider binding.
+function syncWechatProfile(profile = {}, expectedUserID = 0) {
+  return login({
+    nickname: String(profile.nickname || ''),
+    avatar: String(profile.avatar || ''),
+  }).then(() => me()).then((remote) => {
+    const expected = Math.max(0, Math.floor(Number(expectedUserID) || 0));
+    if (expected > 0 && Number(remote && remote.id) !== expected) {
+      // A privacy-authorized wx.login code must belong to the account that is
+      // already active in this game session. Drop the newly issued token and
+      // force a clean session instead of silently switching accounts.
+      invalidateSession();
+      throw makeError('微信账号已切换，请重新进入游戏', 401, 'SESSION_CHANGED');
+    }
+    return remote;
+  });
+}
+
 function devLogin(slot = 1) {
   const generation = sessionGeneration;
   return request('/api/v1/auth/dev-login', {
@@ -664,6 +685,7 @@ module.exports = {
   clearAuth,
   request,
   login,
+  syncWechatProfile,
   devLogin,
   readDevLoginSlot,
   refresh,

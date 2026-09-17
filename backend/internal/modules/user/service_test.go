@@ -327,6 +327,10 @@ func TestSafePublicProfileHidesNonApprovedValues(t *testing.T) {
 	if got := SafePublicNickname("玩家", string(moderation.StatusApproved)); got != "玩家" {
 		t.Fatalf("approved nickname = %q", got)
 	}
+	wechatAvatar := "https://thirdwx.qlogo.cn/mmopen/example/132"
+	if got := SafePublicAvatar(wechatAvatar, string(moderation.StatusApproved)); got != wechatAvatar {
+		t.Fatalf("approved WeChat avatar = %q", got)
+	}
 }
 
 func testPNG(t *testing.T, width, height int) []byte {

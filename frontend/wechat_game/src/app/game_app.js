@@ -5015,22 +5015,37 @@ class GameApp {
       this.profileNotice = '当前版本暂不支持微信资料授权';
       return;
     }
+    this.profileSaving = true;
     this.profileNotice = '正在请求微信头像和昵称…';
     platform.requestWechatProfile().then((profile) => {
       const current = this.getPlayerProfile();
-      this.saveProfileChanges({
-        nickname: profile.nickname || current.nickname,
-        avatar: profile.avatar || current.avatar,
-        wechat_auth_status: 'granted',
-      }, () => {
-        this.progress.profile.wechat_auth_status = 'granted';
+      if (!apiClient.syncWechatProfile) throw new Error('当前版本不支持微信资料同步');
+      this.profileNotice = '正在由服务器验证资料…';
+      // The server preserves fields omitted from the provider response. Do
+      // not re-submit a previously uploaded backend avatar as if it were a
+      // WeChat avatar when privacy authorization returns nickname only.
+      const expectedUserID = this.backendAuth && this.backendAuth.user
+        ? Number(this.backendAuth.user.id) || 0 : 0;
+      return apiClient.syncWechatProfile(profile, expectedUserID).then((remote) => {
+        const saved = remote && typeof remote === 'object' ? remote : {};
+        this.progress.profile = {
+          nickname: String(saved.nickname || profile.nickname || current.nickname || '算术玩家').trim().slice(0, 12),
+          avatar: String(saved.avatar || profile.avatar || current.avatar || '').trim(),
+          wechat_auth_status: 'granted',
+        };
+        if (this.backendAuth && this.backendAuth.user) {
+          this.backendAuth.user = Object.assign({}, this.backendAuth.user, saved);
+        }
         this.profileAuthPending = false;
         this.popup = '';
+        storage.save(this.progress);
+        this.profileNotice = '资料已同步';
+        this.triggerFeedback('success', '微信资料同步成功');
       });
     }).catch((error) => {
       this.profileNotice = String(error && error.message || '未获得微信资料授权');
       this.triggerFeedback('info', '未授权也不影响正常游戏');
-    });
+    }).then(() => { this.profileSaving = false; });
   }
 
   chooseAndUploadAvatar() {
@@ -5147,6 +5162,9 @@ class GameApp {
       avatar: changes.avatar !== undefined ? String(changes.avatar || '').trim() : previous.avatar,
       wechat_auth_status: changes.wechat_auth_status || (this.progress.profile && this.progress.profile.wechat_auth_status) || 'pending',
     };
+    const updatePayload = {};
+    if (changes.nickname !== undefined) updatePayload.nickname = next.nickname;
+    if (changes.avatar !== undefined) updatePayload.avatar = next.avatar;
     if (next.nickname.length < 1 || next.nickname.length > 12) {
       this.profileNotice = '\u6635\u79f0\u9700\u89811\u523012\u4e2a\u5b57\u7b26';
       this.triggerFeedback('error', this.profileNotice);
@@ -5174,7 +5192,7 @@ class GameApp {
     }
     this.profileSaving = true;
     this.profileNotice = '\u6b63\u5728\u4fdd\u5b58\u8d44\u6599\u2026';
-    apiClient.updateProfile(next).then((remote) => {
+    apiClient.updateProfile(updatePayload).then((remote) => {
       const profile = remote && typeof remote === 'object' ? remote : next;
       const saved = {
         nickname: String(profile.nickname || next.nickname).trim().slice(0, 12),

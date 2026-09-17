@@ -66,12 +66,35 @@ async function run() {
   check(loginCalls === 1, '同一运行会话重复触发 wx.login');
   check(requestLog.some((request) => request.url.endsWith('/api/v1/users/me')), '登录完成后没有验证当前账号');
 
+  requestLog = [];
+  currentCode = 'wx-code-profile-sync';
+  const syncedProfile = await apiClient.syncWechatProfile({
+    nickname: '授权昵称',
+    avatar: 'https://thirdwx.qlogo.cn/example/132',
+  });
+  check(loginCalls === 2, '微信资料同步没有重新获取 wx.login code');
+  const profileLogin = requestLog.find((request) => request.url.endsWith('/api/v1/auth/wechat-login'));
+  check(profileLogin && profileLogin.data.nickname === '授权昵称', '微信资料同步没有提交授权昵称');
+  check(profileLogin && profileLogin.data.avatar === 'https://thirdwx.qlogo.cn/example/132', '微信资料同步没有提交授权头像');
+  check(requestLog.some((request) => request.url.endsWith('/api/v1/users/me')), '微信资料同步后没有读取服务端资料');
+  check(syncedProfile && syncedProfile.id === 2, '微信资料同步没有返回当前用户资料');
+
+  currentCode = 'wx-code-profile-switch';
+  let switchedAccountRejected = false;
+  try {
+    await apiClient.syncWechatProfile({ nickname: '授权昵称', avatar: '' }, 999);
+  } catch (error) {
+    switchedAccountRejected = true;
+  }
+  check(switchedAccountRejected, '微信资料同步没有校验当前账号身份');
+  check(!memory.twenty_four_auth, '检测到微信账号切换后仍保留了新账号令牌');
+
   // Simulate a second cold start after the device switches to account C.
   currentCode = 'wx-code-account-c';
   delete require.cache[modulePath];
   const reloadedClient = require('../src/services/api_client.js');
   await reloadedClient.ensureLogin();
-  check(loginCalls === 2, '应用重启后没有重新调用 wx.login');
+  check(loginCalls === 4, '应用重启后没有重新调用 wx.login');
   check(memory.twenty_four_auth.access_token === 'fresh-wx-code-account-c', '账号 C 仍复用了账号 B 令牌');
 
   console.log('AUTH_SESSION_OK');
