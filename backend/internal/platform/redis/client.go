@@ -107,37 +107,14 @@ func (c *Client) UnblockAccount(ctx context.Context, role string, id uint64) err
 }
 
 func (c *Client) AllowLogin(ctx context.Context, ip string, limit int64, window time.Duration) (bool, error) {
-	if limit <= 0 || window <= 0 {
-		return false, fmt.Errorf("login rate limit configuration is invalid")
-	}
-	key := LoginRateKey(ip)
-	count, err := c.Incr(ctx, key).Result()
-	if err != nil {
-		return false, err
-	}
-	if count == 1 {
-		if err := c.Expire(ctx, key, window).Err(); err != nil {
-			return false, err
-		}
-	}
-	return count <= limit, nil
+	return c.allowRate(ctx, LoginRateKey(ip), limit, window, "login")
 }
 
 func (c *Client) AllowAvatarUpload(ctx context.Context, userID uint64, limit int64, window time.Duration) (bool, error) {
-	if c == nil || c.Client == nil || userID == 0 || limit <= 0 || window <= 0 {
+	if userID == 0 {
 		return false, fmt.Errorf("avatar upload rate limit configuration is invalid")
 	}
-	key := AvatarUploadRateKey(userID)
-	count, err := c.Incr(ctx, key).Result()
-	if err != nil {
-		return false, err
-	}
-	if count == 1 {
-		if err := c.Expire(ctx, key, window).Err(); err != nil {
-			return false, err
-		}
-	}
-	return count <= limit, nil
+	return c.allowRate(ctx, AvatarUploadRateKey(userID), limit, window, "avatar upload")
 }
 
 func (c *Client) ClaimWeChatProfileCode(ctx context.Context, value string, ttl time.Duration) (bool, error) {
@@ -151,21 +128,26 @@ func (c *Client) ClaimWeChatProfileCode(ctx context.Context, value string, ttl t
 }
 
 func (c *Client) AllowWeChatProfileSync(ctx context.Context, userID uint64, limit int64, window time.Duration) (bool, error) {
+	if userID == 0 {
+		return false, errors.New("redis client is nil")
+	}
+	return c.allowRate(ctx, WeChatProfileSyncRateKey(userID), limit, window, "WeChat profile sync")
+}
+
+func (c *Client) allowRate(ctx context.Context, key string, limit int64, window time.Duration, name string) (bool, error) {
 	if c == nil || c.Client == nil {
 		return false, errors.New("redis client is nil")
 	}
-	if userID == 0 || limit <= 0 || window <= 0 {
-		return false, errors.New("WeChat profile sync rate limit configuration is invalid")
+	if strings.TrimSpace(key) == "" || limit <= 0 || window <= 0 {
+		return false, fmt.Errorf("%s rate limit configuration is invalid", name)
 	}
-	key := WeChatProfileSyncRateKey(userID)
-	count, err := c.Incr(ctx, key).Result()
+	windowMS := window.Milliseconds()
+	if windowMS < 1 {
+		windowMS = 1
+	}
+	count, err := rateLimitScript.Run(ctx, c.Client, []string{key}, windowMS).Int64()
 	if err != nil {
 		return false, err
-	}
-	if count == 1 {
-		if err := c.Expire(ctx, key, window).Err(); err != nil {
-			return false, err
-		}
 	}
 	return count <= limit, nil
 }
@@ -227,6 +209,17 @@ if value then
     redis.call('DEL', KEYS[1])
 end
 return value
+`)
+
+// rateLimitScript increments a counter and assigns its expiry in the same
+// Redis script. Keeping both operations atomic prevents a transient EXPIRE
+// failure from leaving a key without a TTL and permanently blocking a user.
+var rateLimitScript = goRedis.NewScript(`
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+    redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return count
 `)
 
 var releaseLockScript = goRedis.NewScript(`

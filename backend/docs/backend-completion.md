@@ -1,6 +1,6 @@
 # 后端完善报告
 
-更新时间：2026-08-18
+更新时间：2026-09-18
 
 ## 已完成
 
@@ -81,3 +81,11 @@ D:\bin\go.exe build ./...
 
 必须先 dry-run 检查统计，再 apply；命令不发奖励、不修改进度、不删除历史、不清空 Redis。
 命令输出包含 `scanned`、`updated`、`approved`、`rejected`、`unreviewed`、`failed`、`avatars_hidden` 和 `cache_changes`，便于确认审核上游故障与历史头像撤下数量。
+
+微信隐私授权后的资料同步使用：
+
+`POST /api/v1/users/me/wechat-profile/sync`
+
+该接口要求当前用户的 Bearer access token 和一次新的 `wx.login` code。服务端再次用 AppSecret 换取 openid，并确认 openid 绑定当前账号；code 使用过、账号不匹配或超过限流均会被拒绝。昵称和头像分别经过现有文本/图片审核服务，只有 approved 才会更新公开资料；pending、rejected、unavailable 会保留旧资料或安全默认值。微信头像会先从 allowlist 内的 HTTPS `qlogo.cn` 地址下载、解析、裁剪为 256×256 WEBP，再保存到自己的头像目录，公开接口不会返回微信临时地址。
+
+`/api/v1/auth/wechat-login` 仍然只负责登录。已有账号提交的 `nickname`、`avatar` 参数会被忽略；新账号先以安全默认资料创建，再通过同一套受控同步服务处理首次授权资料。AppSecret 只从服务端配置读取。

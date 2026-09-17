@@ -13,4 +13,5 @@ func RegisterRoutes(group *gin.RouterGroup, handler *Handler, manager *jwtplatfo
 	routes.GET("/me", handler.GetMe)
 	routes.PATCH("/me", handler.UpdateMe)
 	routes.POST("/me/avatar", handler.UploadAvatar)
+	routes.POST("/me/wechat-profile/sync", handler.SyncWeChatProfile)
 }
