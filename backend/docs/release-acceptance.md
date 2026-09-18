@@ -61,9 +61,13 @@
 5. 运行 `./moderation-cleanup --dry-run` 检查统计，确认无进度/金币变更后再执行 apply；整改完成后重复执行应无新增已审核资料更新。
 6. 查询排行榜、排位历史、好友历史、好友房和匹配响应，确认拒绝/待审核用户只显示安全默认昵称和头像。
 
-1. 在微信公众平台把 `calc-api.pdurl.cn` 配置为小游戏 request 合法域名，确认没有配置 `http://`、端口或路径。
-2. 使用真实微信账号在真机完成一次登录、bootstrap、闯关、每日挑战、无尽和好友房验收。
-3. 用两个真实微信账号或两台设备验证好友房和排行榜；不要在生产包使用 `dev-login`。
+7. 使用当前账号的 Bearer token 调用 `POST /api/v1/users/me/wechat-profile/sync`，请求体只传新的 `wx.login` code、授权昵称和授权头像；确认成功响应包含 `sync_status`、`nickname_updated`、`avatar_updated`，且返回的头像地址是 `https://calc-api.pdurl.cn/avatars/...`。
+8. 重放同一个 wx.login code、使用其他账号的 code、连续快速调用同步接口，分别确认返回凭证失效/已使用、账号不匹配和限流错误；确认旧昵称、旧头像不会被覆盖。
+9. 检查 `POST /api/v1/auth/wechat-login` 对已有账号不会修改请求体中的 nickname/avatar；确认新账号资料只有审核通过后才会公开。
+
+10. 在微信公众平台把 `calc-api.pdurl.cn` 配置为小游戏 request 合法域名，确认没有配置 `http://`、端口或路径。
+11. 使用真实微信账号在真机完成一次登录、bootstrap、闯关、每日挑战、无尽和好友房验收。
+12. 用两个真实微信账号或两台设备验证好友房和排行榜；不要在生产包使用 `dev-login`。
 4. 确认生产 MySQL 已完成迁移，并验证一次可恢复的定期备份。
 5. 把前端广告占位 ID 替换为公众平台真实广告位 ID，并验证广告失败时不会发放奖励。
 6. 补齐小游戏隐私协议、用户协议、备案/类目材料和分享图片后，再上传体验版审核。

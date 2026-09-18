@@ -124,6 +124,15 @@ func AvatarUploadRateKey(userID uint64) string {
 	return fmt.Sprintf("%s:rate:avatar-upload:%d", keyPrefix, userID)
 }
 
+func WeChatProfileCodeKey(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%s:auth:wechat-profile-code:%s", keyPrefix, hex.EncodeToString(digest[:]))
+}
+
+func WeChatProfileSyncRateKey(userID uint64) string {
+	return fmt.Sprintf("%s:rate:wechat-profile-sync:%d", keyPrefix, userID)
+}
+
 func EndlessRunKey(runID string) string {
 	return fmt.Sprintf("%s:endless:run:%s", keyPrefix, runID)
 }

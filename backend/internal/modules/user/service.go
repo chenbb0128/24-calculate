@@ -50,6 +50,9 @@ type Service struct {
 	avatarPublicBaseURL string
 	logger              *slog.Logger
 	moderator           *moderation.Service
+	wechatProfileClient WeChatProfileClient
+	wechatProfileGuard  WeChatProfileGuard
+	wechatAvatarFetcher WeChatAvatarFetcher
 }
 
 func NewService(store Store) *Service {
@@ -338,15 +341,9 @@ func SafePublicAvatar(value, status string) string {
 	if err == nil {
 		return avatar
 	}
-	// WeChat privacy authorization stores the provider's HTTPS avatar URL
-	// after the server has verified and approved it. It is intentionally not
-	// accepted by ordinary PATCH requests, but it must remain visible after a
-	// later profile read.
-	avatar, err = NormalizeWeChatAvatar(value)
-	if err != nil {
-		return DefaultAvatar
-	}
-	return avatar
+	// Third-party provider URLs are never public profile values. The sync
+	// service downloads and stores them under our own avatar path first.
+	return DefaultAvatar
 }
 
 func invalidProfile(message string) error {
@@ -408,9 +405,6 @@ func NormalizeWeChatAvatar(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return DefaultAvatar, nil
-	}
-	if _, ok := allowedAvatars[value]; ok {
-		return value, nil
 	}
 	if len([]rune(value)) > MaxAvatarRunes {
 		return "", fmt.Errorf("avatar 长度不能超过 %d 个字符", MaxAvatarRunes)

@@ -60,6 +60,31 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 	response.Success(c, http.StatusOK, profile)
 }
 
+func (h *Handler) SyncWeChatProfile(c *gin.Context) {
+	userID, err := middleware.UserID(c)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+
+	var input WeChatProfileSyncInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.WriteError(c, apperror.BadRequest("请求参数错误", err))
+		return
+	}
+	if input.Code == "" {
+		response.WriteError(c, InvalidWeChatProfileCode(nil))
+		return
+	}
+
+	result, err := h.service.SyncWeChatProfile(c.Request.Context(), userID, input)
+	if err != nil {
+		response.WriteError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
 func (h *Handler) UploadAvatar(c *gin.Context) {
 	userID, err := middleware.UserID(c)
 	if err != nil {

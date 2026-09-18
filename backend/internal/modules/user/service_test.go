@@ -333,6 +333,12 @@ func TestSafePublicProfileHidesNonApprovedValues(t *testing.T) {
 	}
 }
 
+func TestSafePublicAvatarNeverReturnsWeChatProviderURL(t *testing.T) {
+	if got := SafePublicAvatar("https://thirdwx.qlogo.cn/mmopen/example/132", string(moderation.StatusApproved)); got != DefaultAvatar {
+		t.Fatalf("SafePublicAvatar() = %q, want default avatar", got)
+	}
+}
+
 func testPNG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))

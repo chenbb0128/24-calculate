@@ -2,6 +2,7 @@ package user
 
 import (
 	"bytes"
+	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/example/go-service/internal/modules/moderation"
+	wechatplatform "github.com/example/go-service/internal/platform/wechat"
 	db "github.com/example/go-service/internal/store/sqlc"
 )
 
@@ -168,6 +171,49 @@ func TestUploadAvatarHandlerRejectsEmptyFile(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"data":null`) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestSyncWeChatProfileHandlerUsesCurrentUserAndWrappedResponse(t *testing.T) {
+	store := &fakeSyncIdentityStore{
+		fakeStore: &fakeStore{user: db.User{
+			ID: 7, Nickname: DefaultNickname, Avatar: DefaultAvatar, Status: StatusActive,
+			NicknameModerationStatus: string(moderation.StatusApproved),
+			AvatarModerationStatus:   string(moderation.StatusApproved),
+		}},
+		identity: db.User{ID: 7, Status: StatusActive},
+	}
+	service := newTestWeChatProfileService(store, moderation.ProviderResult{Status: moderation.StatusApproved}, moderation.ProviderResult{Status: moderation.StatusApproved})
+	service.SetWeChatProfileClient(fakeWeChatProfileClient{result: wechatplatform.LoginResult{OpenID: "openid-7"}})
+	service.SetWeChatProfileGuard(&fakeWeChatProfileGuard{claimed: true, allowed: true})
+	handler := NewHandler(service)
+	router := gin.New()
+	router.POST("/me/wechat-profile/sync", func(c *gin.Context) {
+		c.Set("auth.user_id", uint64(7))
+		handler.SyncWeChatProfile(c)
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/me/wechat-profile/sync", strings.NewReader(`{"code":"code-1","nickname":"新昵称","avatar":""}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Code int `json:"code"`
+		Data struct {
+			User        ProfileResponse `json:"user"`
+			SyncStatus  string          `json:"sync_status"`
+			NameChanged bool            `json:"nickname_updated"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Code != 0 || envelope.Data.SyncStatus != string(moderation.StatusApproved) || !envelope.Data.NameChanged || envelope.Data.User.Nickname != "新昵称" {
+		t.Fatalf("envelope = %s", recorder.Body.String())
 	}
 }
 

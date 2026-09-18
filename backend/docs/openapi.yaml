@@ -4,7 +4,7 @@ info:
   version: 2.2.0
   description: |
     Server-authoritative API for WeChat and TapTap authentication, runs, rooms, matchmaking, rewards, leaderboards, and administration.
-    AppSecret and all provider credentials are server-only. NICKNAME_REJECTED, AVATAR_REJECTED, MODERATION_PENDING, and NICKNAME_EDIT_DISABLED remain unchanged.
+    AppSecret and all provider credentials are server-only. Existing WeChat accounts ignore nickname/avatar fields on login; moderated profile synchronization is available through the authenticated user endpoint.
     Rejected, pending, and provider-unavailable moderation never overwrite the saved profile. Raw rejected profile data and provider access tokens are never returned.
 servers:
   - url: /
@@ -107,6 +107,24 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '413': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/v1/users/me/wechat-profile/sync:
+    post:
+      tags: [auth]
+      security: [{bearerAuth: []}]
+      summary: Synchronize an authorized WeChat profile
+      description: Exchanges a fresh wx.login code on the server, verifies that its openid belongs to the authenticated account, moderates nickname and avatar candidates, and only then publishes approved values. The WeChat avatar is downloaded and stored under the backend's own HTTPS avatar path; raw provider URLs are never returned.
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/WechatProfileSyncInput'}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
         '429': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
   /api/v1/player/bootstrap:
@@ -679,10 +697,27 @@ components:
     WechatLoginInput:
       type: object
       required: [code]
+      description: Nickname and avatar are compatibility fields only. Existing accounts never change profile data through login; use WechatProfileSyncInput after explicit privacy authorization.
       properties:
         code: {type: string, maxLength: 512}
         nickname: {type: string, maxLength: 12}
         avatar: {type: string, maxLength: 500}
+    WechatProfileSyncInput:
+      type: object
+      required: [code]
+      minProperties: 2
+      properties:
+        code: {type: string, maxLength: 512, description: Fresh wx.login code; it is single-use and verified against the current account}
+        nickname: {type: string, maxLength: 12, description: WeChat-authorized nickname candidate; moderated before publication}
+        avatar: {type: string, maxLength: 500, description: WeChat HTTPS qlogo.cn avatar URL or built-in preset; provider URLs are downloaded and moderated before storage}
+    WechatProfileSyncData:
+      type: object
+      required: [user, sync_status, nickname_updated, avatar_updated]
+      properties:
+        user: {type: object, description: Safe current user profile; pending/rejected values are not returned}
+        sync_status: {type: string, enum: [approved, pending, rejected, unavailable]}
+        nickname_updated: {type: boolean}
+        avatar_updated: {type: boolean}
     TapTapLoginInput:
       type: object
       required: [code]

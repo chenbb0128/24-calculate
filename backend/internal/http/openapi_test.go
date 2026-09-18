@@ -77,6 +77,30 @@ func TestOpenAPIDocumentsAdminAPIContract(t *testing.T) {
 	}
 }
 
+func TestOpenAPIDocumentsWeChatProfileSyncContract(t *testing.T) {
+	path := filepath.Join("..", "..", "docs", "openapi.yaml")
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read OpenAPI document: %v", err)
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal(payload, &document); err != nil {
+		t.Fatalf("parse OpenAPI document: %v", err)
+	}
+	paths := openAPIMap(t, document, "paths")
+	operation := openAPIMap(t, openAPIMap(t, paths, "/api/v1/users/me/wechat-profile/sync"), "post")
+	if _, ok := operation["security"]; !ok {
+		t.Fatal("WeChat profile sync must document bearer authentication")
+	}
+	components := openAPIMap(t, document, "components")
+	schemas := openAPIMap(t, components, "schemas")
+	for _, schema := range []string{"WechatProfileSyncInput", "WechatProfileSyncData"} {
+		if _, ok := schemas[schema]; !ok {
+			t.Fatalf("missing WeChat profile sync schema %q", schema)
+		}
+	}
+}
+
 func openAPIMap(t *testing.T, values map[string]any, key string) map[string]any {
 	t.Helper()
 	value, ok := values[key]

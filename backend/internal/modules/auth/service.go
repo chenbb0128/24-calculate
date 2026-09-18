@@ -55,32 +55,42 @@ type WeChatLoginClient interface {
 	ExchangeCode(ctx context.Context, code string) (wechatplatform.LoginResult, error)
 }
 
+type WeChatProfileSynchronizer interface {
+	SyncAuthorizedWeChatProfile(context.Context, uint64, string, user.WeChatProfileInput, string) (user.WeChatProfileResult, error)
+}
+
 type TapTapLoginClient interface {
 	ExchangeCode(ctx context.Context, code string) (taptapplatform.LoginResult, error)
 }
 
 type Service struct {
-	users       UserStore
-	tokens      TokenStore
-	jwt         *jwtplatform.Manager
-	accessTTL   time.Duration
-	refreshTTL  time.Duration
-	loginLimit  int64
-	loginWindow time.Duration
-	welcome     WelcomeEnqueuer
-	logger      *slog.Logger
-	wechat      WeChatLoginClient
-	taptap      TapTapLoginClient
-	moderator   *moderation.Service
+	users                     UserStore
+	tokens                    TokenStore
+	jwt                       *jwtplatform.Manager
+	accessTTL                 time.Duration
+	refreshTTL                time.Duration
+	loginLimit                int64
+	loginWindow               time.Duration
+	welcome                   WelcomeEnqueuer
+	logger                    *slog.Logger
+	wechat                    WeChatLoginClient
+	taptap                    TapTapLoginClient
+	moderator                 *moderation.Service
+	wechatProfileSynchronizer WeChatProfileSynchronizer
 }
 
-// SetContentModerator injects the server-side content safety service used for
-// first-authorized WeChat profile data. Login remains safe when the provider
-// is unavailable: the submitted value is discarded and the public default is
-// retained until it can be reviewed.
+// SetContentModerator is retained for compatibility with existing composition
+// code. WeChat profile changes are now handled by the user-module synchronizer;
+// login itself never applies profile fields to an existing account.
 func (s *Service) SetContentModerator(moderator *moderation.Service) {
 	if s != nil {
 		s.moderator = moderator
+	}
+}
+
+func (s *Service) SetWeChatProfileSynchronizer(synchronizer WeChatProfileSynchronizer) {
+	if s != nil {
+		s.wechatProfileSynchronizer = synchronizer
 	}
 }
 
@@ -373,7 +383,16 @@ func (s *Service) loginWithExternal(ctx context.Context, input externalLoginInpu
 	if account.Status == user.StatusDisabled {
 		return TokenResponse{}, user.Disabled(nil)
 	}
-	if err := s.syncExternalProfile(ctx, users, &account, provider, openID, input, normalizeAvatar, invalidCode, unavailable); err != nil {
+	if provider == wechatProvider {
+		if created && s.wechatProfileSynchronizer != nil && (strings.TrimSpace(input.Nickname) != "" || strings.TrimSpace(input.Avatar) != "") {
+			if _, err := s.wechatProfileSynchronizer.SyncAuthorizedWeChatProfile(ctx, account.ID, openID, user.WeChatProfileInput{
+				Nickname: input.Nickname,
+				Avatar:   input.Avatar,
+			}, "wechat_login_initial"); err != nil {
+				return TokenResponse{}, err
+			}
+		}
+	} else if err := s.syncExternalProfile(ctx, users, &account, input, normalizeAvatar, unavailable); err != nil {
 		return TokenResponse{}, err
 	}
 
@@ -405,9 +424,13 @@ func (s *Service) createExternalUser(ctx context.Context, users WeChatUserStore,
 			return db.User{}, apperror.BadRequest(err.Error(), err)
 		}
 	}
-	avatar, err := normalizeAvatar(input.Avatar)
-	if err != nil {
-		return db.User{}, apperror.BadRequest(err.Error(), err)
+	avatar := user.DefaultAvatar
+	if provider != wechatProvider {
+		var err error
+		avatar, err = normalizeAvatar(input.Avatar)
+		if err != nil {
+			return db.User{}, apperror.BadRequest(err.Error(), err)
+		}
 	}
 	passwordBytes := make([]byte, 32)
 	if _, err := rand.Read(passwordBytes); err != nil {
@@ -456,9 +479,9 @@ type weChatProfileUpdater interface {
 	UpdateUserProfile(context.Context, db.UpdateUserProfileParams) error
 }
 
-func (s *Service) syncExternalProfile(ctx context.Context, users WeChatUserStore, account *db.User, provider, subject string, input externalLoginInput, normalizeAvatar externalAvatarNormalizer, invalidCode func(error) error, unavailable func(error) error) error {
+func (s *Service) syncExternalProfile(ctx context.Context, users WeChatUserStore, account *db.User, input externalLoginInput, normalizeAvatar externalAvatarNormalizer, unavailable func(error) error) error {
 	if account == nil || account.ID == 0 {
-		return invalidCode(nil)
+		return unavailable(errors.New("external account is invalid"))
 	}
 	nickname := strings.TrimSpace(account.Nickname)
 	if nickname == "" {
@@ -470,9 +493,7 @@ func (s *Service) syncExternalProfile(ctx context.Context, users WeChatUserStore
 		avatar = user.DefaultAvatar
 	}
 	avatarStatus := strings.TrimSpace(account.AvatarModerationStatus)
-	if provider == wechatProvider {
-		nickname, nicknameStatus = s.syncWeChatNickname(ctx, account.ID, subject, nickname, nicknameStatus, input.Nickname)
-	} else if strings.TrimSpace(input.Nickname) != "" {
+	if strings.TrimSpace(input.Nickname) != "" {
 		var err error
 		nickname, err = user.NormalizeNickname(input.Nickname)
 		if err != nil {
@@ -509,39 +530,6 @@ func (s *Service) syncExternalProfile(ctx context.Context, users WeChatUserStore
 	account.NicknameModerationStatus, account.AvatarModerationStatus = nicknameStatus, avatarStatus
 	account.ModerationUpdatedAt, account.UpdatedAt = &now, now
 	return nil
-}
-
-func (s *Service) syncWeChatNickname(ctx context.Context, userID uint64, subject, current, currentStatus, submitted string) (string, string) {
-	submitted = strings.TrimSpace(submitted)
-	if submitted == "" {
-		return current, currentStatus
-	}
-	if current != "" && current != user.DefaultNickname && moderation.IsPubliclyApproved(moderation.Status(currentStatus)) {
-		return current, currentStatus
-	}
-	nickname, err := user.NormalizeNickname(submitted)
-	if err != nil {
-		return user.DefaultNickname, string(moderation.StatusRejected)
-	}
-	if s.moderator == nil {
-		s.logger.WarnContext(ctx, "wechat profile moderation unavailable", "user_id", userID, "field", "nickname")
-		return user.DefaultNickname, string(moderation.StatusUnreviewed)
-	}
-	decision, err := s.moderator.ModerateText(ctx, userID, subject, "wechat_login", nickname)
-	if err != nil || decision.Status == moderation.StatusUnavailable {
-		s.logger.WarnContext(ctx, "wechat profile moderation unavailable", "user_id", userID, "field", "nickname")
-		return user.DefaultNickname, string(moderation.StatusUnreviewed)
-	}
-	switch decision.Status {
-	case moderation.StatusApproved:
-		return nickname, string(moderation.StatusApproved)
-	case moderation.StatusRejected:
-		return user.DefaultNickname, string(moderation.StatusRejected)
-	case moderation.StatusPending:
-		return user.DefaultNickname, string(moderation.StatusPending)
-	default:
-		return user.DefaultNickname, string(moderation.StatusUnreviewed)
-	}
 }
 
 func wechatUsername(openID string) string {

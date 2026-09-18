@@ -136,6 +136,25 @@ func TestOrdinaryRoutesRejectAdminTokens(t *testing.T) {
 	}
 }
 
+func TestWeChatProfileSyncRouteIsRegisteredAtExactPath(t *testing.T) {
+	manager := newRouterJWTManager(t)
+	router, err := NewRouter(testConfig(), slog.Default(), RouterOptions{
+		APIRoutes: func(group *gin.RouterGroup) {
+			user.RegisterRoutes(group, nil, manager)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/users/me/wechat-profile/sync", nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d for registered POST-only path: %s", recorder.Code, http.StatusMethodNotAllowed, recorder.Body.String())
+	}
+}
+
 func TestAvatarStaticFileIsServedFromConfiguredStorage(t *testing.T) {
 	root := t.TempDir()
 	avatarPath := filepath.Join(root, "avatars", "7", "test.webp")
