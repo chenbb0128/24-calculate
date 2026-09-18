@@ -25,6 +25,7 @@ readonly ENV_PROD_B64
 
 readonly APP_DIR="/data/website/24-calculate/server"
 readonly DEPLOY_DIR="$APP_DIR/backend/deployments"
+readonly COMPOSE_SOURCE="$DEPLOY_DIR/docker-compose.production.yml"
 readonly COMPOSE_FILE="/etc/24-calculate/docker-compose.production.yml"
 readonly ENV_FILE="$DEPLOY_DIR/.env"
 readonly IMAGE_NAME="registry.cn-hangzhou.aliyuncs.com/zdzq/24-calculate-backend"
@@ -103,6 +104,18 @@ compose() {
         -f "$COMPOSE_FILE" \
         --env-file "$ENV_FILE" \
         "$@"
+}
+
+install_compose_file() {
+    [[ -f "$COMPOSE_SOURCE" ]] || fail "Compose source file not found: $COMPOSE_SOURCE"
+    install -d -m 0755 "$(dirname "$COMPOSE_FILE")"
+
+    if [[ ! -f "$COMPOSE_FILE" ]] || ! cmp -s "$COMPOSE_SOURCE" "$COMPOSE_FILE"; then
+        log "Installing production compose file: $COMPOSE_FILE"
+        install -m 0644 "$COMPOSE_SOURCE" "$COMPOSE_FILE"
+    else
+        log 'Production compose file is up to date'
+    fi
 }
 
 read_env_value() {
@@ -389,7 +402,6 @@ exec 9>"$LOCK_FILE"
 flock -n 9 || fail 'Another deployment is already running'
 
 [[ -d "$APP_DIR/.git" ]] || fail "Git repository not found at $APP_DIR"
-[[ -f "$COMPOSE_FILE" ]] || fail "Compose file not found: $COMPOSE_FILE"
 [[ -f "$ENV_FILE" ]] || fail "Environment file not found: $ENV_FILE"
 command -v mysqldump >/dev/null || fail 'mysqldump is not installed'
 
@@ -428,6 +440,7 @@ zdzq_env_install \
     ENV_SECRET_KEYS \
     ENV_REQUIRED_KEYS \
     ENV_NONEMPTY_SECRET_KEYS
+install_compose_file
 install -d -m 0755 -o 100 -g 101 "$AVATAR_DIR"
 compose config --quiet
 backup_database

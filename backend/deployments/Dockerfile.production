@@ -1,14 +1,26 @@
-FROM golang:1.26-alpine AS builder
+ARG GO_BASE=golang:1.26-alpine
+ARG RUNTIME_BASE=alpine:3.22
+FROM ${GO_BASE} AS builder
 
 WORKDIR /src
 ARG ALPINE_MIRROR=https://mirrors.aliyun.com/alpine
-RUN sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${ALPINE_MIRROR}#g" /etc/apk/repositories \
-    && apk add --no-cache ca-certificates git
+RUN if command -v apk >/dev/null 2>&1; then \
+        sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${ALPINE_MIRROR}#g" /etc/apk/repositories \
+        && apk add --no-cache ca-certificates git; \
+    elif command -v git >/dev/null 2>&1; then \
+        update-ca-certificates >/dev/null 2>&1 || true; \
+    else \
+        apt-get update \
+        && apt-get install -y --no-install-recommends ca-certificates git \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # Keep manual builds safe on small production hosts. CI can explicitly raise
 # this value because it runs outside the production server.
 ARG GO_BUILD_PARALLELISM=1
-ENV GOPROXY=https://goproxy.cn,direct \
+ARG GO_PROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GO_PROXY} \
+    GOTOOLCHAIN=auto \
     GOMAXPROCS=${GO_BUILD_PARALLELISM}
 
 COPY go.mod go.sum ./
@@ -20,13 +32,19 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p="${GO_BUILD_PARALLELISM}" 
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p="${GO_BUILD_PARALLELISM}" -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p="${GO_BUILD_PARALLELISM}" -trimpath -ldflags="-s -w" -o /out/admin-seed ./cmd/admin-seed
 
-FROM alpine:3.22
+FROM ${RUNTIME_BASE}
 
 ARG ALPINE_MIRROR=https://mirrors.aliyun.com/alpine
-RUN sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${ALPINE_MIRROR}#g" /etc/apk/repositories \
-    && apk add --no-cache ca-certificates tzdata \
-    && addgroup -S app \
-    && adduser -S -G app app
+RUN if command -v apk >/dev/null 2>&1; then \
+        sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${ALPINE_MIRROR}#g" /etc/apk/repositories \
+        && apk add --no-cache ca-certificates tzdata \
+        && addgroup -S app \
+        && adduser -S -G app app; \
+    else \
+        if ! id -u app >/dev/null 2>&1; then \
+            useradd --system --uid 100 --gid 100 --home-dir /nonexistent --shell /usr/sbin/nologin app; \
+        fi; \
+    fi
 
 WORKDIR /app
 COPY --from=builder /out/api /app/api
