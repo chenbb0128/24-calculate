@@ -49,6 +49,28 @@ func TestHealthReturnsSuccessAndRequestID(t *testing.T) {
 	}
 }
 
+func TestSuccessReturnsSuccess(t *testing.T) {
+	router, err := NewRouter(testConfig(), slog.Default(), RouterOptions{})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/success", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, ok := body["data"].(map[string]any)
+	if body["code"] != float64(0) || !ok || data["status"] != "success" {
+		t.Fatalf("success envelope = %s", recorder.Body.String())
+	}
+}
+
 func TestReadyReturnsServiceUnavailableWhenCheckFails(t *testing.T) {
 	router, err := NewRouter(testConfig(), slog.Default(), RouterOptions{
 		Readiness: ReadinessCheckerFunc(func(context.Context) error {
