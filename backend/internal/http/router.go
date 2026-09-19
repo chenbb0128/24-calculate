@@ -70,6 +70,9 @@ func NewRouter(cfg *config.Config, logger *slog.Logger, options RouterOptions) (
 	router.GET("/health", func(c *gin.Context) {
 		response.Success(c, http.StatusOK, gin.H{"status": "ok"})
 	})
+	router.GET("/success", func(c *gin.Context) {
+		response.Success(c, http.StatusOK, gin.H{"status": "success"})
+	})
 	router.GET("/ready", func(c *gin.Context) {
 		if err := options.Readiness.Check(c.Request.Context()); err != nil {
 			logger.ErrorContext(c.Request.Context(), "readiness check failed", "error", err)
