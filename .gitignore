@@ -29,6 +29,8 @@
 **/.cache/
 **/.godot/
 **/exports/
+backend/deployments/admin-dashboard/*
+!backend/deployments/admin-dashboard/.gitkeep
 
 # Local WeChat developer-tools profile
 tools/wechat_devtools_clean_userdata/

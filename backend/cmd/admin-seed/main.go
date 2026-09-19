@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/example/go-service/internal/config"
 	"github.com/example/go-service/internal/modules/admin"
@@ -27,6 +28,14 @@ func run() error {
 	if !ok {
 		return fmt.Errorf("GO_SERVICE_ADMIN_PASSWORD is not set")
 	}
+	resetExisting := false
+	if raw, ok := os.LookupEnv("GO_SERVICE_ADMIN_PASSWORD_RESET"); ok && raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("GO_SERVICE_ADMIN_PASSWORD_RESET must be a boolean")
+		}
+		resetExisting = parsed
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -39,7 +48,7 @@ func run() error {
 	defer database.Close()
 
 	adminRepository := admin.NewRepository(db.New(database))
-	if err := admin.SeedAdmin(context.Background(), adminRepository, username, password); err != nil {
+	if err := admin.SeedOrResetAdmin(context.Background(), adminRepository, username, password, resetExisting); err != nil {
 		return err
 	}
 	fmt.Fprintln(os.Stdout, "admin account seeded")

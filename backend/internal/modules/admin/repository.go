@@ -11,6 +11,7 @@ import (
 
 type AdminAccountStore interface {
 	CreateAdminAccount(context.Context, db.CreateAdminAccountParams) (sql.Result, error)
+	UpdateAdminPassword(context.Context, db.UpdateAdminPasswordParams) (int64, error)
 }
 
 type AdminRepository struct {
@@ -26,6 +27,13 @@ func (r *AdminRepository) CreateAdminAccount(ctx context.Context, arg db.CreateA
 		return nil, fmt.Errorf("admin repository is not initialized")
 	}
 	return r.queries.CreateAdminAccount(ctx, arg)
+}
+
+func (r *AdminRepository) UpdateAdminPassword(ctx context.Context, arg db.UpdateAdminPasswordParams) (int64, error) {
+	if r == nil || r.queries == nil {
+		return 0, fmt.Errorf("admin repository is not initialized")
+	}
+	return r.queries.UpdateAdminPassword(ctx, arg)
 }
 
 func (r *AdminRepository) GetAdminAccountByID(ctx context.Context, id uint64) (db.AdminAccount, error) {

@@ -25,6 +25,7 @@ readonly ENV_PROD_B64
 
 readonly APP_DIR="/data/website/24-calculate/server"
 readonly DEPLOY_DIR="$APP_DIR/backend/deployments"
+readonly COMPOSE_SOURCE="$DEPLOY_DIR/docker-compose.production.yml"
 readonly COMPOSE_FILE="/etc/24-calculate/docker-compose.production.yml"
 readonly ENV_FILE="$DEPLOY_DIR/.env"
 readonly IMAGE_NAME="registry.cn-hangzhou.aliyuncs.com/zdzq/24-calculate-backend"
@@ -45,6 +46,8 @@ readonly IMAGE_LOAD_TIMEOUT_SECONDS="${IMAGE_LOAD_TIMEOUT_SECONDS:-900}"
 readonly ENV_HELPER="/usr/local/libexec/24-calculate-managed-env.sh"
 readonly ENV_BACKUP_DIR="/data/backups/24-calculate/env"
 readonly -a ENV_SECRET_KEYS=(
+    GO_SERVICE_ADMIN_USERNAME
+    GO_SERVICE_ADMIN_PASSWORD
     GO_SERVICE_DATABASE_USER
     GO_SERVICE_DATABASE_PASSWORD
     GO_SERVICE_REDIS_PASSWORD
@@ -54,6 +57,8 @@ readonly -a ENV_SECRET_KEYS=(
     GO_SERVICE_GAME_CAMPAIGN_CONTENT_SECRET
 )
 readonly -a ENV_NONEMPTY_SECRET_KEYS=(
+    GO_SERVICE_ADMIN_USERNAME
+    GO_SERVICE_ADMIN_PASSWORD
     GO_SERVICE_DATABASE_USER
     GO_SERVICE_DATABASE_PASSWORD
     GO_SERVICE_WECHAT_APP_SECRET
@@ -67,6 +72,8 @@ readonly -a ENV_REQUIRED_KEYS=(
     SHARED_DOCKER_NETWORK
     API_BIND_HOST
     API_PORT
+    GO_SERVICE_ADMIN_USERNAME
+    GO_SERVICE_ADMIN_PASSWORD
     GO_SERVICE_DATABASE_HOST
     GO_SERVICE_DATABASE_PORT
     GO_SERVICE_DATABASE_USER
@@ -103,6 +110,18 @@ compose() {
         -f "$COMPOSE_FILE" \
         --env-file "$ENV_FILE" \
         "$@"
+}
+
+install_compose_file() {
+    [[ -f "$COMPOSE_SOURCE" ]] || fail "Compose source file not found: $COMPOSE_SOURCE"
+    install -d -m 0755 "$(dirname "$COMPOSE_FILE")"
+
+    if [[ ! -f "$COMPOSE_FILE" ]] || ! cmp -s "$COMPOSE_SOURCE" "$COMPOSE_FILE"; then
+        log "Installing production compose file: $COMPOSE_FILE"
+        install -m 0644 "$COMPOSE_SOURCE" "$COMPOSE_FILE"
+    else
+        log 'Production compose file is up to date'
+    fi
 }
 
 read_env_value() {
@@ -389,7 +408,6 @@ exec 9>"$LOCK_FILE"
 flock -n 9 || fail 'Another deployment is already running'
 
 [[ -d "$APP_DIR/.git" ]] || fail "Git repository not found at $APP_DIR"
-[[ -f "$COMPOSE_FILE" ]] || fail "Compose file not found: $COMPOSE_FILE"
 [[ -f "$ENV_FILE" ]] || fail "Environment file not found: $ENV_FILE"
 command -v mysqldump >/dev/null || fail 'mysqldump is not installed'
 
@@ -428,6 +446,7 @@ zdzq_env_install \
     ENV_SECRET_KEYS \
     ENV_REQUIRED_KEYS \
     ENV_NONEMPTY_SECRET_KEYS
+install_compose_file
 install -d -m 0755 -o 100 -g 101 "$AVATAR_DIR"
 compose config --quiet
 backup_database
