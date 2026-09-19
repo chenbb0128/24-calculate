@@ -14,13 +14,42 @@ import (
 )
 
 type fakeAdminAccountStore struct {
-	created db.CreateAdminAccountParams
-	err     error
+	created     db.CreateAdminAccountParams
+	updated     db.UpdateAdminPasswordParams
+	err         error
+	updatedRows int64
+	updateErr   error
 }
 
 func (s *fakeAdminAccountStore) CreateAdminAccount(_ context.Context, arg db.CreateAdminAccountParams) (sql.Result, error) {
 	s.created = arg
 	return nil, s.err
+}
+
+func (s *fakeAdminAccountStore) UpdateAdminPassword(_ context.Context, arg db.UpdateAdminPasswordParams) (int64, error) {
+	s.updated = arg
+	return s.updatedRows, s.updateErr
+}
+
+func TestSeedOrResetAdminUpdatesExistingAccountWhenExplicitlyEnabled(t *testing.T) {
+	password := "12345678"
+	store := &fakeAdminAccountStore{
+		err:         &mysql.MySQLError{Number: 1062, Message: "Duplicate entry"},
+		updatedRows: 1,
+	}
+
+	if err := SeedOrResetAdmin(context.Background(), store, "admin", password, true); err != nil {
+		t.Fatalf("SeedOrResetAdmin() error = %v", err)
+	}
+	if store.updated.Username != "admin" {
+		t.Fatalf("updated username = %q, want admin", store.updated.Username)
+	}
+	if store.updated.Status != 1 {
+		t.Fatalf("updated status = %d, want active", store.updated.Status)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(store.updated.PasswordHash), []byte(password)); err != nil {
+		t.Fatalf("updated password is not a bcrypt hash of the requested password: %v", err)
+	}
 }
 
 func TestSeedAdminCreatesBcryptHash(t *testing.T) {

@@ -76,8 +76,12 @@ dist output into the image before publishing it.
 The deployment script runs migrations automatically. If both
 `GO_SERVICE_ADMIN_USERNAME` and `GO_SERVICE_ADMIN_PASSWORD` are present in the
 server-only `backend/deployments/.env`, it also runs the one-shot admin seed
-after migrations. The seed refuses to overwrite an existing username, so
-subsequent deployments leave the existing password unchanged and continue.
+after migrations. The seed refuses to overwrite an existing username by
+default. When the protected `GO_SERVICE_ADMIN_PASSWORD_RESET=true` setting is
+enabled, it updates the existing admin password hash from the server-only
+password value and restores the account to active status. Keep this reset
+setting enabled only for the password rotation deployment, then remove it from
+the server environment.
 
 For the first deployment, add the administrator values to the server-only
 `.env` (use an 8-character-or-longer password), then push the release. Do not
@@ -88,6 +92,7 @@ cd /data/website/24-calculate/server/backend/deployments
 # Edit .env and add these two server-only values:
 # GO_SERVICE_ADMIN_USERNAME=admin
 # GO_SERVICE_ADMIN_PASSWORD=<your 8-character-or-longer password>
+# GO_SERVICE_ADMIN_PASSWORD_RESET=false
 ```
 
 The deployment script reads the values from `.env` and never prints the

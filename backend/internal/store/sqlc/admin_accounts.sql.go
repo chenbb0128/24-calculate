@@ -42,6 +42,32 @@ func (q *Queries) CreateAdminAccount(ctx context.Context, arg CreateAdminAccount
 	)
 }
 
+const updateAdminPassword = `-- name: UpdateAdminPassword :execrows
+UPDATE admin_accounts
+SET password_hash = ?, status = ?, updated_at = ?
+WHERE username = ?
+`
+
+type UpdateAdminPasswordParams struct {
+	PasswordHash string
+	Status       uint8
+	UpdatedAt    time.Time
+	Username     string
+}
+
+func (q *Queries) UpdateAdminPassword(ctx context.Context, arg UpdateAdminPasswordParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateAdminPassword,
+		arg.PasswordHash,
+		arg.Status,
+		arg.UpdatedAt,
+		arg.Username,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getAdminAccountByID = `-- name: GetAdminAccountByID :one
 SELECT id, username, password_hash, role, status, last_login_at, created_at, updated_at
 FROM admin_accounts

@@ -12,6 +12,14 @@ import (
 )
 
 func SeedAdmin(ctx context.Context, accountStore AdminAccountStore, username, password string) error {
+	return seedAdmin(ctx, accountStore, username, password, false)
+}
+
+func SeedOrResetAdmin(ctx context.Context, accountStore AdminAccountStore, username, password string, resetExisting bool) error {
+	return seedAdmin(ctx, accountStore, username, password, resetExisting)
+}
+
+func seedAdmin(ctx context.Context, accountStore AdminAccountStore, username, password string, resetExisting bool) error {
 	if len(username) < 3 || len(username) > 64 {
 		return fmt.Errorf("admin username must be between 3 and 64 bytes")
 	}
@@ -37,6 +45,21 @@ func SeedAdmin(ctx context.Context, accountStore AdminAccountStore, username, pa
 	})
 	if err != nil {
 		if storepkg.IsDuplicateEntry(err) {
+			if resetExisting {
+				updated, updateErr := accountStore.UpdateAdminPassword(ctx, db.UpdateAdminPasswordParams{
+					PasswordHash: string(hash),
+					Status:       1,
+					UpdatedAt:    now,
+					Username:     username,
+				})
+				if updateErr != nil {
+					return fmt.Errorf("reset admin password: %w", updateErr)
+				}
+				if updated == 0 {
+					return fmt.Errorf("admin username was not found during password reset")
+				}
+				return nil
+			}
 			return fmt.Errorf("admin username already exists")
 		}
 		return fmt.Errorf("create admin account: %w", err)

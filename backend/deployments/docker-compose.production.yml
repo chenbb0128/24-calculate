@@ -131,6 +131,7 @@ services:
       <<: *backend-environment
       GO_SERVICE_ADMIN_USERNAME: ${GO_SERVICE_ADMIN_USERNAME:-}
       GO_SERVICE_ADMIN_PASSWORD: ${GO_SERVICE_ADMIN_PASSWORD:-}
+      GO_SERVICE_ADMIN_PASSWORD_RESET: ${GO_SERVICE_ADMIN_PASSWORD_RESET:-false}
     extra_hosts: *extra-hosts
     networks:
       - shared_services

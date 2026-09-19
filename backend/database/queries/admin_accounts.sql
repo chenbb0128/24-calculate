@@ -20,6 +20,11 @@ INSERT INTO admin_accounts (
     updated_at
 ) VALUES (?, ?, ?, ?, ?, ?);
 
+-- name: UpdateAdminPassword :execrows
+UPDATE admin_accounts
+SET password_hash = ?, status = ?, updated_at = ?
+WHERE username = ?;
+
 -- name: TouchAdminLastLogin :exec
 UPDATE admin_accounts
 SET last_login_at = ?, updated_at = ?
